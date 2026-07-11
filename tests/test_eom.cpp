@@ -1,6 +1,7 @@
 // f4flight unit tests - equations of motion
 #include "f4flight/eom.h"
 #include "f4flight/config/f16c_config.h"
+#include "f4flight/core/trig.h"
 #include <gtest/gtest.h>
 
 using namespace f4flight;
@@ -150,4 +151,108 @@ TEST_F(EomTest, TrigonometryConsistency) {
     EXPECT_NEAR(s.kin.costhe, std::cos(0.3), 1e-6);
     EXPECT_NEAR(s.kin.sinphi, std::sin(0.2), 1e-6);
     EXPECT_NEAR(s.kin.cosphi, std::cos(0.2), 1e-6);
+}
+
+// ===========================================================================
+// Refactor 4: recomputeKinematicTrig() helper
+// ===========================================================================
+TEST_F(EomTest, RecomputeKinematicTrigFillsAllFields) {
+    KinematicState k;
+    k.psi   = 0.5;
+    k.theta = 0.3;
+    k.phi   = 0.2;
+
+    const double alpha_deg = 5.0;
+    const double beta_deg  = 2.0;
+
+    recomputeKinematicTrig(k, alpha_deg, beta_deg);
+
+    // Aero-angle trig
+    EXPECT_NEAR(k.sinalp, std::sin(5.0 * DTR), 1e-12);
+    EXPECT_NEAR(k.cosalp, std::cos(5.0 * DTR), 1e-12);
+    EXPECT_NEAR(k.sinbet, std::sin(2.0 * DTR), 1e-12);
+    EXPECT_NEAR(k.cosbet, std::cos(2.0 * DTR), 1e-12);
+
+    // Body euler trig
+    EXPECT_NEAR(k.sinpsi, std::sin(0.5), 1e-12);
+    EXPECT_NEAR(k.cospsi, std::cos(0.5), 1e-12);
+    EXPECT_NEAR(k.sinthe, std::sin(0.3), 1e-12);
+    EXPECT_NEAR(k.costhe, std::cos(0.3), 1e-12);
+    EXPECT_NEAR(k.sinphi, std::sin(0.2), 1e-12);
+    EXPECT_NEAR(k.cosphi, std::cos(0.2), 1e-12);
+
+    // Velocity-vector euler:
+    //   gamma = theta - alpha_rad * cos(phi)
+    //   sigma = psi
+    //   mu    = phi
+    const double expectedGamma = 0.3 - (5.0 * DTR) * std::cos(0.2);
+    EXPECT_NEAR(k.gmma,    expectedGamma,        1e-12);
+    EXPECT_NEAR(k.singam,  std::sin(expectedGamma), 1e-12);
+    EXPECT_NEAR(k.cosgam,  std::cos(expectedGamma), 1e-12);
+
+    EXPECT_NEAR(k.sigma,   0.5,                  1e-12);
+    EXPECT_NEAR(k.sinsig,  std::sin(0.5),        1e-12);
+    EXPECT_NEAR(k.cossig,  std::cos(0.5),        1e-12);
+
+    EXPECT_NEAR(k.mu,      0.2,                  1e-12);
+    EXPECT_NEAR(k.sinmu,   std::sin(0.2),        1e-12);
+    EXPECT_NEAR(k.cosmu,   std::cos(0.2),        1e-12);
+}
+
+TEST_F(EomTest, RecomputeKinematicTrigMatchesUpdatePath) {
+    // The shared helper and the EOM::update() path must agree on every trig
+    // field. To compare them on the SAME inputs, we use dt=0.0 so the
+    // integration step does not modify psi/theta/phi (the body-rate filters
+    // and position/velocity integrators are all multiplied by dt, so with
+    // dt=0 the kinematic state is unchanged and trigonometry() fills the
+    // trig fields from the same angles the helper saw).
+    AircraftState sUpdate;
+    sUpdate.kin.psi = 0.4;
+    sUpdate.kin.theta = 0.1;
+    sUpdate.kin.phi = -0.2;
+    sUpdate.kin.vt = 100.0;
+    sUpdate.kin.xdot = 100.0;
+    sUpdate.aero.alpha_deg = 4.0;
+    sUpdate.aero.beta_deg = 1.5;
+
+    PilotInput input;
+    sUpdate.gear.inAir = true;
+    sUpdate.aero.xwaero = 0.0;
+    sUpdate.aero.gearPos = 0.0;
+    sUpdate.fcs.pstab = 0.0;
+    sUpdate.loads.nzcgs = 1.0;
+    sUpdate.loads.nycgw = 0.0;
+    sUpdate.kin.cosmu = 1.0; sUpdate.kin.cosgam = 1.0; sUpdate.kin.singam = 0.0;
+    sUpdate.kin.cosbet = 1.0; sUpdate.kin.cosalp = 1.0; sUpdate.kin.sinalp = 0.0;
+    sUpdate.qsom = 100.0;
+    sUpdate.aero.cnalpha = 1.0;
+    sUpdate.kin.quat = quatFromEuler(0.4, 0.1, -0.2);
+
+    // Snapshot the pre-update helper output.
+    KinematicState kHelper = sUpdate.kin;
+    recomputeKinematicTrig(kHelper, 4.0, 1.5);
+
+    // Run the EOM with dt=0 so the euler angles don't move.
+    eom_.update(0.0, input, sUpdate);
+
+    // Every trig field should now match the helper's output exactly.
+    // This guards against accidental divergence if someone later inlines
+    // the math back into eom.cpp.
+    EXPECT_NEAR(sUpdate.kin.sinalp, kHelper.sinalp, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.cosalp, kHelper.cosalp, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.sinbet, kHelper.sinbet, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.cosbet, kHelper.cosbet, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.sinpsi, kHelper.sinpsi, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.cospsi, kHelper.cospsi, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.sinthe, kHelper.sinthe, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.costhe, kHelper.costhe, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.sinphi, kHelper.sinphi, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.cosphi, kHelper.cosphi, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.gmma,   kHelper.gmma,   1e-12);
+    EXPECT_NEAR(sUpdate.kin.singam, kHelper.singam, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.cosgam, kHelper.cosgam, 1e-12);
+    EXPECT_NEAR(sUpdate.kin.sigma,  kHelper.sigma,  1e-12);
+    EXPECT_NEAR(sUpdate.kin.mu,     kHelper.mu,     1e-12);
+    EXPECT_NEAR(sUpdate.kin.sinmu,  kHelper.sinmu,  1e-12);
+    EXPECT_NEAR(sUpdate.kin.cosmu,  kHelper.cosmu,  1e-12);
 }

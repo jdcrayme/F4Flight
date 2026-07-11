@@ -3,6 +3,9 @@
 #include "f4flight/config/f16c_config.h"
 #include <gtest/gtest.h>
 
+#include <cstdio>
+#include <limits>
+
 using namespace f4flight;
 
 class FlightModelTest : public ::testing::Test {
@@ -123,3 +126,154 @@ TEST_F(FlightModelTest, ThrottleAffectsThrust) {
 
     EXPECT_LT(fm1.state().engine.thrust, fm2.state().engine.thrust);
 }
+
+// ===========================================================================
+// Refactor 3: AircraftState::reset()
+// ===========================================================================
+TEST_F(FlightModelTest, StateResetClearsAllFields) {
+    FlightModel fm;
+    fm.init(cfg_, 5000.0, 500.0, 0.0, true);
+
+    // Dirty the state with non-default values
+    fm.state().kin.x = 1234.0;
+    fm.state().kin.y = 5678.0;
+    fm.state().kin.vt = 999.0;
+    fm.state().aero.alpha_deg = 7.5;
+    fm.state().fuel.fuel_lbs = 5000.0;
+    fm.state().engine.rpm = 0.9;
+    fm.state().rho = 0.002;
+
+    // Reset
+    fm.state().reset();
+
+    // Every field should be back at its default-constructed value.
+    EXPECT_DOUBLE_EQ(fm.state().kin.x, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().kin.y, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().kin.vt, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().aero.alpha_deg, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().fuel.fuel_lbs, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().engine.rpm, 0.0);
+    EXPECT_DOUBLE_EQ(fm.state().rho, 0.0);
+    // Gear wheels vector is cleared too (was sized by gear_.init).
+    EXPECT_TRUE(fm.state().gear.wheels.empty());
+}
+
+TEST_F(FlightModelTest, StateResetThenReInitProducesSameStateAsFreshInit) {
+    // A reset+init sequence should leave the aircraft in the same state as a
+    // brand-new FlightModel that was only init'd once. This guards against
+    // any hidden carry-over (filter states, lag histories, etc.).
+    FlightModel fmFresh;
+    fmFresh.init(cfg_, 15000.0, 500.0, 0.5, true);
+
+    FlightModel fmReused;
+    fmReused.init(cfg_, 5000.0, 400.0, 0.0, true);   // different ICs first
+    fmReused.update(0.1, PilotInput{}, 0.0, Vec3{0,0,1}); // run a frame
+    fmReused.state().reset();
+    fmReused.init(cfg_, 15000.0, 500.0, 0.5, true);  // now reuse with new ICs
+
+    EXPECT_NEAR(fmReused.state().kin.z, fmFresh.state().kin.z, 1e-9);
+    EXPECT_NEAR(fmReused.state().kin.vt, fmFresh.state().kin.vt, 1e-9);
+    EXPECT_NEAR(fmReused.state().kin.psi, fmFresh.state().kin.psi, 1e-9);
+    EXPECT_NEAR(fmReused.state().fuel.fuel_lbs, fmFresh.state().fuel.fuel_lbs, 1e-9);
+    EXPECT_NEAR(fmReused.state().fuel.mass_slugs, fmFresh.state().fuel.mass_slugs, 1e-9);
+}
+
+// ===========================================================================
+// Refactor 2: AircraftConfig::validate()
+// ===========================================================================
+TEST_F(FlightModelTest, ValidateAcceptsGoodConfig) {
+    auto report = cfg_.validate();
+    if (!report.ok()) {
+        std::printf("%s", report.format().c_str());
+    }
+    EXPECT_TRUE(report.ok());
+    EXPECT_EQ(report.errorCount(), 0u);
+}
+
+TEST_F(FlightModelTest, ValidateRejectsEmptyAeroTables) {
+    AircraftConfig bad = cfg_;
+    bad.aero.mach.clear();
+    bad.aero.alpha_deg.clear();
+    bad.aero.clift.clear();
+    auto report = bad.validate();
+    EXPECT_FALSE(report.ok());
+    EXPECT_GE(report.errorCount(), 1u);
+}
+
+TEST_F(FlightModelTest, ValidateRejectsTableSizeMismatch) {
+    AircraftConfig bad = cfg_;
+    // Add a stray element to clift so mach*alpha != clift.size()
+    bad.aero.clift.push_back(0.0);
+    auto report = bad.validate();
+    EXPECT_FALSE(report.ok());
+    // Should mention aero.clift in the report
+    bool mentionsClift = false;
+    for (const auto& i : report.issues) {
+        if (i.field.find("aero.clift") != std::string::npos) {
+            mentionsClift = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(mentionsClift);
+}
+
+TEST_F(FlightModelTest, ValidateRejectsBackwardsAoALimits) {
+    AircraftConfig bad = cfg_;
+    bad.geometry.aoaMin_deg = 30.0;
+    bad.geometry.aoaMax_deg = -5.0;
+    auto report = bad.validate();
+    EXPECT_FALSE(report.ok());
+}
+
+TEST_F(FlightModelTest, ValidateFormatProducesNonEmptyOutputForBadConfig) {
+    AircraftConfig bad = cfg_;
+    bad.aero.clift.clear();
+    auto report = bad.validate();
+    EXPECT_FALSE(report.format().empty());
+}
+
+TEST_F(FlightModelTest, ValidateRejectsNaNInGeometry) {
+    AircraftConfig bad = cfg_;
+    bad.geometry.area_ft2 = std::numeric_limits<double>::quiet_NaN();
+    auto report = bad.validate();
+    EXPECT_FALSE(report.ok());
+}
+
+// ===========================================================================
+// Refactor 5: typed limiter accessors
+// ===========================================================================
+TEST_F(FlightModelTest, LimiterAccessorRoundTrips) {
+    AircraftConfig cfg = cfg_;
+    Limiter l;
+    l.type = LimiterType::Value;
+    l.x1 = 7.5;
+    cfg.setLimiter(LimiterKey::AOALimiter, l);
+
+    const Limiter& got = cfg.limiter(LimiterKey::AOALimiter);
+    EXPECT_EQ(got.type, LimiterType::Value);
+    EXPECT_DOUBLE_EQ(got.x1, 7.5);
+    EXPECT_DOUBLE_EQ(got.limit(0.0), 7.5);  // Value limiter ignores input
+}
+
+TEST_F(FlightModelTest, LimiterAccessorMatchesArrayIndex) {
+    // The typed accessor must return the same object as raw array indexing
+    // for every key -- otherwise existing code that reads limiters[] would
+    // silently start reading a different limiter.
+    AircraftConfig cfg = cfg_;
+    for (int i = 0; i < static_cast<int>(LimiterKey::Count); ++i) {
+        const auto key = static_cast<LimiterKey>(i);
+        EXPECT_EQ(&cfg.limiter(key), &cfg.limiters[i]);
+    }
+}
+
+TEST_F(FlightModelTest, LimiterAccessorMutableAllowsInPlaceEdit) {
+    AircraftConfig cfg = cfg_;
+    cfg.limiter(LimiterKey::RollRateLimiter).type = LimiterType::MinMax;
+    cfg.limiter(LimiterKey::RollRateLimiter).x1   = -2.0;
+    cfg.limiter(LimiterKey::RollRateLimiter).x2   =  2.0;
+    EXPECT_EQ(cfg.limiters[static_cast<int>(LimiterKey::RollRateLimiter)].type,
+              LimiterType::MinMax);
+    EXPECT_DOUBLE_EQ(cfg.limiter(LimiterKey::RollRateLimiter).limit(5.0), 2.0);
+    EXPECT_DOUBLE_EQ(cfg.limiter(LimiterKey::RollRateLimiter).limit(-5.0), -2.0);
+}
+

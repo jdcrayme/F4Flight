@@ -246,6 +246,27 @@ struct AircraftState {
     bool   trimming{false};
     double netAccel{0.0};         // last frame's net accel (ft/s^2)
     double vRot{0.0};             // rotation speed
+
+    // -----------------------------------------------------------------------
+    // Reset every field to its default-constructed value.
+    //
+    // This is equivalent to `*this = AircraftState{}` but:
+    //   - It is a named method, so the intent is explicit at the call site
+    //     (the value-init idiom is easy to misread as "construct a temporary").
+    //   - It clears the gear.wheels vector to size 0, which is the same as
+    //     what value-init does. The FlightModel::init() path re-sizes the
+    //     wheel vector via GearModel::init() immediately after reset, so this
+    //     is safe.
+    //   - It does NOT touch the EngineState lag filters' "initialized" flag
+    //     differently from value-init (both leave it false).
+    //
+    // Hosts that want to "rewind" a simulation to a clean state should call
+    // this and then call FlightModel::init() again with the desired initial
+    // conditions.
+    // -----------------------------------------------------------------------
+    void reset() noexcept {
+        *this = AircraftState{};
+    }
 };
 
 } // namespace f4flight

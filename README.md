@@ -11,7 +11,7 @@ any game or simulation project.
 
 ## Current Status
 
-**Version 2.2.0** — the library is functional and tested but has known
+**Version 3.3.0** — the library is functional and tested but has known
 limitations (see below). It is suitable for integration into game projects
 as a flight-model and AI-steering backend.
 
@@ -33,6 +33,16 @@ as a flight-model and AI-steering backend.
   transports (C-130), and others. Level-flight, turn, orbit, acceleration,
   and deceleration maneuvers pass ±100 ft / ±10 kts for most fighter and
   attack aircraft.
+- **Strongly typed units (opt-in)** — `core/units.h` provides `Quantity<Tag>`
+  wrappers (`Radians`, `Degrees`, `Feet`, `Knots`, `Slugs`, ...) that make
+  unit-mixing bugs a compile error. Existing code is untouched; new code can
+  adopt the typed aliases incrementally.
+- **Configuration validation** — `AircraftConfig::validate()` returns a
+  report of every problem found (empty tables, dimension mismatches, NaN
+  values, backwards limits, ...) so a host loading a data file gets a
+  complete diagnostic in one pass.
+- **Clean state reset** — `AircraftState::reset()` replaces the fragile
+  `state = AircraftState{}` value-init idiom with a named method.
 
 ### Known Limitations
 
@@ -81,7 +91,8 @@ as a flight-model and AI-steering backend.
   files parse successfully.
 - **Zero external dependencies** — only the C++17 standard library.
 - **Compiled static/shared library** — clean public API in `f4flight/`.
-- **126 GoogleTest unit tests** — all passing.
+- **158 GoogleTest unit tests** — all passing (125 original + 33 covering the
+  new units, validation, reset, trig-cache, and limiter-accessor facilities).
 - **CMake build** — generates Visual Studio 2022 projects (and works with
   GCC/Clang). GoogleTest is fetched automatically via `FetchContent`.
 
@@ -231,16 +242,163 @@ Coordinate frames:
 - **Stability**: X-along-velocity-projected-into-body-XY.
 - **Wind**: X-along-velocity.
 
+## Strongly Typed Units (opt-in)
+
+The library's existing API uses raw `double` for every physical quantity and
+relies on naming conventions (`alpha_deg`, `vt_ftps`, `alt_ft`) to distinguish
+units. This works but is fragile — nothing prevents
+`std::sin(state.aero.alpha_deg)` where `sin` expects radians.
+
+`core/units.h` provides `Quantity<Tag>` strong-type wrappers that make such
+mistakes a **compile error**. The wrappers are ABI-compatible with `double`
+(a single `double` field) and zero-cost at runtime. Existing code is
+untouched; new code can adopt the typed aliases incrementally.
+
+```cpp
+#include <f4flight/core/units.h>
+using namespace f4flight;
+
+Radians alpha_rad = toRadians(Degrees(state.aero.alpha_deg));
+Feet    alt       = feet(15000.0);
+Knots   cruise    = knots(420.0);
+FeetPerSec vt     = toFeetPerSec(cruise);
+
+double mach = vt / toFeetPerSec(knots(AASLK));   // ratio -> dimensionless double
+
+// Mixing tags is a compile error:
+// Radians r(1.0); Degrees d(90.0); r + d;   // ERROR
+```
+
+Design mirrors `std::chrono::duration`:
+- Construction from `double` is **explicit** (no implicit `double -> Quantity`)
+- Conversion back to `double` is via `count()` or `static_cast<double>` (no
+  implicit `Quantity -> double` that would silently drop the unit)
+- Arithmetic between same-tag quantities returns the same tag
+- Division of two same-tag quantities yields a plain `double` (dimensionless ratio)
+- Cross-unit conversion requires an explicit free function (`toRadians`,
+  `toKnots`, `toFeet`, ...) so the conversion is visible at the call site
+
+Provided aliases: `Radians`, `Degrees`, `Feet`, `Meters`, `FeetPerSec`,
+`Knots`, `Seconds`, `Slugs`, `PoundsMass`, `PoundsForce`, `LbPerFt2`,
+`SlugsPerFt3`, `AreaFt2`, `FtPerSec2`, `Rankine`, `LbPerHour`. Lowercase
+factory functions (`radians()`, `feet()`, `knots()`, ...) make call sites
+self-documenting.
+
+## Configuration Validation
+
+`AircraftConfig::validate()` returns a `ConfigValidationReport` listing every
+problem found (it does not short-circuit on the first error, so a host loading
+a malformed data file gets a complete diagnostic in one pass):
+
+```cpp
+AircraftConfig cfg;
+f4flight::json::readFile("f16bk50.json", cfg);
+
+auto report = cfg.validate();
+if (!report.ok()) {
+    std::cerr << report.format();   // multi-line "E: [field] message" listing
+    return 1;
+}
+```
+
+Checks performed:
+- Aero tables non-empty and dimensionally consistent (`mach.size() * alpha.size() == clift.size()`)
+- Engine thrust tables non-empty and dimensionally consistent
+- Roll-command table dimensions (if present)
+- Geometry: positive area, weight, span; non-negative fuel, length
+- AOA/beta limits sane (`min < 0 < max`, max not absurd)
+- Performance envelope: `maxGs`, `maxRoll`, `minVcas < maxVcas`, etc.
+- No NaN/Inf in critical scalar fields (sampled for large tables)
+- Gear points: finite coordinates, non-negative strut range
+
+## Other API Additions
+
+- **`AircraftState::reset()`** — named re-initialization replacing the fragile
+  `state = AircraftState{}` value-init idiom. Equivalent behavior, clearer intent.
+- **`AircraftConfig::limiter(LimiterKey)` / `setLimiter(LimiterKey, Limiter)`** —
+  typed accessor methods for the limiter array. Preferred over raw
+  `limiters[static_cast<int>(key)]` indexing. The legacy `limiters[]` array
+  remains public so existing code keeps compiling.
+- **`recomputeKinematicTrig(KinematicState&, alpha_deg, beta_deg)`** — shared
+  helper in `core/trig.h` that fills all 16 sin/cos fields and the
+  velocity-vector euler angles (sigma, gamma, mu). Both `FlightModel::init()`
+  and `EquationsOfMotion::trigonometry()` now call this helper, eliminating the
+  drift between the init path (which used to compute a partial subset) and the
+  per-frame update path (which computed all of it).
+
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
 | `dat2json` | Convert Falcon 4 `.dat` files to JSON |
 | `simple_sim` | Run a simple 30-second simulation |
-| `steering_demo` | AI-piloted waypoint circuit |
-| `maneuver_test` | Full maneuver profile with capture/overshoot reporting |
-| `tune_diag` | Detailed frame-by-frame diagnostic output |
+| `steering_demo` | Interactive demo: AI-piloted 4-waypoint circuit with continuous state logging |
+| `maneuver_test` | Scenario-based maneuver test runner with `--list` / `--scenario` / `--all` |
+| `tune_diag` | Detailed frame-by-frame diagnostic output for PID tuning |
 | `perf_check` | Performance validation against published specs |
+
+## Maneuver Test Scenarios
+
+`maneuver_test` is a scenario-based test runner. Each scenario is a
+self-contained subclass of `ManeuverScenario` that builds an ordered list of
+test phases (climb, turn, waypoint leg, etc.). Scenarios self-register at
+startup, so adding a new scenario is a matter of dropping a new `.cpp` file
+in `src/scenarios/` and rebuilding — the runner never needs editing.
+
+### Built-in Scenarios
+
+| Scenario | Description | Status |
+|----------|-------------|--------|
+| `basic` | Level flight, climb, descent, turn, orbit, accelerate, decelerate | Complete (default) |
+| `flightplan` | 4-waypoint square circuit using `SteerToWaypoint` | Complete |
+| `approach` | Precision approach: GS intercept + 3-degree glideslope | Scaffold (full ILS coupling is future work) |
+| `combat` | ACM and weapons delivery | Scaffold (target tracking, weapon envelopes are future work) |
+
+### Usage
+
+```bash
+# List available scenarios
+maneuver_test f16bk50.json --list
+
+# Run all scenarios (default)
+maneuver_test f16bk50.json
+
+# Run a specific scenario
+maneuver_test f16bk50.json --scenario basic
+
+# Run several scenarios back-to-back
+maneuver_test f16bk50.json --scenario basic --scenario flightplan
+```
+
+### Adding a New Scenario
+
+1. Create `src/scenarios/scenario_<name>.cpp`.
+2. Define a `ManeuverScenario` subclass that builds its test sequence in
+   `buildSequence()`.
+3. Self-register with `static RegisterScenario reg("name", []{ ... });`.
+4. Add a force-link symbol `extern "C" void f4flight_forceLink_scenario_<name>() {}`
+   and declare it in `maneuver_test.h` (one line in `forceLinkAllScenarios()`).
+   This step is needed because the static library linker otherwise drops
+   scenario `.o` files that have no referenced symbols.
+
+See `src/scenarios/scenario_basic.cpp` for a complete worked example. The
+`flightplan`, `approach`, and `combat` scenarios show how to build on top
+of the framework with custom `ManeuverTest` subclasses.
+
+### Scenario vs. `steering_demo`
+
+`maneuver_test` is a **test runner**: it runs registered scenarios, reports
+pass/fail per phase, and exits. Its output is structured for parsing.
+
+`steering_demo` is an **interactive demo**: it runs a single hand-crafted
+flight profile and prints a continuous state log meant for human inspection.
+It demonstrates how to compose multiple behaviors (waypoint following +
+altitude hold + speed hold) into a complete mission.
+
+Future scenarios that are too exploratory for the test framework (new
+approach procedures, formation flying, air-to-air refueling, etc.) should
+start life as a `steering_demo` variant, mature until the pass/fail criteria
+are clear, and then be promoted into a registered `maneuver_test` scenario.
 
 ## Testing
 
@@ -250,7 +408,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 126 unit tests covering math, atmosphere, aerodynamics, engine, gear, FCS,
-EOM, steering, .dat loading, and JSON I/O.
+EOM, steering, .dat loading, and JSON I/O, plus 32 tests covering the new
+units, validation, reset, trig-cache, and limiter-accessor facilities
+(158 total, all passing).
 
 ## CMake Options
 

@@ -193,7 +193,7 @@ std::string write(const AircraftConfig& cfg) {
 
     // Metadata
     w.key("name");        w.writeString(cfg.name);
-    w.key("description"); w.writeString(cfg.description);
+    w.key("description"); w.writeString(cfg.GetDescription);
 
     // Geometry
     w.key("geometry");
@@ -602,7 +602,7 @@ IoResult read(const std::string& jsonStr, AircraftConfig& cfg) {
         Reader r(jsonStr);
         r.readObject([&](const std::string& key) {
             if (key == "name")        r.readInto(cfg.name);
-            else if (key == "description") r.readInto(cfg.description);
+            else if (key == "description") r.readInto(cfg.GetDescription);
             else if (key == "geometry") {
                 r.readObject([&](const std::string& k) {
                     if (k == "emptyWeight_lbs")  r.readInto(cfg.geometry.emptyWeight_lbs);

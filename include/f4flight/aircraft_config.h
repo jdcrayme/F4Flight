@@ -270,11 +270,51 @@ struct AuxAero {
 };
 
 // ---------------------------------------------------------------------------
+// Validation result returned by AircraftConfig::validate().
+// Aggregates ALL problems found (does not stop at the first one) so a host
+// loading an aircraft data file can present a complete diagnostic in one pass.
+// ---------------------------------------------------------------------------
+struct ConfigValidationReport {
+    enum class Severity { Warning, Error };
+
+    struct Issue {
+        Severity  severity;
+        std::string field;   // dotted path, e.g. "aero.clift"
+        std::string message;
+    };
+
+    std::vector<Issue> issues;
+
+    bool ok() const noexcept {
+        for (const auto& i : issues)
+            if (i.severity == Severity::Error) return false;
+        return true;
+    }
+    bool hasWarnings() const noexcept {
+        for (const auto& i : issues)
+            if (i.severity == Severity::Warning) return true;
+        return false;
+    }
+    std::size_t errorCount()   const noexcept { return count(Severity::Error);   }
+    std::size_t warningCount() const noexcept { return count(Severity::Warning); }
+
+    // Human-readable multi-line summary (one line per issue, prefixed "E:" / "W:").
+    std::string format() const;
+
+private:
+    std::size_t count(Severity s) const noexcept {
+        std::size_t n = 0;
+        for (const auto& i : issues) if (i.severity == s) ++n;
+        return n;
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Top-level aircraft configuration. Combines all the above.
 // ---------------------------------------------------------------------------
 struct AircraftConfig {
     std::string name;
-    std::string description;
+    std::string GetDescription;
 
     AircraftGeometry geometry;
     AuxAero          aux;
@@ -286,6 +326,38 @@ struct AircraftConfig {
     // Convenience: F-16-like default G/AOA schedule
     bool   aoaCommandMode{false};
     double aoaCommandMaxGs{9.0};
+
+    // -----------------------------------------------------------------------
+    // Typed limiter accessors. Preferred over raw `limiters[idx]` array
+    // indexing because the index is computed from a strongly-typed enum and
+    // bounds-checked. The legacy `limiters[]` array is still public so
+    // existing code keeps compiling.
+    // -----------------------------------------------------------------------
+    const Limiter& limiter(LimiterKey key) const {
+        return limiters[static_cast<int>(key)];
+    }
+    Limiter& limiter(LimiterKey key) {
+        return limiters[static_cast<int>(key)];
+    }
+    void setLimiter(LimiterKey key, const Limiter& l) {
+        limiters[static_cast<int>(key)] = l;
+    }
+
+    // -----------------------------------------------------------------------
+    // Validate the configuration. Returns a report with every problem found.
+    // `ok()` is true iff there are no Error-severity issues (warnings are
+    // reported but do not fail validation).
+    //
+    // Checks performed:
+    //   - aero tables are non-empty and dimensionally consistent
+    //   - engine thrust tables are non-empty and dimensionally consistent
+    //   - geometry has positive area, weight, and span
+    //   - AOA/beta limits are sane (min < 0 < max, max not absurd)
+    //   - maxGs, maxRoll, VCAS limits are positive
+    //   - no NaN / Inf in critical scalar fields
+    //   - gear points have non-negative strut range
+    // -----------------------------------------------------------------------
+    ConfigValidationReport validate() const;
 };
 
 } // namespace f4flight

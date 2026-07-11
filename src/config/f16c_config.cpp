@@ -22,7 +22,7 @@ namespace f4flight::config {
 AircraftConfig makeF16CConfig() {
     AircraftConfig cfg;
     cfg.name        = "F-16C Fighting Falcon";
-    cfg.description = "General Dynamics F-16C Block 30/32 with F100-PW-220 engine. "
+    cfg.GetDescription = "General Dynamics F-16C Block 30/32 with F100-PW-220 engine. "
                       "Reference configuration derived from NASA wind-tunnel data "
                       "and F-16 -1 manual performance figures.";
 

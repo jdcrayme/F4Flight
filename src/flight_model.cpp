@@ -7,6 +7,7 @@
 #include "f4flight/flight_model.h"
 #include "f4flight/core/constants.h"
 #include "f4flight/core/math.h"
+#include "f4flight/core/trig.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,8 +44,10 @@ void FlightModel::init(const AircraftConfig& cfg,
     gear_   = GearModel(&cfg_.geometry, &cfg_.aux);
     eom_    = EquationsOfMotion(&cfg_.geometry, &cfg_.aux);
 
-    // Reset state
-    state_ = AircraftState{};
+    // Reset state. Using the named reset() method instead of `state_ = {}`
+    // so the intent is explicit (and so hosts that subclass / wrap
+    // FlightModel have a single canonical entry point to override).
+    state_.reset();
 
     // Position: altitude positive up means z = -altitude
     state_.kin.z = -initialAltitude_ft;
@@ -145,14 +148,13 @@ void FlightModel::init(const AircraftConfig& cfg,
     state_.kin.theta = state_.aero.alpha_deg * DTR;
     state_.kin.quat = quatFromEuler(state_.kin.psi, state_.kin.theta, state_.kin.phi);
     state_.kin.dcm = dcmFromEuler(state_.kin.psi, state_.kin.theta, state_.kin.phi);
-    state_.kin.sinthe = std::sin(state_.kin.theta);
-    state_.kin.costhe = std::cos(state_.kin.theta);
 
-    // Recompute trig
-    state_.kin.sinalp = std::sin(state_.aero.alpha_deg * DTR);
-    state_.kin.cosalp = std::cos(state_.aero.alpha_deg * DTR);
-    state_.kin.sinbet = std::sin(state_.aero.beta_deg * DTR);
-    state_.kin.cosbet = std::cos(state_.aero.beta_deg * DTR);
+    // Recompute every sin*/cos* field and the velocity-vector euler angles
+    // (sigma, gmma, mu) via the shared helper. This used to be a partial
+    // inline computation that left singam/cosgam/sinpsi/cospsi/etc. as their
+    // default 0/1; calling the helper here makes the initial state fully
+    // consistent (all 16 trig fields populated) without changing any math.
+    recomputeKinematicTrig(state_.kin, state_.aero.alpha_deg, state_.aero.beta_deg);
 }
 
 void FlightModel::updateAtmosphere() {

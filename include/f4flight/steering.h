@@ -1,215 +1,226 @@
-// f4flight - Modern C++17 flight model library extracted from Falcon 4 / FreeFalcon
-// steering.h
+// f4flight - steering.h
+// AI steering with separated horizontal/vertical/throttle behaviors.
 //
-// AI steering / autopilot module.
+// Architecture:
+//   SteeringController
+//     ├── VerticalBehavior*   (controls pstick + throttle when climbing/descending)
+//     ├── HorizontalBehavior* (controls rstick)
+//     └── ThrottleBehavior*   (controls throttle when in level flight)
 //
-// This module provides higher-level steering behaviours that translate
-// navigational commands (waypoints, headings, altitudes, speeds) into the
-// PilotInput struct consumed by FlightModel::update().
-//
-// The design is layered:
-//
-//   ┌──────────────────────────────────────────────────────────┐
-//   │            SteeringController (top-level)                │
-//   │   - holds the active SteeringMode                       │
-//   │   - dispatches to the mode-specific compute() function  │
-//   ├──────────────────────────────────────────────────────────┤
-//   │  WaypointFollower  │  HeadingHold  │  AltitudeHold      │
-//   │  SpeedHold         │  Formation    │  CombatSteering    │
-//   │   (leaf behaviours, each produces a PilotInput)         │
-//   ├──────────────────────────────────────────────────────────┤
-//   │              PID controllers                            │
-//   │   - PitchPID (altitude -> pitch stick)                  │
-//   │   - RollPID  (heading  -> roll stick)                   │
-//   │   - ThrottlePID (speed -> throttle)                     │
-//   │   - YawPID   (sideslip -> rudder pedal)                 │
-//   └──────────────────────────────────────────────────────────┘
-//
-// Port of the relevant logic from FreeFalcon's sim/digi/ directory
-// (autopilot.cpp, waypoint.cpp, wingai.cpp, refuel.cpp, landme.cpp)
-// but refactored into a clean, testable, modular design.
+// Each behavior takes its parameters in its constructor — no shared goal struct.
+// Behaviors are self-contained and composable.
 
 #pragma once
 
 #include "f4flight/aircraft_state.h"
 #include "f4flight/core/types.h"
 
+#include <memory>
 #include <vector>
 
 namespace f4flight {
 
 // ---------------------------------------------------------------------------
-// Steering goals -- the high-level commands the host program issues.
-// Each behaviour reads whichever fields it needs and ignores the rest.
-// ---------------------------------------------------------------------------
-struct SteeringGoal {
-    // Waypoint following
-    Vec3   waypoint{0.0, 0.0, 0.0};   // target position (world, ft, NED Z-down)
-    bool   hasWaypoint{false};
-
-    // Heading hold (radians, 0 = North, pi/2 = East)
-    double heading_rad{0.0};
-    bool   hasHeading{false};
-
-    // Altitude hold (feet, positive up)
-    double altitude_ft{5000.0};
-    bool   hasAltitude{false};
-
-    // Speed hold (knots calibrated airspeed)
-    double speed_kts{300.0};
-    bool   hasSpeed{false};
-
-    // Climb/descent schedule
-    double climbPower{1.0};          // throttle for climbs (1.0 = MIL)
-    double descentPower{0.05};       // throttle for descents (0 = idle)
-    double climbVcas_kts{350.0};     // target CAS during climb (slower than cruise)
-    double climbMach{0.80};          // target Mach during climb (after transition)
-    double descentVcas_kts{460.0};   // target CAS during descent (faster than cruise)
-    double descentMach{0.80};        // target Mach during descent (after transition)
-    double levelBand_ft{200.0};      // altitude band for level flight
-
-    // Approach / landing
-    bool   landing{false};
-    Vec3   runwayThreshold{0.0, 0.0, 0.0};
-    double runwayHeading_rad{0.0};
-
-    // Formation flying
-    Vec3   formationOffset{0.0, 0.0, 0.0};
-    bool   hasFormationLead{false};
-    Vec3   leadPosition{0.0, 0.0, 0.0};
-    Vec3   leadVelocity{0.0, 0.0, 0.0};
-
-    // Terrain follow
-    double radarAltitude_ft{500.0};
-    bool   terrainFollow{false};
-};
-
-// ---------------------------------------------------------------------------
-// PID controller with anti-windup and output clamping.
+// PID controller
 // ---------------------------------------------------------------------------
 struct PIDGains {
-    double kp{1.0};
-    double ki{0.0};
-    double kd{0.0};
-    double outputMin{-1.0};   // output clamp
-    double outputMax{ 1.0};
-    double integMin{-1.0};    // integrator clamp (anti-windup)
-    double integMax{ 1.0};
+    double kp{1.0}, ki{0.0}, kd{0.0};
+    double outputMin{-1.0}, outputMax{1.0};
+    double integMin{-1.0}, integMax{1.0};
 };
 
 class PID {
 public:
     PID() = default;
     explicit PID(const PIDGains& g) : gains_(g) {}
-
-    // Compute the PID output for the given error and dt.
-    //   error = setpoint - measurement (positive error -> positive output)
     double update(double error, double dt) noexcept;
-
     void reset() noexcept { integ_ = 0.0; prevError_ = 0.0; hasPrev_ = false; }
     void setGains(const PIDGains& g) noexcept { gains_ = g; }
     const PIDGains& gains() const noexcept { return gains_; }
-
 private:
     PIDGains gains_;
-    double integ_{0.0};
-    double prevError_{0.0};
-    bool   hasPrev_{false};
+    double integ_{0.0}, prevError_{0.0};
+    bool hasPrev_{false};
 };
 
 // ---------------------------------------------------------------------------
-// Steering mode enum
+// Shared controller state (PID controllers + config)
 // ---------------------------------------------------------------------------
-enum class SteeringMode {
-    Manual,           // pilot input passes through unchanged
-    Waypoint,         // fly to the waypoint, then the next, etc.
-    HeadingAltitude,  // hold heading + altitude + speed
-    Approach,         // fly an ILS-like approach to the runway
-    Formation,        // hold position relative to a lead aircraft
-    TerrainFollow,    // follow the terrain at a set AGL
-    Combat,           // point at a target (placeholder for future work)
+struct SteeringContext {
+    PilotInput manual;
+    double maxBank_deg{30.0};
+    double maxGs{9.0};
+
+    PID pitchPID;
+    PID rollPID;
+    PID throttlePID;
+    PID yawPID;
 };
 
 // ---------------------------------------------------------------------------
-// Steering controller. Holds the PID states and the active mode.
+// Abstract base classes
+// ---------------------------------------------------------------------------
+class VerticalBehavior {
+public:
+    virtual ~VerticalBehavior() = default;
+    // Compute pstick [-1,1]. May also set out.throttle.
+    virtual double compute(const AircraftState& state, double dt,
+                           SteeringContext& ctx, PilotInput& out) = 0;
+    virtual const char* name() const = 0;
+};
+
+class HorizontalBehavior {
+public:
+    virtual ~HorizontalBehavior() = default;
+    // Compute rstick [-1,1].
+    virtual double compute(const AircraftState& state, double dt,
+                           SteeringContext& ctx) = 0;
+    virtual const char* name() const = 0;
+};
+
+class ThrottleBehavior {
+public:
+    virtual ~ThrottleBehavior() = default;
+    // Compute throttle [0, 1.5].
+    virtual double compute(const AircraftState& state, double dt,
+                           SteeringContext& ctx) = 0;
+    virtual const char* name() const = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Vertical behaviors
+// ---------------------------------------------------------------------------
+
+// AltitudeHold: unified altitude control.
+// When far from target: climb/descent mode (throttle for alt, pitch for spd).
+// When near target: level mode (pitch for alt, throttle for spd).
+// The VVI cap handles level-off automatically — no state machine needed.
+class AltitudeHold : public VerticalBehavior {
+public:
+    AltitudeHold(double targetAlt_ft, double cruiseSpeed_kts,
+                 double climbSpeed_kts = 0.0, double climbMach = 0.80, double climbPower = 1.0, 
+                 double descentSpeed_kts = 0.0, double descentMach = 0.80, double descentPower = 0.05,
+                 double levelBand_ft = 200.0);
+
+    double compute(const AircraftState& state, double dt,
+                   SteeringContext& ctx, PilotInput& out) override;
+    const char* name() const override { return "AltitudeHold"; }
+
+    void setTargetAltitude(double alt_ft) { targetAlt_ = alt_ft; }
+    void setCruiseSpeed(double kts) { cruiseSpeed_ = kts; }
+
+private:
+    double targetAlt_;
+    double cruiseSpeed_;
+    double climbSpeed_;     // 0 = same as cruise
+    double climbMach_;
+    double climbPower_;
+    double descentPower_;
+    double descentSpeed_;   // 0 = same as cruise
+    double descentMach_;
+    double levelBand_;
+};
+
+// ---------------------------------------------------------------------------
+// Horizontal behaviors
+// ---------------------------------------------------------------------------
+
+// HeadingHold: hold a specific heading
+class HeadingHold : public HorizontalBehavior {
+public:
+    explicit HeadingHold(double heading_rad) : heading_(heading_rad) {}
+    double compute(const AircraftState& state, double dt,
+                   SteeringContext& ctx) override;
+    const char* name() const override { return "HeadingHold"; }
+    void setHeading(double h) { heading_ = h; }
+private:
+    double heading_;
+};
+
+// SteerToWaypoint: fly toward waypoints, advance on capture
+class SteerToWaypoint : public HorizontalBehavior {
+public:
+    SteerToWaypoint(std::vector<Vec3> wps, double captureRadius_ft)
+        : wps_(std::move(wps)), captureRadius_(captureRadius_ft) {}
+    double compute(const AircraftState& state, double dt,
+                   SteeringContext& ctx) override;
+    const char* name() const override { return "SteerToWaypoint"; }
+    std::size_t currentWaypoint() const { return curWp_; }
+    bool allCaptured() const { return curWp_ >= wps_.size(); }
+private:
+    std::vector<Vec3> wps_;
+    double captureRadius_;
+    std::size_t curWp_{0};
+};
+
+// ---------------------------------------------------------------------------
+// Throttle behaviors
+// ---------------------------------------------------------------------------
+
+// SpeedHold: PID throttle to maintain target speed
+class SpeedHold : public ThrottleBehavior {
+public:
+    explicit SpeedHold(double targetSpeed_kts) : target_(targetSpeed_kts) {}
+    double compute(const AircraftState& state, double dt,
+                   SteeringContext& ctx) override;
+    const char* name() const override { return "SpeedHold"; }
+    void setTargetSpeed(double kts) { target_ = kts; }
+private:
+    double target_;
+};
+
+// ---------------------------------------------------------------------------
+// SteeringController — manages active behaviors and combines outputs
 // ---------------------------------------------------------------------------
 class SteeringController {
 public:
     SteeringController();
 
-    // Set the active steering mode.
-    void setMode(SteeringMode mode) noexcept { mode_ = mode; }
-    SteeringMode mode() const noexcept { return mode_; }
+    void setManualInput(const PilotInput& in) noexcept { ctx_.manual = in; }
 
-    // Set the steering goal (the high-level commands).
-    void setGoal(const SteeringGoal& goal) noexcept { goal_ = goal; }
-    const SteeringGoal& goal() const noexcept { return goal_; }
+    // Behavior management
+    void setVerticalBehavior(std::unique_ptr<VerticalBehavior> b) { vert_ = std::move(b); }
+    void setHorizontalBehavior(std::unique_ptr<HorizontalBehavior> b) { horiz_ = std::move(b); }
+    void setThrottleBehavior(std::unique_ptr<ThrottleBehavior> b) { thrott_ = std::move(b); }
 
-    // Set the waypoint sequence (for Waypoint mode).
-    void setWaypoints(const std::vector<Vec3>& wps) noexcept { waypoints_ = wps; curWp_ = 0; }
-    void advanceWaypoint() noexcept { if (curWp_ < waypoints_.size()) ++curWp_; }
-    std::size_t currentWaypointIndex() const noexcept { return curWp_; }
-    const std::vector<Vec3>& waypoints() const noexcept { return waypoints_; }
-
-    // Set the manual pilot input (used in Manual mode, and as a fallback).
-    void setManualInput(const PilotInput& in) noexcept { manual_ = in; }
-
-    // Compute the pilot input for this frame.
-    //   state   : current aircraft state (from FlightModel::state())
-    //   dt      : frame time step (seconds)
-    //   groundZ : terrain altitude at aircraft position (ft)
-    PilotInput compute(const AircraftState& state, double dt, double groundZ);
-
-    // Tunable PID accessors. Host programs can tweak these at runtime.
-    PID& pitchPID()       noexcept { return pitchPID_; }
-    PID& rollPID()        noexcept { return rollPID_; }
-    PID& throttlePID()    noexcept { return throttlePID_; }
-    PID& yawPID()         noexcept { return yawPID_; }
-    PID& altPID()         noexcept { return altPID_; }
+    // Access active behaviors (for inspection — e.g. checking waypoint index)
+    VerticalBehavior* verticalBehavior() { return vert_.get(); }
+    HorizontalBehavior* horizontalBehavior() { return horiz_.get(); }
+    ThrottleBehavior* throttleBehavior() { return thrott_.get(); }
 
     // Configuration
-    void   setMaxBankAngle_deg(double v) noexcept { maxBank_deg_ = v; }
-    double maxBankAngle_deg()   const noexcept { return maxBank_deg_; }
-    void   setMaxPitchAngle_deg(double v) noexcept { maxPitch_deg_ = v; }
-    double maxPitchAngle_deg()  const noexcept { return maxPitch_deg_; }
-    void   setWaypointCaptureRadius_ft(double v) noexcept { wpCapture_ft_ = v; }
-    double waypointCaptureRadius_ft() const noexcept { return wpCapture_ft_; }
-    void   setMaxGs(double v) noexcept { maxGs_ = v; }
-    double maxGs() const noexcept { return maxGs_; }
+    void setMaxBankAngle_deg(double v) noexcept { ctx_.maxBank_deg = v; }
+    double maxBankAngle_deg() const noexcept { return ctx_.maxBank_deg; }
+    void setMaxGs(double v) noexcept { ctx_.maxGs = v; }
+    double maxGs() const noexcept { return ctx_.maxGs; }
+
+    // PID accessors
+    PID& pitchPID()    noexcept { return ctx_.pitchPID; }
+    PID& rollPID()     noexcept { return ctx_.rollPID; }
+    PID& throttlePID() noexcept { return ctx_.throttlePID; }
+    PID& yawPID()      noexcept { return ctx_.yawPID; }
+
+    // Active behavior names
+    const char* verticalBehaviorName() const { return vert_ ? vert_->name() : "None"; }
+    const char* horizontalBehaviorName() const { return horiz_ ? horiz_->name() : "None"; }
+    const char* throttleBehaviorName() const { return thrott_ ? thrott_->name() : "None"; }
+
+    // Main compute — combines all three behaviors
+    PilotInput compute(const AircraftState& state, double dt, double groundZ);
 
 private:
-    PilotInput computeWaypoint(const AircraftState& state, double dt, double groundZ);
-    PilotInput computeHeadingAltitude(const AircraftState& state, double dt);
-    PilotInput computeApproach(const AircraftState& state, double dt);
-    PilotInput computeFormation(const AircraftState& state, double dt);
-    PilotInput computeTerrainFollow(const AircraftState& state, double dt, double groundZ);
-    PilotInput computeCombat(const AircraftState& state, double dt);
-
-    // Combine a "pitch command" (from the altitude PID) with a "speed
-    // protection" that prevents the aircraft from stalling.
-    double protectSpeed(double pitchCmd, const AircraftState& state) noexcept;
-
-    SteeringMode         mode_{SteeringMode::Manual};
-    SteeringGoal         goal_;
-    PilotInput           manual_;
-    std::vector<Vec3>    waypoints_;
-    std::size_t          curWp_{0};
-
-    PID pitchPID_;      // altitude error -> pitch stick
-    PID rollPID_;       // heading error  -> roll stick
-    PID throttlePID_;   // speed error    -> throttle
-    PID yawPID_;        // sideslip       -> rudder pedal
-    PID altPID_;        // low-level altitude -> pitch (inner loop)
-    PID speedPID_;      // speed error -> pitch (climb/descent: pitch for speed)
-
-    double maxBank_deg_{30.0};
-    double maxPitch_deg_{20.0};
-    double wpCapture_ft_{2000.0};   // waypoint capture radius (ft)
-    double maxGs_{9.0};             // aircraft max G (for G-command mapping)
-
-    // Previous-frame values for derivative computation
-    double prevAltErr_{0.0};
-    bool   hasPrevAltErr_{false};
+    SteeringContext ctx_;
+    std::unique_ptr<VerticalBehavior> vert_;
+    std::unique_ptr<HorizontalBehavior> horiz_;
+    std::unique_ptr<ThrottleBehavior> thrott_;
 };
+
+// ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
+double headingError(double setpoint, double current) noexcept;
+double turnCompensatedG(const AircraftState& state) noexcept;
+double computeMaxVVI_fpm(double altErr_ft) noexcept;
+double protectSpeed(double pitchCmd, const AircraftState& state, double maxGs) noexcept;
 
 } // namespace f4flight

@@ -4,9 +4,7 @@
 // For each aircraft, we measure:
 //   - Max level speed (at sea level and at altitude)
 //   - Rate of climb (at sea level, MIL power)
-//   - Service ceiling (altitude where climb rate drops below 500 fpm)
-//   - Stall speed (where the aircraft can no longer maintain 1 G)
-//   - Sustained turn rate (at corner speed, sea level)
+//   - (Service ceiling and sustained turn rate are tracked as future work)
 //
 // These are compared against published values from public sources (Wikipedia,
 // manufacturer specs, Jane's). The comparison is "reasonableness" — we expect
@@ -56,47 +54,49 @@ const PubSpec* findSpec(const std::string& acName) {
     return nullptr;
 }
 
-// Measure max level speed at a given altitude
-double measureMaxSpeed(FlightModel& fm, SteeringController& sc, double alt_ft, double speed_kts) {
-    SteeringGoal goal;
-    goal.hasHeading = true; goal.heading_rad = 0.0;
-    goal.hasAltitude = true; goal.altitude_ft = alt_ft;
-    goal.hasSpeed = true; goal.speed_kts = speed_kts;
-    sc.setGoal(goal);
+// Helper: set up a heading/alt/speed hold mission on the controller.
+static void setupHoldMission(SteeringController& sc,
+                             double alt_ft, double speed_kts,
+                             double heading_rad, double maxGs) {
+    sc.setMaxBankAngle_deg(30.0);
+    sc.setMaxGs(maxGs);
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
+        alt_ft, speed_kts, speed_kts, 0.80, 1.0, 0.05, speed_kts, 0.80));
+    sc.setHorizontalBehavior(std::make_unique<HeadingHold>(heading_rad));
+    sc.setThrottleBehavior(std::make_unique<SpeedHold>(speed_kts));
+}
 
+// Measure max level speed at a given altitude. Runs the model for the given
+// number of seconds at the requested throttle setting and returns the
+// final KCAS.
+static double measureMaxSpeed(FlightModel& fm, SteeringController& sc,
+                              double alt_ft, double speed_kts,
+                              double throttle, double run_sec) {
+    setupHoldMission(sc, alt_ft, speed_kts, 0.0, fm.config().geometry.maxGs);
     const double dt = 1.0 / 60.0;
-    // Run for 60 seconds to stabilize, then measure
-    for (int i = 0; i < 3600; ++i) {  // 60 seconds
+    const int steps = static_cast<int>(run_sec / dt);
+    for (int i = 0; i < steps; ++i) {
         PilotInput input = sc.compute(fm.state(), dt, 0.0);
+        input.throttle = throttle;
         fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
     }
     return fm.state().vcas;
 }
 
-// Measure rate of climb at sea level, MIL power
-double measureROC(FlightModel& fm, SteeringController& sc) {
-    // Set up: sea level, 350 kts, climbing
-    SteeringGoal goal;
-    goal.hasHeading = true; goal.heading_rad = 0.0;
-    goal.hasAltitude = true; goal.altitude_ft = 5000.0;  // target above current
-    goal.hasSpeed = true; goal.speed_kts = 350.0;
-    sc.setGoal(goal);
-
-    // Set throttle to MIL
-    PilotInput manual;
-    manual.throttle = 1.0;
-    sc.setManualInput(manual);
-
+// Measure rate of climb at sea level, MIL power. Returns fpm.
+static double measureROC(FlightModel& fm, SteeringController& sc,
+                         double targetAlt_ft, double speed_kts) {
+    setupHoldMission(sc, targetAlt_ft, speed_kts, 0.0, fm.config().geometry.maxGs);
     const double dt = 1.0 / 60.0;
-    // Run for 10 seconds and measure average climb rate
-    double alt0 = -fm.state().kin.z;
-    for (int i = 0; i < 600; ++i) {
+    const double alt0 = -fm.state().kin.z;
+    const int steps = static_cast<int>(10.0 / dt);  // 10 seconds
+    for (int i = 0; i < steps; ++i) {
         PilotInput input = sc.compute(fm.state(), dt, 0.0);
         input.throttle = 1.0;  // force MIL
         fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
     }
-    double alt1 = -fm.state().kin.z;
-    double roc_fps = (alt1 - alt0) / 10.0;  // ft/s
+    const double alt1 = -fm.state().kin.z;
+    const double roc_fps = (alt1 - alt0) / 10.0;
     return roc_fps * 60.0;  // fpm
 }
 
@@ -112,7 +112,11 @@ int main(int argc, char** argv) {
 
     AircraftConfig cfg;
     auto result = json::readFile(path, cfg);
-    if (!result.ok) { std::fprintf(stderr, "Failed to load\n"); return 1; }
+    if (!result.ok) {
+        std::fprintf(stderr, "Failed to load %s\n", path.c_str());
+        for (auto const& e : result.errors) std::fprintf(stderr, "  %s\n", e.c_str());
+        return 1;
+    }
 
     const PubSpec* spec = findSpec(acName);
 
@@ -127,10 +131,8 @@ int main(int argc, char** argv) {
     FlightModel fm;
     fm.init(cfg, 10000.0, 350.0 * KNOTS_TO_FTPSEC, 0.0, true);
     SteeringController sc;
-    sc.setMode(SteeringMode::HeadingAltitude);
-    sc.setMaxGs(cfg.geometry.maxGs);
 
-    double vcas = measureMaxSpeed(fm, sc, 10000.0, 350.0);
+    double vcas = measureMaxSpeed(fm, sc, 10000.0, 350.0, 0.7, 60.0);
     double alt = -fm.state().kin.z;
     double g = fm.state().loads.nzcgs;
     std::printf("Level flight at 10,000 ft:\n");
@@ -140,7 +142,7 @@ int main(int argc, char** argv) {
 
     // Test 2: Rate of climb
     fm.init(cfg, 1000.0, 350.0 * KNOTS_TO_FTPSEC, 0.0, true);
-    double roc = measureROC(fm, sc);
+    double roc = measureROC(fm, sc, 5000.0, 350.0);
     std::printf("\nRate of climb at sea level (MIL power):\n");
     std::printf("  ROC:      %.0f fpm\n", roc);
     if (spec) {
@@ -150,21 +152,9 @@ int main(int argc, char** argv) {
         else std::printf("  -> OUT OF RANGE\n");
     }
 
-    // Test 3: Max speed at altitude (20,000 ft, full throttle)
+    // Test 3: Max speed at altitude (20,000 ft, full AB)
     fm.init(cfg, 20000.0, 400.0 * KNOTS_TO_FTPSEC, 0.0, true);
-    // Run for 120 seconds at full throttle, holding altitude
-    SteeringGoal goal;
-    goal.hasHeading = true; goal.heading_rad = 0.0;
-    goal.hasAltitude = true; goal.altitude_ft = 20000.0;
-    goal.hasSpeed = true; goal.speed_kts = 800.0;  // try to go fast
-    sc.setGoal(goal);
-    const double dt = 1.0 / 60.0;
-    for (int i = 0; i < 7200; ++i) {  // 120 seconds
-        PilotInput input = sc.compute(fm.state(), dt, 0.0);
-        input.throttle = 1.5;  // full AB
-        fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
-    }
-    double maxVcas = fm.state().vcas;
+    double maxVcas = measureMaxSpeed(fm, sc, 20000.0, 800.0, 1.5, 120.0);
     double maxMach = fm.state().mach;
     std::printf("\nMax speed at 20,000 ft (full AB):\n");
     std::printf("  KCAS:     %.1f kts\n", maxVcas);

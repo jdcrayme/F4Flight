@@ -6,6 +6,7 @@
 #include "f4flight/eom.h"
 #include "f4flight/core/constants.h"
 #include "f4flight/core/math.h"
+#include "f4flight/core/trig.h"
 
 #include <algorithm>
 #include <cmath>
@@ -112,34 +113,11 @@ void EquationsOfMotion::trigonometry(AircraftState& state) const {
     auto& k = state.kin;
     auto& a = state.aero;
 
-    const double alp = a.alpha_deg * DTR;
-    const double bet = a.beta_deg  * DTR;
-    k.sinalp = std::sin(alp); k.cosalp = std::cos(alp);
-    k.sinbet = std::sin(bet); k.cosbet = std::cos(bet);
-
-    // Body euler trig
-    k.sinpsi = std::sin(k.psi); k.cospsi = std::cos(k.psi);
-    k.sinthe = std::sin(k.theta); k.costhe = std::cos(k.theta);
-    k.sinphi = std::sin(k.phi); k.cosphi = std::cos(k.phi);
-
-    // Velocity-vector euler from body euler + alpha/beta
-    // gamma = theta - alpha (in radians). When the nose is above the velocity
-    // vector (alpha > 0), the flight path angle is less than body pitch.
-    const double gmma = k.theta - alp * k.cosphi;
-    k.singam = std::sin(gmma);
-    k.cosgam = std::cos(gmma);
-    k.gmma = gmma;
-
-    // sigma = psi (velocity heading ~ body heading for small beta)
-    const double sigma = k.psi;
-    k.sinsig = std::sin(sigma);
-    k.cossig = std::cos(sigma);
-    k.sigma = sigma;
-
-    // mu = phi (wind-axis roll ~ body roll)
-    k.mu = k.phi;
-    k.sinmu = k.sinphi;
-    k.cosmu = k.cosphi;
+    // All sin*/cos* fields and the velocity-vector euler angles (sigma,
+    // gmma, mu) come from the shared helper. This is the exact same math
+    // that used to be inlined here; consolidating it means init() and the
+    // per-frame update can no longer drift apart.
+    recomputeKinematicTrig(k, a.alpha_deg, a.beta_deg);
 
     // Body-to-world DCM
     k.dcm = dcmFromEuler(k.psi, k.theta, k.phi);

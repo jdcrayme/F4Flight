@@ -9,6 +9,8 @@
 #include "f4flight/core/types.h"
 #include "f4flight/core/math.h"
 #include "f4flight/core/lookup.h"
+#include "f4flight/core/units.h"
+#include "f4flight/core/trig.h"
 
 #include "f4flight/atmosphere.h"
 #include "f4flight/aircraft_config.h"

@@ -50,6 +50,8 @@ set(F4FLIGHT_HEADERS
     include/f4flight/core/types.h
     include/f4flight/core/math.h
     include/f4flight/core/lookup.h
+    include/f4flight/core/units.h
+    include/f4flight/core/trig.h
     include/f4flight/atmosphere.h
     include/f4flight/aircraft_config.h
     include/f4flight/aircraft_state.h
@@ -137,6 +139,7 @@ if(F4FLIGHT_BUILD_TESTS)
         tests/test_math.cpp
         tests/test_types.cpp
         tests/test_lookup.cpp
+        tests/test_units.cpp
         tests/test_atmosphere.cpp
         tests/test_aerodynamics.cpp
         tests/test_engine.cpp
@@ -161,6 +164,26 @@ if(F4FLIGHT_BUILD_TESTS)
 
     include(GoogleTest)
     gtest_discover_tests(f4flight_tests)
+
+
+    
+    set(F4FLIGHT_MANUVER_TEST_SOURCES
+    tests/ManuverTest/maneuver_test.cpp
+    tests/ManuverTest/scenarios/scenario_basic.cpp
+    tests/ManuverTest/scenarios/scenario_flightplan.cpp
+    tests/ManuverTest/scenarios/scenario_combat.cpp
+    )
+
+    add_executable(maneuver_test ${F4FLIGHT_MANUVER_TEST_SOURCES})
+    
+    target_include_directories(maneuver_test PRIVATE tests/ManuverTest/)
+
+    target_link_libraries(maneuver_test PRIVATE f4flight)
+    if(MSVC)
+        target_compile_options(maneuver_test PRIVATE /W4 /utf-8)
+    else()
+        target_compile_options(maneuver_test PRIVATE -Wall -Wextra)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -189,14 +212,6 @@ if(F4FLIGHT_BUILD_EXAMPLES)
         target_compile_options(tune_diag PRIVATE /W4 /utf-8)
     else()
         target_compile_options(tune_diag PRIVATE -Wall -Wextra)
-    endif()
-
-    add_executable(maneuver_test examples/maneuver_test.cpp)
-    target_link_libraries(maneuver_test PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(maneuver_test PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(maneuver_test PRIVATE -Wall -Wextra)
     endif()
 
     add_executable(perf_check examples/perf_check.cpp)

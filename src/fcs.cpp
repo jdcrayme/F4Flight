@@ -26,7 +26,8 @@ double FlightControlSystem::applyLimiter(LimiterKey key, double x) const {
     if (!cfg_) return x;
     const int idx = static_cast<int>(key);
     if (idx < 0 || idx >= static_cast<int>(LimiterKey::Count)) return x;
-    return cfg_->limiters[idx].limit(x);
+    // Use the typed accessor (bounds-checked above) instead of raw array index.
+    return cfg_->limiter(key).limit(x);
 }
 
 // ---------------------------------------------------------------------------

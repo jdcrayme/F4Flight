@@ -43,21 +43,18 @@ constexpr T deadBand(T x, T band) noexcept {
 
 // Wrap angle (radians) to [-pi, +pi]. Maps +pi to +pi (not -pi).
 inline double wrapPi(double x) noexcept {
-    constexpr double TWO_PI_D = 2.0 * 3.14159265358979323846;
-    constexpr double PI_D     = 3.14159265358979323846;
-    double y = std::fmod(x + PI_D, TWO_PI_D);
-    if (y < 0.0) y += TWO_PI_D;
-    y -= PI_D;
+    double y = std::fmod(x + PI, TWO_PI);
+    if (y < 0.0) y += TWO_PI;
+    y -= PI;
     // Map the -pi boundary back to +pi so the result is in (-pi, +pi]
-    if (y <= -PI_D + 1e-15) y = PI_D;
+    if (y <= -PI + 1e-15) y = PI;
     return y;
 }
 
 // Wrap angle (radians) to [0, 2*pi).
 inline double wrap2Pi(double x) noexcept {
-    constexpr double TWO_PI_D = 2.0 * 3.14159265358979323846;
-    double y = std::fmod(x, TWO_PI_D);
-    if (y < 0.0) y += TWO_PI_D;
+    double y = std::fmod(x, TWO_PI);
+    if (y < 0.0) y += TWO_PI;
     return y;
 }
 

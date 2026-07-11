@@ -18,6 +18,7 @@ int main(int argc, char** argv) {
         auto result = json::readFile(argv[1], cfg);
         if (!result.ok) {
             std::fprintf(stderr, "Failed to load %s\n", argv[1]);
+            for (auto const& e : result.errors) std::fprintf(stderr, "  %s\n", e.c_str());
             return 1;
         }
     } else {
@@ -28,19 +29,15 @@ int main(int argc, char** argv) {
     FlightModel fm;
     fm.init(cfg, 10000.0, 350.0 * KNOTS_TO_FTPSEC, 0.0, true);
 
+    // Compose the same heading/alt/speed hold mission using the current
+    // behavior API. This replaces the legacy setMode/setGoal calls.
     SteeringController sc;
-    sc.setMode(SteeringMode::HeadingAltitude);
     sc.setMaxBankAngle_deg(30.0);
     sc.setMaxGs(cfg.geometry.maxGs);
-
-    SteeringGoal goal;
-    goal.hasHeading = true;
-    goal.heading_rad = 0.0;
-    goal.hasAltitude = true;
-    goal.altitude_ft = 10000.0;
-    goal.hasSpeed = true;
-    goal.speed_kts = 350.0;
-    sc.setGoal(goal);
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
+        10000.0, 350.0, 350.0, 0.80, 1.0, 0.05, 350.0, 0.80));
+    sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
+    sc.setThrottleBehavior(std::make_unique<SpeedHold>(350.0));
 
     std::printf("=== Tuning diagnostic: %s ===\n", cfg.name.c_str());
     std::printf("Goal: alt=10000ft, hdg=0deg, spd=350kts\n\n");
