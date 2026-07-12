@@ -56,7 +56,7 @@ TEST_F(FcsTest, UpdateProducesAlpha) {
     state.aero.gearPos = 0.0;
 
     fcs_.update(0.1, 100.0, 100.0 * 300.0 / 700.0, 0.5, 500.0, 300.0,
-                5.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, true, 1.0, 0.0,
+                5.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, true, 1.0, 0.0,
                 false, false, false, input, state.fcs, state.aero);
     // Pulling back should produce positive alpha command
     EXPECT_GT(state.fcs.aoacmd, 0.0);
@@ -74,7 +74,7 @@ TEST_F(FcsTest, RollRateCommanded) {
     state.aero.cnalpha = 0.5;
 
     fcs_.update(0.1, 100.0, 100.0 * 300.0 / 700.0, 0.5, 500.0, 300.0,
-                0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, true, 1.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, true, 1.0, 0.0,
                 false, false, false, input, state.fcs, state.aero);
 
     // Full right stick should produce a positive roll-rate command
@@ -94,7 +94,7 @@ TEST_F(FcsTest, StickShapingQuadratic) {
     state.aero.cnalpha = 0.5;
 
     fcs_.update(0.1, 100.0, 100.0 * 300.0 / 700.0, 0.5, 500.0, 300.0,
-                5.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, true, 1.0, 0.0,
+                5.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, true, 1.0, 0.0,
                 false, false, false, input, state.fcs, state.aero);
     // pshape = stick^2 * sign = 0.5^2 = 0.25
     EXPECT_NEAR(state.fcs.pshape, 0.25, 1e-6);

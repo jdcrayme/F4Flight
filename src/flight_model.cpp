@@ -241,7 +241,7 @@ void FlightModel::minorStep(double dt, const PilotInput& input) {
     fcs_.update(dt, state_.qbar, state_.qsom, state_.mach, state_.kin.vt,
                 state_.vcas, state_.aero.alpha_deg, state_.aero.beta_deg,
                 state_.kin.cosmu, state_.kin.cosgam, state_.kin.singam,
-                state_.kin.costhe, state_.kin.cosphi,
+                state_.kin.costhe, state_.kin.cosphi, state_.kin.phi,
                 state_.fuel.loadingFraction, state_.gear.inAir,
                 state_.loads.nzcgs, state_.loads.nycgw,
                 gearDown, input.refueling, gearDown,

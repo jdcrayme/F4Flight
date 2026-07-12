@@ -48,6 +48,14 @@ struct DigiState {
     double yPedal{0.0};
     double throttle{0.5};  // current throttle command [0, 1.5]
 
+    // Time step for frame-rate-independent smoothing/integration.
+    // Set by SteeringController::compute() each frame. FreeFalcon's digi AI
+    // runs at the major-frame rate (default 16.67 Hz = 0.06s). F4Flight calls
+    // the AI at 60 Hz. The smoothing constants and integral gains below are
+    // derived from FreeFalcon's 0.06s constants, scaled by this dt so they
+    // produce the same time constants regardless of call rate.
+    double dt{1.0/60.0};
+
     // GammaHold integral
     double gammaHoldIError{0.0};
 
@@ -68,6 +76,10 @@ struct DigiState {
     double maxGs{9.0};
     double maxRoll{30.0};       // deg
     double maxRollDelta{5.0};   // deg
+    // GammaHold clamp. FreeFalcon hardcodes 60° (mnvers.cpp:844). For AI
+    // navigation a lower value (e.g. 20°) prevents the zoom-climb stall that
+    // otherwise occurs when a large altitude error saturates the clamp.
+    double maxGammaDeg{60.0};
 
     void reset() noexcept {
         pStick = rStick = yPedal = 0.0;
@@ -139,10 +151,11 @@ public:
     //   Returns: true if within 25 ft of target
     //
     // Updates: digi.pStick, digi.rStick, digi.yPedal
+    // Writes: fcsState.maxRoll (set to 0 for wings-level)
     static bool AltitudeHold(double desAlt, DigiState& digi,
                              const AircraftState& state,
                              const FlightControlSystem& fcs,
-                             const FcsState& fcsState, double maxGs);
+                             FcsState& fcsState, double maxGs);
 
     // HeadingAndAltitudeHold — hold heading + altitude.
     // Direct port of DigitalBrain::HeadingAndAltitudeHold (mnvers.cpp:786-835).
@@ -152,10 +165,11 @@ public:
     //   Returns: true if within tolerance
     //
     // Updates: digi.pStick, digi.rStick, digi.yPedal
+    // Writes: fcsState.maxRoll, fcsState.maxRollDelta (wings-level branch)
     static bool HeadingAndAltitudeHold(double desPsi, double desAlt,
                                        DigiState& digi, const AircraftState& state,
                                        const FlightControlSystem& fcs,
-                                       const FcsState& fcsState, double maxGs);
+                                       FcsState& fcsState, double maxGs);
 
     // LevelTurn — turn to a heading at a specified load factor.
     // Direct port of DigitalBrain::LevelTurn (mnvers.cpp:713-757).
@@ -165,10 +179,11 @@ public:
     //   newTurn: true if starting a new turn (resets gamma integral)
     //
     // Updates: digi.pStick, digi.rStick, digi.yPedal, digi.trackMode
+    // Writes: fcsState.maxRoll, fcsState.maxRollDelta, fcsState.startRoll
     static void LevelTurn(double loadFactor, double turnDir, bool newTurn,
                           DigiState& digi, const AircraftState& state,
                           const FlightControlSystem& fcs,
-                          const FcsState& fcsState, double maxGs);
+                          FcsState& fcsState, double maxGs);
 
     // MachHold — hold a target speed via throttle.
     // Direct port of DigitalBrain::MachHold (mnvers.cpp:414-665).
@@ -176,20 +191,43 @@ public:
     //   targetSpeed: desired speed in knots
     //   currentSpeed: current speed in knots
     //   adjustPitch: if true, add pStick/15 to throttle (pitch-throttle coupling)
+    //   dt: time step (seconds) — used for frame-rate-independent integral gain
     //
     // Returns: true if within 10% of target speed
     //
     // Updates: digi.autoThrottle
     // Output: throttle [0, 1.5]
+    //
+    // Notes on the port (vs. FreeFalcon mnvers.cpp:414-665):
+    //   * FreeFalcon's g_f* / g_b* tunables are inlined with their default
+    //     values (g_fFuelBaseProp=100, g_fFuelMultProp=0.008, g_fFuelTimeStep=
+    //     0.001, g_fFuelVtClip=5.0, g_fFuelVtDotMult=5.0,
+    //     g_bFuelLimitBecauseVtDot=true, g_fePropFactor=40.0).
+    //   * burnerDelta defaults to 500.0 (non-combat / non-Wingy non-Waypoint
+    //     mode). FreeFalcon uses 100 for combat modes, 500 for non-combat,
+    //     and g_fWaypointBurnerDelta (700) for Wingy/Waypoint. Callers can
+    //     override via the burnerDelta parameter.
+    //   * VtDot comes from state.vtDot (ft/s^2), set by the EOM. The previous
+    //     F4Flight port used state.netAccel * 60, which was frame-rate-coupled
+    //     and only correct at 60 Hz.
+    //   * The skill-level pStick scaling (HoldCorner block, mnvers.cpp:570-607)
+    //     is omitted — it only applies when targetPtr is set (combat with a
+    //     target), which the maneuver-test framework does not exercise.
+    //   * The IRCM throttle limiter (mnvers.cpp:620-642) is omitted — it only
+    //     applies in MissileEngage/Guns/WVR modes.
+    //   * The formation-lead throttle limiter (mnvers.cpp:513-564) is omitted
+    //     — it requires flightLead tracking, which the maneuver-test framework
+    //     does not exercise.
     static bool MachHold(double targetSpeed, double currentSpeed, bool adjustPitch,
                          DigiState& digi, const AircraftState& state,
-                         double minVcas, double maxVcas);
+                         double minVcas, double maxVcas,
+                         double dt, double burnerDelta = 500.0);
 
     // Loiter — orbit pattern.
     // Direct port of DigitalBrain::Loiter (mnvers.cpp:667+).
     static void Loiter(DigiState& digi, const AircraftState& state,
                        const FlightControlSystem& fcs,
-                       const FcsState& fcsState, double maxGs);
+                       FcsState& fcsState, double maxGs);
 
     // Constants for commandType (match FreeFalcon AirframeClass flags)
     static constexpr int ErrorCommand = 0;
@@ -231,6 +269,7 @@ public:
     void setMaxGs(double g) { digi_.maxGs = g; }
     void setMaxBank(double bank_deg) { digi_.maxRoll = bank_deg; }
     void setCornerSpeed(double kts) { digi_.cornerSpeed = kts; }
+    void setMaxGamma(double gamma_deg) { digi_.maxGammaDeg = gamma_deg; }
     void setManualInput(const PilotInput& in) { manual_ = in; }
 
     // Accessors
@@ -242,9 +281,12 @@ public:
     DigiState&       digiState()       { return digi_; }  // for tests / hosts
 
     // Main compute — produces PilotInput from the current state + mode.
-    // Requires the FCS state (for kr01, tr01 used by SetRstick).
+    // Requires the FCS state (for kr01, tr01 used by SetRstick, and to write
+    // maxRoll / maxRollDelta / startRoll used by the FCS RollIt limiting).
+    // fcsState is non-const because the steering layer's SetMaxRoll /
+    // SetMaxRollDelta calls write to it (matching FreeFalcon's af->SetMaxRoll).
     PilotInput compute(const AircraftState& state, double dt, double groundZ,
-                       const FlightControlSystem& fcs, const FcsState& fcsState);
+                       const FlightControlSystem& fcs, FcsState& fcsState);
 
     // Reset all digi state (call between independent test phases)
     void reset() noexcept { digi_.reset(); curWp_ = 0; }
@@ -259,7 +301,7 @@ private:
 
     // Waypoint following (simplified GoToCurrentWaypoint)
     void runWaypoint(const AircraftState& state, double dt,
-                     const FlightControlSystem& fcs, const FcsState& fcsState,
+                     const FlightControlSystem& fcs, FcsState& fcsState,
                      PilotInput& out);
 };
 

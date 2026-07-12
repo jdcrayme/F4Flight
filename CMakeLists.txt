@@ -174,12 +174,12 @@ if(F4FLIGHT_BUILD_TESTS)
     # ----- maneuver tests -----
     set(F4FLIGHT_MANEUVER_TEST_SOURCES
         tests/maneuver/maneuver_test.cpp
-        tests/maneuver/scenarios/scenario_basic.cpp
-        tests/maneuver/scenarios/scenario_flightplan.cpp
-        tests/maneuver/scenarios/scenario_combat.cpp
-        tests/maneuver/scenarios/scenario_glimits.cpp
-        tests/maneuver/scenarios/scenario_engine.cpp
-        tests/maneuver/scenarios/scenario_roll.cpp
+        tests/maneuver/scenarios/scenario_ai_basic.cpp
+        tests/maneuver/scenarios/scenario_ai_flightplan.cpp
+        tests/maneuver/scenarios/scenario_ai_cruise.cpp
+        tests/maneuver/scenarios/scenario_fcs_glimits.cpp
+        tests/maneuver/scenarios/scenario_fcs_engine.cpp
+        tests/maneuver/scenarios/scenario_fcs_roll.cpp
     )
 
     add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
@@ -203,12 +203,12 @@ if(F4FLIGHT_BUILD_TESTS)
     # failing. The maneuver_test runner returns non-zero if any phase fails
     # (see maneuver_test.cpp), so ctest now sees real phase-level results.
     set(F4FLIGHT_MANEUVER_SCENARIOS
-        basic
-        flightplan
-        combat
-        glimits
-        engine
-        roll
+        ai_basic
+        ai_flightplan
+        ai_cruise
+        fcs_glimits
+        fcs_engine
+        fcs_roll
     )
     foreach(fixture ${F4FLIGHT_FIXTURES})
         get_filename_component(ac_name "${fixture}" NAME_WE)

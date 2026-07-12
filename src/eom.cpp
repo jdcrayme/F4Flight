@@ -93,6 +93,12 @@ void EquationsOfMotion::calcBodyRates(double dt, double qsom, double cnalpha,
     k.p = limit(k.p, -4.5, 4.5);
     k.q = limit(k.q, -3.0, 3.0);
     k.r = limit(k.r, -4.0, 4.0);
+
+    // FreeFalcon eom.cpp:810: integrate roll rate into startRoll for the
+    // FCS RollIt() damping term (1 - startRoll/maxRollDelta). startRoll is
+    // NOT reset here — the steering layer resets it via SetMaxRollDelta when
+    // starting a new turn.
+    state.fcs.startRoll += k.p * dt;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +168,8 @@ void EquationsOfMotion::calculateVt(double dt, double muFric, double singam,
     if (state.gear.inAir) {
         const double newVt = k.vt + vtDot * dt;
         k.vt = (std::fabs(newVt) > 1e-3) ? newVt : 0.01;
-        state.netAccel = vtDot * dt;
+        state.vtDot    = vtDot;          // ft/s^2 (true airspeed rate)
+        state.netAccel = vtDot * dt;     // ft/s, per-frame delta-Vt (legacy field)
     } else {
         // Ground: friction
         const double nzcgs = state.loads.nzcgs;
@@ -171,6 +178,7 @@ void EquationsOfMotion::calculateVt(double dt, double muFric, double singam,
         double netAccel = vtDot * dt - fric;
         double newVt = k.vt + netAccel;
         if (newVt < 0.0) newVt = 0.0;
+        state.vtDot    = netAccel / std::max(dt, 1e-6);  // effective accel incl. friction
         state.netAccel = netAccel;
         k.vt = newVt;
     }

@@ -42,13 +42,21 @@ double turnCompensatedG(const AircraftState& state) noexcept {
     return 1.0 / cosphi;
 }
 
+// FreeFalcon major-frame time constant for stick smoothing.
+// Derived from: 0.2*old + 0.8*new at T=0.06s → tau = -T/ln(0.2) = 0.0373s
+static inline double stickSmoothAlpha(double dt) {
+    constexpr double kTau = 0.0373;  // seconds
+    return 1.0 - std::exp(-dt / kTau);
+}
+
 // Helper: compute rstick from roll error using FCS gains
 // Frame-rate-scaled smoothing (same time constant as SetPstick)
 static inline double computeRstick(double rollErr_deg, double kr01, double tr01,
-                                   double currentRstick) {
+                                   double currentRstick, double dt) {
     const double denom = std::max(kr01 * tr01, 0.1);
     const double stickCmd = rollErr_deg * DTR * 0.75 / denom;
-    return 0.852 * currentRstick + 0.148 * stickCmd;
+    const double a = stickSmoothAlpha(dt);
+    return (1.0 - a) * currentRstick + a * stickCmd;
 }
 
 // Helper: limit roll error based on current roll vs max roll
@@ -64,6 +72,17 @@ static inline double limitRollError(double rollErr, double rollDeg, double maxRo
 
 // ===========================================================================
 // DigiAI — core steering functions
+//
+// Frame-rate calibration:
+//   FreeFalcon's digi AI runs at the major-frame rate (default 0.06s = 16.67 Hz).
+//   Its smoothing constants (0.2*old + 0.8*new) and integral gains (0.0025*...)
+//   are tuned for that rate. F4Flight calls the AI at 60 Hz (or whatever the
+//   host's dt is). To preserve the same time constants, we compute alpha from
+//   the FreeFalcon tau and the actual dt:
+//     tau = -0.06 / ln(0.2) = 0.0373 s
+//     alpha = 1 - exp(-dt / tau)
+//   At dt=1/60: alpha = 0.360, so y = 0.640*old + 0.360*new.
+//   (Previously we used 0.852/0.148 which was calibrated for 6 Hz — wrong.)
 // ===========================================================================
 
 void DigiAI::SetPstick(double pitchError, double gLimit, int commandType,
@@ -99,34 +118,41 @@ void DigiAI::SetPstick(double pitchError, double gLimit, int commandType,
     stickFact = std::max(0.0, stickFact);
     stickCmd *= stickFact;
 
-    // Smooth: FreeFalcon uses 0.2*old + 0.8*new at ~6 Hz major frame rate.
-    // At 60 Hz we need to scale the smoothing to match the same time constant.
-    // tau = -(1/6)/ln(0.2) ≈ 0.104 s
-    // At 60 Hz: alpha = 1 - exp(-(1/60)/0.104) ≈ 0.148
-    // So: y = 0.852*old + 0.148*new
-    digi.pStick = 0.852 * digi.pStick + 0.148 * stickCmd;
+    // Frame-rate-independent smoothing (matches FreeFalcon's 0.2/0.8 at 16.67 Hz)
+    const double a = stickSmoothAlpha(digi.dt);
+    digi.pStick = (1.0 - a) * digi.pStick + a * stickCmd;
 }
 
 void DigiAI::SetRstick(double rollError, DigiState& digi,
                        const FlightControlSystem& /*fcs*/,
                        const FcsState& fcsState) {
-    // This overload is kept for API compatibility but the actual roll-limiting
-    // requires the aircraft state. Use the inline version in the calling code.
     const double kr01 = fcsState.kr01;
     const double tr01 = fcsState.tr01;
     const double denom = std::max(kr01 * tr01, 0.1);
     const double stickCmd = rollError * DTR * 0.75 / denom;
-    digi.rStick = 0.2 * digi.rStick + 0.8 * stickCmd;
+    const double a = stickSmoothAlpha(digi.dt);
+    digi.rStick = (1.0 - a) * digi.rStick + a * stickCmd;
 }
 
 void DigiAI::SetYpedal(double yawError, DigiState& digi) {
-    digi.yPedal = 0.2 * digi.yPedal - 0.8 * yawError * RTD * 0.0125;
+    const double a = stickSmoothAlpha(digi.dt);
+    // FreeFalcon: yPedal = 0.2*yPedal - 0.8*yawError*RTD*0.0125
+    // The "new value" being smoothed is -yawError*RTD*0.0125
+    const double newVal = -yawError * RTD * 0.0125;
+    digi.yPedal = (1.0 - a) * digi.yPedal + a * newVal;
 }
 
 void DigiAI::GammaHold(double desGamma, DigiState& digi,
                        const AircraftState& state, double maxGs) {
-    // Clamp desired gamma to ±60°
-    desGamma = std::max(std::min(desGamma, 60.0), -60.0);
+    // Clamp desired gamma. FreeFalcon clamps to +/- 60° (mnvers.cpp:844),
+    // matching the F-16 dash-one autopilot attitude-hold envelope. For AI
+    // navigation (climb/descent between waypoints) that envelope is too
+    // aggressive — a 10000-ft altitude error saturates the clamp and the
+    // aircraft zooms to 60° pitch, bleeds airspeed, and stalls. We expose
+    // the clamp via DigiState::maxGammaDeg (default 60° to match FreeFalcon)
+    // so callers can request a more conservative envelope for navigation.
+    const double maxGam = std::max(1.0, digi.maxGammaDeg);
+    desGamma = std::max(std::min(desGamma, maxGam), -maxGam);
 
     // Gamma error (degrees)
     double elevCmd = desGamma - state.kin.gmma * RTD;
@@ -144,22 +170,49 @@ void DigiAI::GammaHold(double desGamma, DigiState& digi,
     else
         elevCmd *= -elevCmd;
 
-    // Integral (very small gain).
-    // FreeFalcon runs at ~6 Hz; at 60 Hz scale by dt*6 to match.
-    digi.gammaHoldIError += 0.0025 * elevCmd * 6.0 * (1.0/60.0);
-    digi.gammaHoldIError = std::max(std::min(digi.gammaHoldIError, 1.0), -1.0);
-
     // G command = integral + proportional + gravity compensation
     double gammaCmd = digi.gammaHoldIError + elevCmd + (1.0 / std::max(0.1, state.kin.cosphi));
 
-    // Clamp and command
-    SetPstick(std::max(std::min(gammaCmd, 6.5), -2.0), maxGs, GCommand,
-              digi, state);
+    // Clamp G command to the FreeFalcon envelope [-2, 6.5].
+    const double gammaCmdClamped = std::max(std::min(gammaCmd, 6.5), -2.0);
+
+    // Integral with leaky integration.
+    //
+    // FreeFalcon's GammaHold (mnvers.cpp:857) uses a pure integrator:
+    //   gammaHoldIError += 0.0025 * elevCmd  (per 0.06s major frame)
+    // This works at FreeFalcon's 16.67 Hz AI rate, but at F4Flight's 60 Hz
+    // the integral winds up to ±1.0 during the initial gamma capture (when
+    // the squared elevCmd is 15+) and then takes 5+ seconds to unwind,
+    // driving a persistent ±5G porpoising oscillation.
+    //
+    // Fix: make the integrator leaky with a 10-second time constant. This
+    // allows the integral to provide trim for sustained climbs (it builds
+    // up when elevCmd is sustained) but prevents it from persisting after
+    // the gamma error is gone (it decays at 10% per second). The leak rate
+    // is chosen to be slow enough that it doesn't affect steady-state trim
+    // but fast enough to kill the porpoising within 2-3 oscillation cycles.
+    //
+    // leak rate = 1 - exp(-dt / 10.0) ≈ dt/10 for small dt
+    constexpr double kIntegralTau = 10.0;  // seconds
+    const double leakFactor = std::exp(-digi.dt / kIntegralTau);
+    digi.gammaHoldIError = digi.gammaHoldIError * leakFactor
+                         + 0.0025 * elevCmd * (digi.dt / 0.06);
+    digi.gammaHoldIError = std::max(std::min(digi.gammaHoldIError, 1.0), -1.0);
+
+    SetPstick(gammaCmdClamped, maxGs, GCommand, digi, state);
 }
 
 void DigiAI::AltHold(double desAlt, DigiState& digi, const AircraftState& state,
                      double maxGs) {
-    double alterr = desAlt - (-state.kin.z);
+    // FreeFalcon autopilot.cpp:332-333:
+    //   alterr = currAlt + self->ZPos();
+    //   alterr -= self->ZDelta();
+    // ZPos() is negative altitude (world Z-down), ZDelta() is world Z velocity
+    // (ft/s, negative when climbing). Subtracting ZDelta provides derivative
+    // (lead) damping that prevents the porpoising the F4Flight port previously
+    // exhibited. state.kin.zdot has identical sign/magnitude semantics to
+    // ZDelta().
+    double alterr = (desAlt + state.kin.z) - state.kin.zdot;
 
     double abs_alterr = std::fabs(alterr);
     double gain;
@@ -178,15 +231,25 @@ void DigiAI::AltHold(double desAlt, DigiState& digi, const AircraftState& state,
 bool DigiAI::AltitudeHold(double desAlt, DigiState& digi,
                           const AircraftState& state,
                           const FlightControlSystem& /*fcs*/,
-                          const FcsState& fcsState, double maxGs) {
+                          FcsState& fcsState, double maxGs) {
     SetYpedal(0.0, digi);
 
     // Wings level: rstick = -roll * 2 * RTD
     double rollDeg = state.kin.phi * RTD;
     double rollErr = limitRollError(-rollDeg * 2.0, rollDeg, digi.maxRoll);
-    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick);
+    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
-    double alterr = desAlt - (-state.kin.z);
+    // FreeFalcon mnvers.cpp:766: SetMaxRoll(0.0F) — tell the FCS RollIt loop
+    // to limit phi to 0° (wings level). Without this, the FCS has no inner-
+    // loop roll limit and the wings-level proportional controller limit-
+    // cycles (bank slowly diverges to ±90°).
+    fcsState.maxRoll = 0.0;
+
+    // FreeFalcon mnvers.cpp:769-781:
+    //   alterr = desAlt + self->ZPos();
+    //   alterr -= self->ZDelta();
+    // The -ZDelta term is derivative damping (lead compensation).
+    double alterr = (desAlt + state.kin.z) - state.kin.zdot;
     bool retval = (std::fabs(alterr) < 25.0);
 
     GammaHold(alterr * 0.015, digi, state, maxGs);
@@ -196,7 +259,7 @@ bool DigiAI::AltitudeHold(double desAlt, DigiState& digi,
 bool DigiAI::HeadingAndAltitudeHold(double desPsi, double desAlt,
                                     DigiState& digi, const AircraftState& state,
                                     const FlightControlSystem& fcs,
-                                    const FcsState& fcsState, double maxGs) {
+                                    FcsState& fcsState, double maxGs) {
     double psiErr = headingError(desPsi, state.kin.sigma);
 
     SetYpedal(0.0, digi);
@@ -206,9 +269,29 @@ bool DigiAI::HeadingAndAltitudeHold(double desPsi, double desAlt,
         // Near heading: wings level + altitude hold
         double rollDeg = state.kin.phi * RTD;
         double rollErr = limitRollError(-rollDeg * 2.0, rollDeg, digi.maxRoll);
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick);
+        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
-        double altErr = desAlt - (-state.kin.z);
+        // FreeFalcon mnvers.cpp:805-806:
+        //   SetMaxRoll(0.0F);
+        //   SetMaxRollDelta(-self->Roll() * 2.0F * RTD);
+        // Tell the FCS RollIt loop to limit phi to 0° (wings level), and
+        // scale the roll-rate damping by 2x the current roll angle so the
+        // aircraft decelerates its roll rate as it approaches level.
+        // NOTE: FreeFalcon does NOT reset startRoll here. startRoll
+        // accumulates indefinitely (eom.cpp:810). The damping term
+        // 1 - startRoll/maxRollDelta would eventually go negative, but
+        // FreeFalcon's units mismatch (startRoll in rad, maxRollDelta in
+        // deg) keeps it near 1.0. We mirror that behavior — do NOT reset
+        // startRoll here.
+        fcsState.maxRoll = 0.0;
+        fcsState.maxRollDelta = std::fabs(rollDeg * 2.0);
+        if (fcsState.maxRollDelta < 5.0) fcsState.maxRollDelta = 5.0;
+
+        // FreeFalcon mnvers.cpp:809-817:
+        //   altErr = desAlt + self->ZPos();
+        //   altErr -= self->ZDelta();
+        // The -ZDelta term is derivative damping.
+        double altErr = (desAlt + state.kin.z) - state.kin.zdot;
         if (std::fabs(altErr) < 25.0) retval = true;
         GammaHold(altErr * 0.015, digi, state, maxGs);
     } else {
@@ -222,7 +305,7 @@ bool DigiAI::HeadingAndAltitudeHold(double desPsi, double desAlt,
 void DigiAI::LevelTurn(double loadFactor, double turnDir, bool newTurn,
                        DigiState& digi, const AircraftState& state,
                        const FlightControlSystem& /*fcs*/,
-                       const FcsState& fcsState, double maxGs) {
+                       FcsState& fcsState, double maxGs) {
     if (newTurn) {
         digi.gammaHoldIError = 0.0;
         digi.trackMode = 0;
@@ -232,13 +315,25 @@ void DigiAI::LevelTurn(double loadFactor, double turnDir, bool newTurn,
         // Phase 2: banked turn
         double edroll = std::atan(std::sqrt(std::max(0.0, loadFactor * loadFactor - 1.0)));
         digi.maxRollDelta = edroll * RTD;
+        // FreeFalcon mnvers.cpp:729-730: ResetMaxRoll() + SetMaxRollDelta(edroll*RTD).
+        // ResetMaxRoll restores maxRoll to the vehicle's default (80° here),
+        // which disables the hard phi-limit in RollIt (the turn target is
+        // enforced by the roll-error P-controller instead). maxRollDelta is
+        // set to the target bank angle so the FCS damps the roll rate as the
+        // aircraft approaches edroll.
+        fcsState.maxRoll = 80.0;  // "no limit" sentinel
+        fcsState.maxRollDelta = edroll * RTD;
+        if (newTurn) fcsState.startRoll = 0.0;
         edroll = edroll * turnDir - state.kin.mu;
 
         double rollErr = edroll * RTD * 2.50;
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick);
+        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
         if (std::fabs(edroll) < 5.0 * DTR || digi.trackMode == 2) {
-            double alterr = (digi.holdAlt - (-state.kin.z)) * 0.015;
+            // FreeFalcon mnvers.cpp:737:
+            //   alterr = (holdAlt + self->ZPos() - self->ZDelta()) * 0.015F;
+            // The -ZDelta term is derivative damping.
+            double alterr = ((digi.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
             GammaHold(alterr, digi, state, maxGs);
             digi.trackMode = 2;
         } else {
@@ -247,8 +342,12 @@ void DigiAI::LevelTurn(double loadFactor, double turnDir, bool newTurn,
     } else {
         // Phase 1: level wings
         double rollErr = -state.kin.phi * RTD;
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick);
+        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
+        // FreeFalcon mnvers.cpp:747-748: SetMaxRoll(0) + SetMaxRollDelta(5°).
+        // While leveling the wings before the turn, limit phi to 0°.
+        fcsState.maxRoll = 0.0;
+        fcsState.maxRollDelta = 5.0;
         digi.maxRoll = 0.0;
         digi.maxRollDelta = 5.0 * RTD;
 
@@ -263,71 +362,127 @@ void DigiAI::LevelTurn(double loadFactor, double turnDir, bool newTurn,
     SetYpedal(0.0, digi);
 }
 
+// MachHold — direct port of DigitalBrain::MachHold (mnvers.cpp:414-665),
+// reduced to the non-combat path (no targetPtr, no flightLead, no IRCM).
+//
+// Defaults inlined from FreeFalcon's g_f* / g_b* config (f4config.cpp):
+//   g_fFuelBaseProp      = 100.0
+//   g_fFuelMultProp      = 0.008
+//   g_fFuelTimeStep      = 0.001
+//   g_fFuelVtClip        = 5.0
+//   g_fFuelVtDotMult     = 5.0
+//   g_bFuelLimitBecauseVtDot = true
+//   g_fePropFactor       = 40.0   (only used in the curMaxStoreSpeed branch)
+//
+// burnerDelta defaults to 500.0 (non-combat). Callers can pass 700.0 for
+// Wingy/Waypoint mode or 100.0 for combat modes.
+//
+// Key fixes vs. the previous F4Flight port:
+//   1. Uses state.vtDot (ft/s^2, set by EOM) instead of state.netAccel * 60,
+//      which was frame-rate-coupled and only correct at 60 Hz.
+//   2. Uses g_fFuelVtDotMult = 5.0 (not 0.1) — 50x larger derivative gain.
+//   3. Integral gain is now 0.001 * dt per call (frame-rate-independent);
+//      previously 0.001 * 6.0 * (1/60) = 0.0001, which is 6x too large at
+//      60 Hz and wrong at any other rate.
+//   4. Adds g_bFuelLimitBecauseVtDot anti-windup: zeroes the integral when
+//      it opposes the proportional error sign.
+//   5. Adds the g_fePropFactor subtraction in the curMaxStoreSpeed branch.
 bool DigiAI::MachHold(double targetSpeed, double currentSpeed, bool adjustPitch,
                       DigiState& digi, const AircraftState& state,
-                      double minVcas, double maxVcas) {
+                      double minVcas, double maxVcas,
+                      double dt, double burnerDelta) {
+    // --- FreeFalcon defaults (f4config.cpp) ---
+    constexpr double kFuelBaseProp      = 100.0;
+    constexpr double kFuelMultProp      = 0.008;
+    constexpr double kFuelTimeStep      = 0.001;
+    constexpr double kFuelVtClip        = 5.0;
+    constexpr double kFuelVtDotMult     = 5.0;
+    constexpr bool   kLimitBecauseVtDot = true;
+    constexpr double kEPropFactor       = 40.0;
+
     double eProp = targetSpeed - currentSpeed;
 
+    // Clamp target into [minVcas, maxVcas - 20].
+    // FreeFalcon also subtracts g_fePropFactor from eProp when clamping to
+    // curMaxStoreSpeed (mnvers.cpp:440). We mirror that here.
     if (targetSpeed < minVcas) {
         targetSpeed = minVcas;
         eProp = targetSpeed - currentSpeed;
     }
     if (targetSpeed > maxVcas - 20.0) {
         targetSpeed = maxVcas - 20.0;
-        eProp = targetSpeed - currentSpeed;
+        eProp = targetSpeed - currentSpeed - kEPropFactor;
     }
 
     double thr;
     if (eProp < -100.0) {
+        // Idle + speed brakes (we don't command speed brakes here; F4Flight
+        // does not have an AI-driven speed brake channel).
         thr = 0.0;
     } else if (eProp < -50.0) {
+        // Idle
         thr = 0.0;
     } else {
-        double burnerDelta = 500.0;
         if (eProp >= burnerDelta) {
+            // Full afterburner
             thr = 1.5;
         } else {
-            thr = (eProp + 100.0) * 0.008;
-            // Use netAccel (ft/s^2 per frame) as a proxy for VtDot
-            double usedVtDot = state.netAccel * 60.0;  // convert to ft/s^2 per second
-            if (usedVtDot > 5.0) usedVtDot = 5.0;
-            else if (usedVtDot < -5.0) usedVtDot = -5.0;
+            // Linear throttle + VtDot-aware integral
+            double usedVtDot = state.vtDot;
+            if (usedVtDot >  kFuelVtClip) usedVtDot =  kFuelVtClip;
+            else if (usedVtDot < -kFuelVtClip) usedVtDot = -kFuelVtClip;
 
-            digi.autoThrottle += (eProp - usedVtDot * 0.1) * 0.001 * 6.0 * (1.0/60.0);
+            thr = (eProp + kFuelBaseProp) * kFuelMultProp;
+            digi.autoThrottle += (eProp - usedVtDot * kFuelVtDotMult)
+                                 * kFuelTimeStep * dt;
+
+            // g_bFuelLimitBecauseVtDot anti-windup: don't let the integral
+            // oppose the proportional error sign.
+            if (kLimitBecauseVtDot) {
+                if (eProp > 0.0 && digi.autoThrottle < 0.0)
+                    digi.autoThrottle = 0.0;
+                else if (eProp < 0.0 && digi.autoThrottle > 0.0)
+                    digi.autoThrottle = 0.0;
+            }
+
             digi.autoThrottle = std::max(std::min(digi.autoThrottle, 1.5), -1.5);
             thr += digi.autoThrottle;
+
+            // No afterburner in non-combat modes (mnvers.cpp:521-564). Cap at
+            // 0.99 to keep the engine in MIL.
             thr = std::min(thr, 0.99);
         }
     }
 
+    // Pitch-throttle coupling
     if (adjustPitch) {
         thr += std::fabs(digi.pStick) / 15.0;
     }
 
     thr = std::max(std::min(thr, 1.5), 0.0);
 
-    // Store the final throttle in a separate field (not autoThrottle, which
-    // is the integral term). We use pStick as a proxy for "the throttle output"
-    // since DigiState doesn't have a dedicated throttle field.
-    // Actually, we need to add one. For now, use a static — this is a
-    // temporary hack that will be fixed when DigiState gets a throttle field.
-    // TODO: add throttle field to DigiState
-    digi.throttle = thr;  // Will add this field to DigiState
+    digi.throttle = thr;
 
     return std::fabs(eProp) < 0.1 * targetSpeed;
 }
 
 void DigiAI::Loiter(DigiState& digi, const AircraftState& state,
                     const FlightControlSystem& /*fcs*/,
-                    const FcsState& fcsState, double maxGs) {
+                    FcsState& fcsState, double maxGs) {
     double desBank = 30.0 * DTR;
     double rollErr = (desBank - state.kin.phi) * RTD;
     if (rollErr > 180.0) rollErr -= 360.0;
     else if (rollErr < -180.0) rollErr += 360.0;
 
-    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick);
+    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
-    double alterr = (digi.holdAlt - (-state.kin.z)) * 0.015;
+    // Loiter holds a 30° bank. Let the FCS RollIt loop damp toward 30°.
+    fcsState.maxRoll = 30.0;
+    fcsState.maxRollDelta = 30.0;
+
+    // FreeFalcon mnvers.cpp:690 (Loiter body): alterr includes -ZDelta.
+    //   alterr = (holdAlt + self->ZPos() - self->ZDelta()) * 0.015F;
+    double alterr = ((digi.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
     GammaHold(alterr, digi, state, maxGs);
     SetYpedal(0.0, digi);
 }
@@ -343,15 +498,22 @@ SteeringController::SteeringController() {
 PilotInput SteeringController::compute(const AircraftState& state, double dt,
                                        double groundZ,
                                        const FlightControlSystem& fcs,
-                                       const FcsState& fcsState) {
+                                       FcsState& fcsState) {
     PilotInput out;
+    (void)groundZ;
+
+    // Store dt so all DigiAI functions can do frame-rate-independent smoothing
+    // and integration. FreeFalcon's AI runs at 0.06s (16.67 Hz); our host
+    // calls us at whatever dt it uses (typically 1/60 s).
+    digi_.dt = dt;
 
     switch (mode_) {
         case Mode::HeadingAltitude:
             DigiAI::HeadingAndAltitudeHold(digi_.holdPsi, digi_.holdAlt,
                                    digi_, state, fcs, fcsState, digi_.maxGs);
+            // burnerDelta=700 matches FreeFalcon WaypointMode (g_fWaypointBurnerDelta).
             DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-                     digi_, state, 200.0, 800.0);
+                     digi_, state, 200.0, 800.0, dt, 700.0);
             break;
 
         case Mode::Waypoint:
@@ -361,7 +523,7 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
         case Mode::Loiter:
             DigiAI::Loiter(digi_, state, fcs, fcsState, digi_.maxGs);
             DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-                     digi_, state, 200.0, 800.0);
+                     digi_, state, 200.0, 800.0, dt, 700.0);
             break;
 
         case Mode::Manual:
@@ -371,7 +533,7 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
         default:
             DigiAI::AltitudeHold(digi_.holdAlt, digi_, state, fcs, fcsState, digi_.maxGs);
             DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-                     digi_, state, 200.0, 800.0);
+                     digi_, state, 200.0, 800.0, dt, 700.0);
             break;
     }
 
@@ -385,13 +547,13 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
 
 void SteeringController::runWaypoint(const AircraftState& state, double dt,
                                      const FlightControlSystem& fcs,
-                                     const FcsState& fcsState,
+                                     FcsState& fcsState,
                                      PilotInput& /*out*/) {
     if (curWp_ >= wps_.size()) {
         DigiAI::HeadingAndAltitudeHold(digi_.holdPsi, digi_.holdAlt,
                                digi_, state, fcs, fcsState, digi_.maxGs);
         DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-                 digi_, state, 200.0, 800.0);
+                 digi_, state, 200.0, 800.0, dt, 700.0);
         return;
     }
 
@@ -406,7 +568,7 @@ void SteeringController::runWaypoint(const AircraftState& state, double dt,
             DigiAI::HeadingAndAltitudeHold(digi_.holdPsi, digi_.holdAlt,
                                    digi_, state, fcs, fcsState, digi_.maxGs);
             DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-                     digi_, state, 200.0, 800.0);
+                     digi_, state, 200.0, 800.0, dt, 700.0);
             return;
         }
     }
@@ -417,7 +579,7 @@ void SteeringController::runWaypoint(const AircraftState& state, double dt,
     DigiAI::HeadingAndAltitudeHold(desHeading, desAlt,
                            digi_, state, fcs, fcsState, digi_.maxGs);
     DigiAI::MachHold(digi_.cornerSpeed, state.vcas, true,
-             digi_, state, 200.0, 800.0);
+             digi_, state, 200.0, 800.0, dt, 700.0);
 }
 
 } // namespace f4flight

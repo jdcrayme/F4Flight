@@ -174,6 +174,13 @@ struct FcsState {
     double rshape{0.0};
     double pscmd{0.0};          // commanded roll rate, rad/s
     double pstab{0.0};          // filtered roll rate
+    // FreeFalcon airframe.h:596 — used by Roll() / RollIt() to limit pscmd
+    // when |phi| > maxRoll, and to scale pscmd by (1 - startRoll/maxRollDelta)
+    // as the aircraft approaches the target bank. Set by the steering layer
+    // (HeadingAndAltitudeHold, LevelTurn, etc.) via SetMaxRoll / SetMaxRollDelta.
+    double maxRoll{80.0};       // deg — roll limit (FreeFalcon af->maxRoll)
+    double maxRollDelta{5.0};   // deg — roll-rate damping window (af->maxRollDelta)
+    double startRoll{0.0};      // rad — integrated roll (af->startRoll, eom.cpp:810)
 
     // Yaw
     LagFilter  yawBetaLag;
@@ -248,6 +255,7 @@ struct AircraftState {
     bool   simplified{false};     // use simple model (for AI)
     bool   trimming{false};
     double netAccel{0.0};         // last frame's net accel (ft/s^2)
+    double vtDot{0.0};            // true airspeed rate (ft/s^2) — set by EOM
     double vRot{0.0};             // rotation speed
 
     // -----------------------------------------------------------------------

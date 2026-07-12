@@ -182,7 +182,13 @@ void EngineModel::update(double dt,
     }
 
     // Thrust scaling
-    const double thrtab = thrtb1 * table_->thrustFactor;
+    // FreeFalcon engine.cpp multiplies the per-engine thrust by nEngines
+    // (airframe.cpp:780-808 iterates over all engines). F4Flight's EOM uses
+    // a single thrust field, so we fold the engine count into the scaling.
+    // Without this, multi-engine aircraft (B-52 x4, C-130 x4, SR-71 x2)
+    // get only 1/nEngines of their rated thrust and can't maintain speed.
+    const double nEngines = std::max(1, aux_->nEngines);
+    const double thrtab = thrtb1 * table_->thrustFactor * nEngines;
     state.thrust = thrtab * ethrst; // ethrst includes thrust-reverse effect
 
     // --- Fuel flow ---
@@ -206,6 +212,8 @@ void EngineModel::update(double dt,
 
     if (simplified) fuelFlowSS *= 0.75;
     if (fuelFlowSS < aux_->minFuelFlow) fuelFlowSS = aux_->minFuelFlow;
+    // Scale fuel flow by nEngines (matches the thrust scaling above)
+    fuelFlowSS *= nEngines;
 
     // 10-frame smoothing (1 Hz one-pole)
     state.fuelFlow += (fuelFlowSS - state.fuelFlow) / 10.0;

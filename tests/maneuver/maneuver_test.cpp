@@ -205,15 +205,24 @@ int main(int argc, char** argv) {
 
     // Initialize flight model + steering controller ONCE.
     FlightModel fm;
-    fm.init(cfg, 15000, 300 * KNOTS_TO_FTPSEC, 0.0, true);
+    // Use the aircraft's corner speed for the initial condition, not a
+    // hardcoded 300 kts. Each scenario's StartScenario() re-inits the
+    // flight model at its own condition, but this default should still be
+    // sensible for the aircraft.
+    const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
+    fm.init(cfg, 10000, initCs * KNOTS_TO_FTPSEC, 0.0, true);
 
     SteeringController sc;
-    double cs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
-    sc.setCornerSpeed(cs);
+    sc.setCornerSpeed(initCs);
     sc.setMaxGs(cfg.geometry.maxGs);
     sc.setMaxBank(45.0);
-    sc.setAltitude(15000.0);
+    sc.setAltitude(10000.0);
     sc.setHeading(0.0);
+    // Use a conservative gamma clamp for AI navigation. FreeFalcon hardcodes
+    // 60° (the F-16 autopilot attitude-hold envelope), but at AI navigation
+    // speeds a 60° pitch command saturates the gamma loop and the aircraft
+    // zooms, bleeds airspeed, and stalls. 15° matches a sustained climb.
+    sc.setMaxGamma(15.0);
 
     ScenarioContext sctx{cfg};
 

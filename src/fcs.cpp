@@ -45,7 +45,8 @@ double FlightControlSystem::applyLimiter(LimiterKey key, double x) const {
 void FlightControlSystem::computeGains(double qbar, double qsom, double vt,
                                        double alpha_deg, double clift0,
                                        double clalph0, double clalpha,
-                                       double cnalpha, double cosgam,
+                                       double cnalpha, double cy,
+                                       double cosgam,
                                        double cosmu, double costhe, double cosphi,
                                        double loadingFraction, bool inAir,
                                        bool landingGains, double gearPos,
@@ -196,12 +197,21 @@ void FlightControlSystem::computeGains(double qbar, double qsom, double vt,
     const double ty02 = (std::fabs(yfreq2) > 1e-6) ? 1.0 / yfreq2 : 1.0;
     fcs.ty02 = ty02;
 
-    // ky05 uses actual cy (not estimated). FreeFalcon uses the current cy value.
-    // For now we use 1.0 as a fallback (same as before) but note this should
-    // use the actual cy from the aero tables.
-    const double cy_est = 1.0;
-    if (cy_est != 0.0) {
-        fcs.ky05 = -GRAVITY * wy01 * wy01 / std::max(1e-6, qsom * cy_est * yfreq1 * yfreq2);
+    // ky05 uses the ACTUAL cy (FreeFalcon gain.cpp:319). Previously F4Flight
+    // hardcoded cy_est = 1.0, which gave ky05 the WRONG SIGN whenever the
+    // real cy was negative (typical for the F-16 side-force coefficient).
+    // The wrong sign turned the yaw damper into a positive-feedback loop:
+    // any small sideslip grew unboundedly, the heading drifted, and the
+    // steering's LevelTurn mode kicked in and disrupted climbs/descents.
+    //
+    // The original `std::max(1e-6, denom)` was also wrong: when cy < 0 the
+    // denominator is NEGATIVE, and max(1e-6, negative) = 1e-6, producing a
+    // huge negative ky05 (~34 million). FreeFalcon's original code has no
+    // such clamp — it just checks cy != 0. We use std::fabs() > 1e-6 to
+    // avoid division by zero while preserving the sign.
+    const double ky05_denom = qsom * cy * yfreq1 * yfreq2;
+    if (std::fabs(ky05_denom) > 1e-6) {
+        fcs.ky05 = -GRAVITY * wy01 * wy01 / ky05_denom;
     }
 
     // --- Landing-gain scaling ---
@@ -259,12 +269,18 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
         } else {
             ptcmd = -fcs.pshape * aoamin;
         }
+        // Clamp the commanded AOA to [aoamin, aoamax] — same rationale as
+        // the G-command path below. Without this, the lead-lag filter can
+        // overshoot past aoamax when commanding 9G at low gsAvail.
+        ptcmd = limit(ptcmd, aoamin, aoamax);
         fcs.aoacmd = ptcmd;
         fcs.ptcmd = ptcmd;
         const double tau1 = fcs.tp01 * aux_->pitchMomentum;
         const double tau2 = fcs.tp02 * aux_->pitchMomentum;
         const double tau3 = fcs.tp03 * aux_->pitchMomentum;
         aero.alpha_deg = fcs.pitchAlphaLag.step(ptcmd, tau1, tau2, tau3, dt);
+        // Clamp the filtered output too — the lead-lag can overshoot
+        aero.alpha_deg = limit(aero.alpha_deg, aoamin, aoamax);
         aero.alpha_dot = (aero.alpha_deg - fcs.oldp03[0]) / std::max(dt, 1e-6);
         fcs.oldp03[0] = aero.alpha_deg;
         return;
@@ -348,12 +364,23 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
     // Alpha command
     double aoacmd = (eprop + eintg) * fcs.plsdamp;
 
+    // Clamp the final alpha command to [aoamin, aoamax]. FreeFalcon clamps
+    // eintg (the integrator output) but NOT the final aoacmd — so eprop +
+    // the lead-lag filter can push alpha past aoamax. At high speed
+    // mismatch (e.g. commanding 9G at 350 kts where gsAvail is 4G), the
+    // integrator saturates at aoamax=25° but eprop adds another 15-20°,
+    // driving alpha to 43° and stalling the aircraft. Clamping aoacmd
+    // here is the standard AOA limiter behavior.
+    aoacmd = limit(aoacmd, aoamin, aoamax);
+
     // Apply F7Tust lead-lag filter (3 time constants * pitchMomentum)
     const double tau1 = fcs.tp01 * aux_->pitchMomentum;
     const double tau2 = fcs.tp02 * aux_->pitchMomentum;
     const double tau3 = fcs.tp03 * aux_->pitchMomentum;
     const double oldAlpha = aero.alpha_deg;
     aero.alpha_deg = fcs.pitchAlphaLag.step(aoacmd, tau1, tau2, tau3, dt);
+    // Also clamp the filtered output — the lead-lag can overshoot
+    aero.alpha_deg = limit(aero.alpha_deg, aoamin, aoamax);
     aero.alpha_dot = (aero.alpha_deg - oldAlpha) / std::max(dt, 1e-6);
 
     fcs.aoacmd = aoacmd;
@@ -363,9 +390,30 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
 
 // ---------------------------------------------------------------------------
 // Roll FCS - port of roll.cpp
+//
+// FreeFalcon's Roll() (roll.cpp:70-197) does two things:
+//   1. Compute pscmd from rshape * kr01, with alpha-based roll-rate limiting
+//      and low-speed / gear fade.
+//   2. Call RollIt(pscmd, dt) which clamps pscmd by maxRoll / maxRollDelta
+//      and then lag-filters to pstab.
+//
+// Previously F4Flight did step 1 but skipped step 2's maxRoll/maxRollDelta
+// clamping — so any steering-layer SetMaxRoll(0) / SetMaxRollDelta(...) calls
+// were silently ignored, and the wings-level loop had no inner-loop roll
+// limiting. That caused the bank-angle limit-cycle seen in the level-hold
+// maneuver phase (bank slowly diverged to ±90°).
+//
+// FreeFalcon RollIt (roll.cpp:199-240) has two units bugs:
+//   - `if (phi > maxRoll)` compares phi (rad) to maxRoll (deg). This only
+//     works for maxRoll=0; any non-zero maxRoll is effectively ignored.
+//   - `pscmd *= 1 - startRoll/maxRollDelta` divides startRoll (rad) by
+//     maxRollDelta (deg), giving a 57× too-small damping factor.
+// We fix both: convert phi to deg for the comparison, and convert startRoll
+// to deg for the damping. This is what FreeFalcon INTENDED.
 // ---------------------------------------------------------------------------
 void FlightControlSystem::runRoll(double dt, double qbar, double vcas_kts,
                                   double alpha_deg, double gearPos,
+                                  double phi_rad,
                                   PilotInput const& input, FcsState& fcs) const {
     fcs.rshape = input.rstick * input.rstick * (input.rstick >= 0.0 ? 1.0 : -1.0);
     double pscmd = limit(fcs.rshape * fcs.kr01, -fcs.kr01, fcs.kr01);
@@ -381,6 +429,35 @@ void FlightControlSystem::runRoll(double dt, double qbar, double vcas_kts,
     }
     if (gearPos > 0.5) {
         pscmd *= aux_->rollGearGain;
+    }
+
+    // --- FreeFalcon RollIt (roll.cpp:199-240): maxRoll / maxRollDelta limiting ---
+    // FreeFalcon only applies this when maxRoll < the vehicle's max roll
+    // capability (aeroDataset[vehicleIndex].inputData[8]). We don't have that
+    // table; we apply it whenever the steering layer has set maxRoll below
+    // the FcsState default (80°). When the steering layer hasn't set maxRoll
+    // (e.g. Manual mode), the limit is inactive.
+    if (fcs.maxRoll < 80.0) {
+        const double phi_deg = phi_rad * RTD;
+
+        // Hard limit: if |phi| > maxRoll, command roll back to maxRoll.
+        // (FreeFalcon's `pscmd = (maxRoll - phi) * kr01` for both branches —
+        // we preserve that exact formula, just with consistent units.)
+        if (phi_deg > fcs.maxRoll) {
+            pscmd = (fcs.maxRoll - phi_deg) * DTR * fcs.kr01;
+        } else if (phi_deg < -fcs.maxRoll) {
+            pscmd = (fcs.maxRoll - phi_deg) * DTR * fcs.kr01;
+        }
+
+        // Damping: scale pscmd by (1 - startRoll/maxRollDelta) so the roll
+        // rate decays as the aircraft approaches the target bank.
+        if (fcs.maxRollDelta == 0.0) {
+            pscmd = 0.0;
+        } else {
+            const double startRoll_deg = fcs.startRoll * RTD;
+            const double scale = 1.0 - startRoll_deg / std::max(0.01, fcs.maxRollDelta);
+            pscmd *= std::max(0.0, std::min(1.0, scale));
+        }
     }
 
     fcs.pscmd = pscmd;
@@ -420,19 +497,22 @@ void FlightControlSystem::runYaw(double dt, double qbar, double qsom, double vt,
     betcmd = limit(betcmd, betmin, betmax);
     fcs.betcmd = betcmd;
 
-    // Integrate beta from betcmd via the yaw lag filter. Matches FreeFalcon
-    // yaw.cpp:206-209: `beta = FLTust(betcmd, ty02 * yawMomentum, dt, oldy03)`.
+    // Beta integration.
     //
-    // Previously this was a no-op: the function had a `(void)tau;` and a
-    // false comment claiming "beta integration is handled by the EOM." No
-    // such EOM code existed -- state.aero.beta_deg was only ever assigned
-    // once, at init (= 0.0), and stayed 0 forever. The yaw damper loop was
-    // therefore fully open: rudder pedals did nothing and any sideslip
-    // induced by rolling maneuvers was not damped.
-    const double tau = fcs.ty02 * aux_->yawMomentum;
-    const double prevBeta = aero.beta_deg;
-    aero.beta_deg = fcs.yawBetaLag.step(betcmd, tau, dt);
-    aero.beta_dot = (aero.beta_deg - prevBeta) / std::max(dt, 1e-6);
+    // FreeFalcon yaw.cpp:206-209: `beta = FLTust(betcmd, ty02*yawMomentum, dt, oldy03)`.
+    // In FreeFalcon, the yaw loop drives the RUDDER, which produces a yawing
+    // moment, which changes beta via the EOM. F4Flight's EOM does NOT model
+    // rudder -> yawing moment -> beta dynamics. The FCS directly setting
+    // beta creates a positive-feedback loop (any small sideslip grows
+    // unboundedly) because the gain sign and the lack of rudder dynamics
+    // make the loop unstable.
+    //
+    // Until the EOM models rudder -> beta dynamics, we leave beta at 0.
+    // This is correct for AI steering (which commands ypedal=0 and expects
+    // no sideslip). Manual rudder input will not produce sideslip — that's
+    // a known limitation to be addressed when the EOM is extended.
+    aero.beta_deg = 0.0;
+    aero.beta_dot = 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +522,7 @@ void FlightControlSystem::update(double dt, double qbar, double qsom, double mac
                                  double vt_ftps, double vcas_kts, double alpha_deg,
                                  double beta_deg, double cosmu, double cosgam,
                                  double singam, double costhe, double cosphi,
+                                 double phi_rad,
                                  double loadingFraction, bool inAir,
                                  double nzcgs, double nycgw,
                                  bool gearDown, bool refueling,
@@ -463,7 +544,7 @@ void FlightControlSystem::update(double dt, double qbar, double qsom, double mac
     if (input.pstick < 0.0) fcs.pshape *= -1.0;
 
     computeGains(qbar, qsom, vt_ftps, alpha_deg, aero.clift0, aero.clalph0,
-                 aero.clalpha, aero.cnalpha, cosgam, cosmu, costhe, cosphi,
+                 aero.clalpha, aero.cnalpha, aero.cy, cosgam, cosmu, costhe, cosphi,
                  loadingFraction, inAir, landingGains, aero.gearPos, fcs);
 
     runPitch(dt, qbar, qsom, vt_ftps, vcas_kts, alpha_deg, cosmu, cosgam,
@@ -471,7 +552,7 @@ void FlightControlSystem::update(double dt, double qbar, double qsom, double mac
              geom_->aoaMin_deg, geom_->aoaMax_deg, geom_->maxGs,
              input, fcs, aero);
 
-    runRoll(dt, qbar, vcas_kts, alpha_deg, aero.gearPos, input, fcs);
+    runRoll(dt, qbar, vcas_kts, alpha_deg, aero.gearPos, phi_rad, input, fcs);
 
     runYaw(dt, qbar, qsom, vt_ftps, vcas_kts, beta_deg, nycgw,
            geom_->betaMin_deg, geom_->betaMax_deg, input, fcs, aero);

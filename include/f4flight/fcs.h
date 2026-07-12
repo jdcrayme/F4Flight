@@ -31,6 +31,7 @@ public:
                 double singam,
                 double costhe,
                 double cosphi,
+                double phi_rad,
                 double loadingFraction,
                 bool   inAir,
                 double nzcgs,
@@ -48,6 +49,7 @@ public:
 private:
     void computeGains(double qbar, double qsom, double vt, double alpha_deg,
                       double clift0, double clalph0, double clalpha, double cnalpha,
+                      double cy,
                       double cosgam, double cosmu, double costhe, double cosphi,
                       double loadingFraction, bool inAir,
                       bool landingGains, double gearPos, FcsState& fcs) const;
@@ -59,7 +61,8 @@ private:
                   PilotInput const& input, FcsState& fcs, AeroState& aero) const;
 
     void runRoll(double dt, double qbar, double vcas_kts, double alpha_deg,
-                 double gearPos, PilotInput const& input, FcsState& fcs) const;
+                 double gearPos, double phi_rad,
+                 PilotInput const& input, FcsState& fcs) const;
 
     void runYaw(double dt, double qbar, double qsom, double vt, double vcas_kts,
                 double beta_deg, double nycgw, double betmin, double betmax,
