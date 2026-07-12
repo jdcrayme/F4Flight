@@ -114,28 +114,16 @@ public:
 // before reaching target. No VVI cap or mode switching needed.
 class AltitudeHold : public VerticalBehavior {
 public:
-    AltitudeHold(double targetAlt_ft, double cruiseSpeed_kts,
-                 double climbSpeed_kts = 0.0, double climbMach = 0.80, double climbPower = 1.0,
-                 double descentSpeed_kts = 0.0, double descentMach = 0.80, double descentPower = 0.05,
-                 double levelBand_ft = 200.0);
+    AltitudeHold(double targetAlt_ft);
 
     double compute(const AircraftState& state, double dt,
                    SteeringContext& ctx, PilotInput& out) override;
     const char* name() const override { return "AltitudeHold"; }
 
     void setTargetAltitude(double alt_ft) { targetAlt_ = alt_ft; }
-    void setCruiseSpeed(double kts) { cruiseSpeed_ = kts; }
 
 private:
     double targetAlt_;
-    double cruiseSpeed_;
-    double climbSpeed_;     // unused in gamma approach, kept for API compat
-    double climbMach_;
-    double climbPower_;     // unused — throttle is purely speed-based
-    double descentPower_;   // unused — throttle is purely speed-based
-    double descentSpeed_;   // unused, kept for API compat
-    double descentMach_;
-    double levelBand_;
 
     // Gamma-hold integral state (persists across frames)
     double gammaIError_{0.0};

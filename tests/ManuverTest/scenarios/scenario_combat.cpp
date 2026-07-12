@@ -49,7 +49,7 @@ public:
     }
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        sc.setVerticalBehavior(std::make_unique<AltitudeHold>(1500, 250));
+        sc.setVerticalBehavior(std::make_unique<AltitudeHold>(1500));
         sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0));
     }
 

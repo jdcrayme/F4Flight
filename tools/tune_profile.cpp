@@ -68,7 +68,7 @@ TrialResult testCruise(const AircraftConfig& cfg, double alt_ft, double speed_kt
     SteeringController sc;
     sc.setMaxBankAngle_deg(cfg.profile.maxBank_deg);
     sc.setMaxGs(cfg.geometry.maxGs);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(alt_ft, speed_kts));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(alt_ft));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(speed_kts));
 
@@ -154,10 +154,7 @@ TrialResult testClimb(const AircraftConfig& cfg, double startAlt_ft,
     SteeringController sc;
     sc.setMaxBankAngle_deg(cfg.profile.maxBank_deg);
     sc.setMaxGs(cfg.geometry.maxGs);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        targetAlt_ft, climbSpeed_kts,
-        climbSpeed_kts, 0.80, climbPower,
-        cfg.profile.descentSpeed_kts, cfg.profile.descentMach, cfg.profile.descentPower));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(targetAlt_ft));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(climbSpeed_kts));
 
@@ -256,10 +253,7 @@ TrialResult testDescent(const AircraftConfig& cfg, double startAlt_ft,
     SteeringController sc;
     sc.setMaxBankAngle_deg(cfg.profile.maxBank_deg);
     sc.setMaxGs(cfg.geometry.maxGs);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        targetAlt_ft, descentSpeed_kts,
-        cfg.profile.climbSpeed_kts, 0.80, cfg.profile.climbPower,
-        descentSpeed_kts, 0.80, cfg.profile.descentPower));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(targetAlt_ft));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(descentSpeed_kts));
 

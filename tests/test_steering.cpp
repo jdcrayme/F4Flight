@@ -87,8 +87,7 @@ TEST_F(SteeringTest, AltitudeHoldClimbWhenBelow) {
     SteeringController sc;
     sc.setMaxGs(cfg_.geometry.maxGs);
 
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        10000.0, 300.0, 300.0, 0.80, 1.0, 0.05, 300.0, 0.80));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(10000.0));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(300.0));
 
@@ -113,8 +112,7 @@ TEST_F(SteeringTest, AltitudeHoldClimbWhenBelow) {
 TEST_F(SteeringTest, HeadingHoldTurnsTowardTarget) {
     SteeringController sc;
     sc.setMaxGs(9.0);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        10000.0, 300.0));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(10000.0));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.5));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(300.0));
 
@@ -139,8 +137,7 @@ TEST_F(SteeringTest, HeadingHoldTurnsTowardTarget) {
 TEST_F(SteeringTest, AltitudeHoldLevelWhenOnTarget) {
     SteeringController sc;
     sc.setMaxGs(9.0);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        10000.0, 300.0));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(10000.0));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(300.0));
 
@@ -173,8 +170,7 @@ TEST_F(SteeringTest, CombinedClimbAndTurn) {
     sc.setMaxGs(9.0);
     sc.setMaxBankAngle_deg(45.0);
 
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        20000.0, 350.0, 350.0, 0.80, 1.0, 0.05, 350.0, 0.80));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(20000.0));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(1.0));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(350.0));
 
@@ -212,8 +208,7 @@ TEST_F(SteeringTest, SpeedHoldOutputsThrottle) {
     state.vcas = 300.0;
 
     // When vertical behavior is in level mode, throttle behavior runs
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        10000.0, 400.0));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(10000.0));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(0.0));
 
     state.kin.z = -10000.0;

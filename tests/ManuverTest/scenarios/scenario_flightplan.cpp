@@ -89,7 +89,7 @@ public:
         // leg so the controller's curWp_ always points at OUR waypoint.
         std::vector<Vec3> wps = { wp_ };
         sc.setHorizontalBehavior(std::make_unique<SteerToWaypoint>(std::move(wps), captureRadius_));
-        sc.setVerticalBehavior(std::make_unique<AltitudeHold>(tgt_alt_ft, tgt_speed_kts));
+        sc.setVerticalBehavior(std::make_unique<AltitudeHold>(tgt_alt_ft));
         // AltitudeHold only controls throttle in climb/descent mode; in
         // level flight it defers to the throttle behavior. Without a
         // SpeedHold installed, level-flight throttle stays at 0 (manual

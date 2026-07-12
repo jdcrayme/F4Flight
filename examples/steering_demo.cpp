@@ -70,20 +70,12 @@ int main(int argc, char** argv) {
     //   Vertical:   AltitudeHold    (climb/descend/level as needed)
     //   Throttle:   SpeedHold       (maintain 300 kts in level flight)
     const double CRUISE_KTS = 300.0;
-    const double CLIMB_KTS  = 250.0;
-    const double CLIMB_MACH = 0.80;
-    const double CLIMB_POWER = 1.0;     // MIL
-    const double DESCENT_KTS = 320.0;
-    const double DESCENT_MACH = 0.80;
-    const double DESCENT_POWER = 0.05;  // near-idle
     const double CAPTURE_FT = 3000.0;   // waypoint capture radius
 
     sc.setHorizontalBehavior(
         std::make_unique<SteerToWaypoint>(wps, CAPTURE_FT));
     sc.setVerticalBehavior(
-        std::make_unique<AltitudeHold>(ALT_FT, CRUISE_KTS, CLIMB_KTS, CLIMB_MACH,
-                                        CLIMB_POWER, DESCENT_POWER, DESCENT_KTS,
-                                        DESCENT_MACH));
+        std::make_unique<AltitudeHold>(ALT_FT));
     sc.setThrottleBehavior(
         std::make_unique<SpeedHold>(CRUISE_KTS));
 

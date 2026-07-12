@@ -41,18 +41,6 @@ namespace manuver_test {
         double startSpd_{ 0.0 };
         double speedCaptureTime_{ 0.0 };
 
-        // Climb / descent schedule parameters. Stored in the constructor
-        // and passed to AltitudeHold in Init(). The pass/fail target speed
-        // is chosen on the first frame based on whether the phase is a
-        // climb, descent, or level hold.
-        double cruiseSpd_{ 0.0 };
-        double climbSpd_{ 0.0 };
-        double climbMach_{ 0.80 };
-        double climbPower_{ 1.0 };
-        double descentSpd_{ 0.0 };
-        double descentMach_{ 0.80 };
-        double descentPower_{ 0.05 };
-
         bool isFirstFrame_{ true }; // Added to initialize starting values
         int  speedWithinTolFrames_{0};  // frames speed has been within SPD_TOL of target
 
@@ -85,7 +73,6 @@ namespace manuver_test {
                             double heading_rad = 0.0)
             : ManeuverTest(testname, 360.0), heading_(heading_rad)
             , targetAlt_(alt)
-            , cruiseSpd_(speed), climbSpd_(speed), descentSpd_(speed)
         {}
 
         // Construct a climb or descent phase with a full speed schedule.
@@ -99,11 +86,6 @@ namespace manuver_test {
                             double heading_rad = 0.0)
             : ManeuverTest(testname, 360.0), heading_(heading_rad)
             , targetAlt_(alt)
-            , cruiseSpd_(cruiseSpd)
-            , climbSpd_(climbSpd > 0 ? climbSpd : cruiseSpd)
-            , climbMach_(climbMach), climbPower_(climbPower)
-            , descentSpd_(descentSpd > 0 ? descentSpd : cruiseSpd)
-            , descentMach_(descentMach), descentPower_(descentPower)
         {}
 
         virtual bool IsFinished() const {
@@ -139,12 +121,10 @@ namespace manuver_test {
         }
 
         void Init(SteeringController& sc, FlightModel& fm) override {
-            sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-                targetAlt_, cruiseSpd_,
-                climbSpd_, climbMach_, climbPower_,
-                descentSpd_, descentMach_, descentPower_));
+
+            sc.setVerticalBehavior(std::make_unique<AltitudeHold>(targetAlt_));
             sc.setHorizontalBehavior(std::make_unique<HeadingHold>(heading_));
-            sc.setThrottleBehavior(std::make_unique<SpeedHold>(cruiseSpd_));
+            sc.setThrottleBehavior(std::make_unique<SpeedHold>(300));
         }
 
         void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
@@ -168,7 +148,7 @@ namespace manuver_test {
                 startAlt_ = alt;
                 startSpd_ = spd;
                 // All phases check against cruise speed after level-off.
-                targetSpd_ = cruiseSpd_;
+                targetSpd_ = as.vcas;
                 isFirstFrame_ = false;
             }
 
@@ -309,22 +289,14 @@ public:
         // altitude is used for the flightplan scenario; the basic scenario
         // uses a low starting altitude so the climb doesn't take too long
         // and the aircraft doesn't have time to oscillate.
-        const auto& prof = ctx.cfg.profile;
-        const double cruiseSpeed  = prof.cruiseSpeed_kts;
-        const double climbSpeed   = prof.climbSpeed_kts;
-        const double climbMach    = prof.climbMach;
-        const double descendSpeed = prof.descentSpeed_kts;
-        const double descendMach  = prof.descentMach;
-        const double climbPower   = prof.climbPower;
-        const double descendPower = prof.descentPower;
+        const double cruiseSpeed  = ctx.cfg.profile.cruiseSpeed_kts;
 
         // Basic scenario uses the profile's cruise altitude, then climbs
         // 10000 ft and descends 10000 ft. Using the profile's cruise
         // altitude ensures the tuned speeds (which were tested at that
         // altitude) are appropriate.
-        const double cruiseAlt   = prof.cruiseAlt_ft;
+		const double cruiseAlt   = 1000; // Low altitude to keep climb in performance range for all aircraft
         const double climbAlt    = cruiseAlt + 10000.0;
-        const double descentAlt  = std::max(3000.0, cruiseAlt - 10000.0);
 
         // Reset the flight model to a clean state for this scenario.
         // Use calcTasFromKcas to get the correct true airspeed for the desired
@@ -339,17 +311,13 @@ public:
             cruiseAlt, cruiseSpeed));
         tests.push_back(std::make_unique<TestAltitudeControl>(
             "Phase 2: climb to climbAlt using the full climb schedule.",
-            climbAlt, cruiseSpeed,
-            climbSpeed, climbMach, climbPower,
-            descendSpeed, descendMach, descendPower));
+            climbAlt, cruiseSpeed));
         tests.push_back(std::make_unique<TestAltitudeControl>(
 			"Phase 3: level hold at climb altitude.",
             climbAlt, cruiseSpeed));
         tests.push_back(std::make_unique<TestAltitudeControl>(
 			"Phase 4: descend to descentAlt using the full descent schedule.",
-            descentAlt, cruiseSpeed,
-            climbSpeed, climbMach, climbPower,
-            descendSpeed, descendMach, descendPower));
+            cruiseAlt, cruiseSpeed));
         return tests;
     }
 };

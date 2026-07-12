@@ -70,21 +70,9 @@ double PID::update(double error, double dt) noexcept {
 // ===========================================================================
 // AltitudeHold — unified vertical behavior
 // ===========================================================================
-AltitudeHold::AltitudeHold(
-    double targetAlt_ft, double cruiseSpeed_kts,
-    double climbSpeed_kts, double climbMach, double climbPower,
-    double descentSpeed_kts, double descentMach, double descentPower,
-    double levelBand_ft)
-
-    : targetAlt_(targetAlt_ft)
-    , cruiseSpeed_(cruiseSpeed_kts)
-    , climbSpeed_(climbSpeed_kts > 0 ? climbSpeed_kts : cruiseSpeed_kts)
-    , climbMach_(climbMach)
-    , climbPower_(climbPower)
-    , descentPower_(descentPower)
-    , descentSpeed_(descentSpeed_kts > 0 ? descentSpeed_kts : cruiseSpeed_kts)
-    , descentMach_(descentMach)
-    , levelBand_(levelBand_ft) {}
+AltitudeHold::AltitudeHold(double targetAlt_ft)
+    : targetAlt_(targetAlt_ft) {
+}
 
 double AltitudeHold::compute(const AircraftState& state, double dt,
                               SteeringContext& ctx, PilotInput& out) {
@@ -259,6 +247,7 @@ double SteerToWaypoint::compute(const AircraftState& state, double dt,
 // ===========================================================================
 double SpeedHold::compute(const AircraftState& state, double dt,
                            SteeringContext& ctx) {
+    
     // MachHold-style throttle control (port of FreeFalcon DigitalBrain).
     //
     // FreeFalcon: thr = (eProp + 100) * 0.008 + autoThrottle

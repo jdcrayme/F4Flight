@@ -60,8 +60,7 @@ static void setupHoldMission(SteeringController& sc,
                              double heading_rad, double maxGs) {
     sc.setMaxBankAngle_deg(30.0);
     sc.setMaxGs(maxGs);
-    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(
-        alt_ft, speed_kts, speed_kts, 0.80, 1.0, 0.05, speed_kts, 0.80));
+    sc.setVerticalBehavior(std::make_unique<AltitudeHold>(alt_ft));
     sc.setHorizontalBehavior(std::make_unique<HeadingHold>(heading_rad));
     sc.setThrottleBehavior(std::make_unique<SpeedHold>(speed_kts));
 }
