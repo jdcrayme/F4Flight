@@ -42,12 +42,20 @@ TEST_F(FlightModelTest, UpdateDoesNotCrash) {
     input.rstick = 0.0;
     input.ypedal = 0.0;
 
-    // Run a few seconds of simulation
+    // Run 10 seconds of simulation
     for (int i = 0; i < 100; ++i) {
         fm.update(0.1, input, 0.0, Vec3{0.0, 0.0, 1.0});
     }
-    // Should not have crashed; aircraft should still be moving
+    // Should not have crashed; aircraft should still be moving with sane state.
     EXPECT_GT(fm.state().kin.vt, 0.0);
+    EXPECT_FALSE(std::isnan(fm.state().kin.z));
+    EXPECT_FALSE(std::isnan(fm.state().kin.theta));
+    EXPECT_FALSE(std::isnan(fm.state().aero.alpha_deg));
+    EXPECT_FALSE(std::isnan(fm.state().loads.nzcgs));
+    // Body rates should stay bounded (no quaternion blow-up).
+    EXPECT_LT(std::fabs(fm.state().kin.p), 5.0);
+    EXPECT_LT(std::fabs(fm.state().kin.q), 5.0);
+    EXPECT_LT(std::fabs(fm.state().kin.r), 5.0);
 }
 
 TEST_F(FlightModelTest, FuelBurnsOverTime) {
@@ -104,9 +112,14 @@ TEST_F(FlightModelTest, LevelFlightApproximatelyMaintainsAltitude) {
         fm.update(0.05, input, 0.0, Vec3{0.0, 0.0, 1.0});
     }
     const double alt1 = -fm.state().kin.z;
-    // Should be roughly maintaining altitude (within 5000 ft -- this is a
-    // rough trim, not a converged steady state)
-    EXPECT_NEAR(alt1, alt0, 5000.0);
+    // Should be roughly maintaining altitude. Previously this used a ±5000 ft
+    // tolerance (±30,000 fpm over 10 s) which would pass even if the aircraft
+    // was in a 5000+ fpm climb or dive. Tighten to ±2000 ft (±12,000 fpm),
+    // which still admits a rough hand-trim but rejects gross departures.
+    EXPECT_NEAR(alt1, alt0, 2000.0);
+    // Also verify the aircraft didn't crash (NaN or extreme attitude).
+    EXPECT_FALSE(std::isnan(alt1));
+    EXPECT_LT(std::fabs(fm.state().kin.phi), 1.5);  // didn't roll inverted
 }
 
 TEST_F(FlightModelTest, ThrottleAffectsThrust) {
@@ -275,5 +288,60 @@ TEST_F(FlightModelTest, LimiterAccessorMutableAllowsInPlaceEdit) {
               LimiterType::MinMax);
     EXPECT_DOUBLE_EQ(cfg.limiter(LimiterKey::RollRateLimiter).limit(5.0), 2.0);
     EXPECT_DOUBLE_EQ(cfg.limiter(LimiterKey::RollRateLimiter).limit(-5.0), -2.0);
+}
+
+// ===========================================================================
+// FlightModel::trim() -- previously had three bugs that prevented
+// convergence (units error, sign error, spurious gravity term) and NO TEST
+// exercised it, so the bugs silently shipped. These tests verify the fixed
+// trim() reaches a 1-G steady state and doesn't produce NaN.
+//
+// Note: full convergence on BOTH (nzcgs=1) AND (ax=0) simultaneously is
+// not always achievable -- at low-drag conditions (high altitude, low
+// alpha), even idle thrust may exceed drag, so the axial target is
+// physically unreachable. The tests therefore verify the PRIMARY goal
+// (nzcgs near 1.0) and that no NaN is produced. The original bug produced
+// nzcgs ~= -2 (wrong sign + spurious gravity term); the fix produces
+// nzcgs ~= 1.0.
+// ===========================================================================
+TEST_F(FlightModelTest, TrimAchievesOneGNormalLoadFactor) {
+    FlightModel fm;
+    fm.init(cfg_, 10000.0, 500.0, 0.0, true);
+    (void)fm.trim();  // may or may not converge fully
+    fm.computeLoadFactors();
+    // Primary trim goal: nzcgs near 1.0 (1-G level flight).
+    // The original bugs gave nzcgs ~= -2; the fix gives nzcgs ~= 1.0.
+    // Tolerance 0.3 is generous enough to admit small residual thrust-pitch
+    // coupling but tight enough to catch the original sign/units bugs.
+    EXPECT_NEAR(fm.state().loads.nzcgs, 1.0, 0.30);
+}
+
+TEST_F(FlightModelTest, TrimKeepsAlphaInValidRange) {
+    FlightModel fm;
+    fm.init(cfg_, 10000.0, 500.0, 0.0, true);
+    fm.trim();
+    EXPECT_GE(fm.state().aero.alpha_deg, cfg_.geometry.aoaMin_deg);
+    EXPECT_LE(fm.state().aero.alpha_deg, cfg_.geometry.aoaMax_deg);
+}
+
+TEST_F(FlightModelTest, TrimDoesNotProduceNaN) {
+    FlightModel fm;
+    fm.init(cfg_, 10000.0, 500.0, 0.0, true);
+    fm.trim();
+    EXPECT_FALSE(std::isnan(fm.state().aero.alpha_deg));
+    EXPECT_FALSE(std::isnan(fm.state().engine.thrust));
+    EXPECT_FALSE(std::isnan(fm.state().loads.nzcgs));
+    EXPECT_FALSE(std::isnan(fm.state().engine.rpmCmd));
+}
+
+TEST_F(FlightModelTest, TrimAtHigherSpeedAchievesOneG) {
+    // At 600 ft/s (357 kts), trim should still drive nzcgs toward 1.0.
+    // Full convergence on both (nzcgs=1) AND (ax=0) may not be reachable
+    // if drag is very low, but nzcgs=1.0 (the primary goal) is.
+    FlightModel fm;
+    fm.init(cfg_, 10000.0, 600.0, 0.0, true);
+    (void)fm.trim();
+    fm.computeLoadFactors();
+    EXPECT_NEAR(fm.state().loads.nzcgs, 1.0, 0.30);
 }
 

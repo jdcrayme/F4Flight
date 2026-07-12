@@ -239,6 +239,7 @@ public:
     std::size_t currentWaypoint() const { return curWp_; }
     bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
     const DigiState& digiState() const { return digi_; }
+    DigiState&       digiState()       { return digi_; }  // for tests / hosts
 
     // Main compute — produces PilotInput from the current state + mode.
     // Requires the FCS state (for kr01, tr01 used by SetRstick).

@@ -82,6 +82,7 @@ struct AeroState {
     double alpha_deg{0.0};    // angle of attack, degrees
     double beta_deg{0.0};     // sideslip angle, degrees
     double alpha_dot{0.0};    // alpha rate, deg/s
+    double beta_dot{0.0};     // beta rate, deg/s
 
     // Coefficients (dimensionless)
     double cl{0.0}, cd{0.0}, cy{0.0};
@@ -163,6 +164,8 @@ struct FcsState {
     double pshape{0.0};
     double ptcmd{0.0};          // commanded pitch (alpha or G)
     double aoacmd{0.0};
+    bool   aoaCmdModeRuntime{false};  // set by computeGains, read by runPitch
+                                       // (matches FreeFalcon AOACmdMode flag)
 
     // Roll
     LagFilter  rollRateLag;

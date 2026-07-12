@@ -82,8 +82,17 @@ void EquationsOfMotion::calcBodyRates(double dt, double qsom, double cnalpha,
     // (rollCouple is added to pstab in the FCS, not here)
     k.p = pstab;
 
-    // No hardcoded rate clamps — FreeFalcon has none.
-    // The FCS and aerodynamics naturally limit the rates.
+    // Body-rate clamps. FreeFalcon eom.cpp:805-808 clamps p/q/r to keep
+    // forward-Euler quaternion integration stable ("if we rotate too fast
+    // the quaternions go nutty"). The previous f4flight code had a comment
+    // claiming "FreeFalcon has none" -- that was incorrect. Without these
+    // clamps, any transient that drives |p|/|q|/|r| above ~4 rad/s (stall
+    // departure, large abrupt input, NaN-adjacent feedback) will cause the
+    // quaternion to tumble, after which eulerFromQuat produces garbage and
+    // the aircraft crashes.
+    k.p = limit(k.p, -4.5, 4.5);
+    k.q = limit(k.q, -3.0, 3.0);
+    k.r = limit(k.r, -4.0, 4.0);
 }
 
 // ---------------------------------------------------------------------------

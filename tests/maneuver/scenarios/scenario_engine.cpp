@@ -112,10 +112,22 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // Basic sanity: thrust should be positive and substantial
-        if (maxThrust_ < 1.0) return false;
-        // RPM should be in a reasonable range
-        if (minRpm_ < 0.0 || maxRpm_ > 2.0) return false;
+        // Thrust must be a meaningful acceleration, not just "any positive
+        // value". For an F-16-class aircraft at MIL, thrust_accel is ~10
+        // ft/s^2; at AB ~15 ft/s^2; at idle ~1 ft/s^2. Require:
+        //   - MIL/AB phases: maxThrust >= 5 ft/s^2 (filters grossly-broken models)
+        //   - Idle phase:    maxThrust >= 0.1 ft/s^2 (just non-zero)
+        // Previously the threshold was 1.0 ft/s^2 for every phase, which
+        // would pass even if the engine produced only idle thrust at MIL.
+        const bool isIdle = (throttle_ < 0.1);
+        const double thrustMin = isIdle ? 0.1 : 5.0;
+        if (maxThrust_ < thrustMin) return false;
+        // RPM must be in [0, 1.6] (1.0 = MIL, 1.5 = full AB, so 1.6 is a
+        // reasonable upper bound). Previously allowed up to 2.0 (200%).
+        if (minRpm_ < 0.0 || maxRpm_ > 1.6) return false;
+        // For MIL/AB phases, also require RPM to actually reach near-MIL
+        // (i.e., the throttle command produced a real spool-up).
+        if (!isIdle && maxRpm_ < 0.9) return false;
         return true;
     }
 

@@ -244,5 +244,9 @@ int main(int argc, char** argv) {
     std::printf("Scenarios run: %zu\n", scenarioNames.size());
     std::printf("Phases: %d/%d passed\n", totalPassed, totalTests);
 
-    return 0;
+    // Exit non-zero if any phase failed so ctest/CI sees the real result.
+    // Previously this returned 0 unconditionally, which meant ctest reported
+    // PASS for every maneuver_*_basic and maneuver_*_flightplan test even
+    // when 100% of phases failed.
+    return (totalPassed == totalTests && totalTests > 0) ? 0 : 1;
 }

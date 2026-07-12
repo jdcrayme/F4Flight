@@ -181,14 +181,19 @@ TEST_F(EomTest, RecomputeKinematicTrigFillsAllFields) {
     EXPECT_NEAR(k.sinphi, std::sin(0.2), 1e-12);
     EXPECT_NEAR(k.cosphi, std::cos(0.2), 1e-12);
 
-    // Velocity-vector euler:
-    //   gamma = theta - alpha_rad * cos(phi)
+    // Velocity-vector euler angles -- MATCH FREEFALCON.
+    // FreeFalcon eom.cpp:855-857 extracts sigma/gamma/mu directly from the
+    // body quaternion, which (after the (e1,e2,e3,e4)=(qw,qz,qy,qx) swap)
+    // is just the standard ZYX extraction. So:
+    //   gamma = theta       (NOT theta - alpha*cos(phi) -- that was the old,
+    //                         physically-more-correct formula that did not
+    //                         match FreeFalcon and caused EOM divergence)
     //   sigma = psi
     //   mu    = phi
-    const double expectedGamma = 0.3 - (5.0 * DTR) * std::cos(0.2);
-    EXPECT_NEAR(k.gmma,    expectedGamma,        1e-12);
-    EXPECT_NEAR(k.singam,  std::sin(expectedGamma), 1e-12);
-    EXPECT_NEAR(k.cosgam,  std::cos(expectedGamma), 1e-12);
+    const double expectedGamma = 0.3;
+    EXPECT_NEAR(k.gmma,    expectedGamma,            1e-12);
+    EXPECT_NEAR(k.singam,  std::sin(expectedGamma),  1e-12);
+    EXPECT_NEAR(k.cosgam,  std::cos(expectedGamma),  1e-12);
 
     EXPECT_NEAR(k.sigma,   0.5,                  1e-12);
     EXPECT_NEAR(k.sinsig,  std::sin(0.5),        1e-12);

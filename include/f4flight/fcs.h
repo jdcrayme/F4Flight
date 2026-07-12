@@ -54,8 +54,8 @@ private:
 
     void runPitch(double dt, double qbar, double qsom, double vt, double vcas_kts,
                   double alpha_deg, double cosmu, double cosgam, double singam,
-                  double nzcgs, double cl, double clalpha, double cnalpha,
-                  double aoamin, double aoamax, double maxGs,
+                  double nzcgs, double cl, double clalpha, double clalph0,
+                  double cnalpha, double aoamin, double aoamax, double maxGs,
                   PilotInput const& input, FcsState& fcs, AeroState& aero) const;
 
     void runRoll(double dt, double qbar, double vcas_kts, double alpha_deg,
@@ -63,7 +63,7 @@ private:
 
     void runYaw(double dt, double qbar, double qsom, double vt, double vcas_kts,
                 double beta_deg, double nycgw, double betmin, double betmax,
-                PilotInput const& input, FcsState& fcs) const;
+                PilotInput const& input, FcsState& fcs, AeroState& aero) const;
 
     const AircraftConfig*   cfg_{nullptr};
     const AircraftGeometry* geom_{nullptr};

@@ -145,8 +145,15 @@ void FlightControlSystem::computeGains(double qbar, double qsom, double vt,
 
     // --- kp05: forward-path gain ---
     // FreeFalcon gain.cpp:240-244
-    // AOA-command mode when gsAvail <= maxGs (can't reach max G)
+    // AOA-command mode when gsAvail <= maxGs (can't reach max G).
+    // Store the runtime decision in FcsState so runPitch uses the SAME
+    // mode computeGains computed kp05 for. Previously computeGains used the
+    // runtime test (gsAvail <= maxGs) while runPitch used a static config
+    // flag (cfg_->aoaCommandMode); when they disagreed, kp05 was computed
+    // for one mode and runPitch executed the other -- pitch gain wrong by
+    // g/(qsom*cnalpha), causing closed-loop bandwidth mismatch / oscillation.
     const bool aoaCmdMode = (gsAvail <= geom_->maxGs);
+    fcs.aoaCmdModeRuntime = aoaCmdMode;
     if (aoaCmdMode || qsom * cnalpha == 0.0) {
         fcs.kp05 = tp02 * tp03 * wp01 * wp01;
     } else {
@@ -225,13 +232,18 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
                                    double vt, double vcas_kts, double alpha_deg,
                                    double cosmu, double cosgam, double singam,
                                    double nzcgs, double cl, double clalpha,
-                                   double cnalpha, double aoamin, double aoamax,
-                                   double maxGs, PilotInput const& input,
+                                   double clalph0, double cnalpha,
+                                   double aoamin, double aoamax, double maxGs,
+                                   PilotInput const& input,
                                    FcsState& fcs, AeroState& aero) const {
     // pshape is now computed in update() before computeGains(), since kp01
     // depends on it. Don't recompute it here.
 
-    const bool aoaCmdMode = (cfg_ != nullptr) && cfg_->aoaCommandMode;
+    // Use the SAME aoaCmdMode decision computeGains made. Stored in
+    // fcs.aoaCmdModeRuntime. Previously this read cfg_->aoaCommandMode (a
+    // static config flag), which could disagree with computeGains' runtime
+    // test (gsAvail <= maxGs) and produce a wrong kp05 for the executed mode.
+    const bool aoaCmdMode = fcs.aoaCmdModeRuntime;
 
     double ptcmd, maxCmd, minCmd;
     double maxNegGs = -3.0;
@@ -270,8 +282,13 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
         }
     }
 
-    // Available G (max load factor at aoamax)
-    const double gsAvail = aoamax * clalpha * qsom / GRAVITY;
+    // Available G (max load factor at aoamax). FreeFalcon gain.cpp:127 uses
+    // clalph (the static 0..10 deg lift-curve slope). In f4flight's naming,
+    // that is clalph0 -- NOT clalpha (the local ±2 deg slope around current
+    // alpha). Near stall, clalpha drops faster than clalph0, so using the
+    // local slope would underestimate available G and over-clamp ptcmd,
+    // reducing pitch authority when recovering from high AOA.
+    const double gsAvail = aoamax * clalph0 * qsom / GRAVITY;
     maxCmd = maxGs;
     minCmd = std::max(maxNegGs, -gsAvail);
 
@@ -284,23 +301,48 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
     const double cosmu_lim = std::max(0.0, cosmu);
     const double error = (ptcmd - (nzcgs - cosmu_lim * cosgam
                                    - 0.1 * aero.gearPos * qsom / GRAVITY)) * fcs.kp05;
-    const double eprop = fcs.kp02 * error;
+    double eprop = fcs.kp02 * error;   // mutable: zeroed on saturation (anti-windup)
     const double eintg1 = fcs.kp03 * error;
     double eintg = fcs.pitchIntegral.step(eintg1, dt);
 
-    // AOA limiter (anti-windup) — FreeFalcon pitch.cpp:348-389
+    // AOA limiter (anti-windup) — FreeFalcon pitch.cpp:348-389.
+    // On saturation, FreeFalcon zeroes eprop AND clears the Adams-Bashforth
+    // input history (oldp02[2] = u_prev, oldp02[3] = u_now) so the integrator
+    // doesn't immediately re-saturate on the next step. Previously we only
+    // reset y_prev, leaving stale u_prev/u_now to push eintg back past the
+    // limit on the next frame -> limit-cycle behavior at high AOA.
+    //
+    // Low-Q relaxation: FreeFalcon widens the limits by ±alphaError where
+    // alphaError = (|q*0.5| + |p|) * 0.1 * RTD. We don't have p/q here, so
+    // we approximate alphaError as 0 (the relaxation is a small effect).
     if (qbar > 100.0) {
         if (eintg > aoamax) {
             eintg = aoamax;
+            eprop = 0.0;
             fcs.pitchIntegral.y_prev = aoamax;
+            fcs.pitchIntegral.u_prev = 0.0;
+            fcs.pitchIntegral.u_now  = 0.0;
         } else if (eintg < aoamin) {
             eintg = aoamin;
+            eprop = 0.0;
             fcs.pitchIntegral.y_prev = aoamin;
+            fcs.pitchIntegral.u_prev = 0.0;
+            fcs.pitchIntegral.u_now  = 0.0;
         }
     } else {
-        // Low-Q: relax limits slightly
-        if (eintg > aoamax) { eintg = aoamax; fcs.pitchIntegral.y_prev = aoamax; }
-        else if (eintg < aoamin) { eintg = aoamin; fcs.pitchIntegral.y_prev = aoamin; }
+        if (eintg > aoamax) {
+            eintg = aoamax;
+            eprop = 0.0;
+            fcs.pitchIntegral.y_prev = aoamax;
+            fcs.pitchIntegral.u_prev = 0.0;
+            fcs.pitchIntegral.u_now  = 0.0;
+        } else if (eintg < aoamin) {
+            eintg = aoamin;
+            eprop = 0.0;
+            fcs.pitchIntegral.y_prev = aoamin;
+            fcs.pitchIntegral.u_prev = 0.0;
+            fcs.pitchIntegral.u_now  = 0.0;
+        }
     }
 
     // Alpha command
@@ -352,7 +394,10 @@ void FlightControlSystem::runRoll(double dt, double qbar, double vcas_kts,
 void FlightControlSystem::runYaw(double dt, double qbar, double qsom, double vt,
                                  double vcas_kts, double beta_deg, double nycgw,
                                  double betmin, double betmax,
-                                 PilotInput const& input, FcsState& fcs) const {
+                                 PilotInput const& input, FcsState& fcs,
+                                 AeroState& aero) const {
+    (void)qbar; (void)qsom; (void)vt; (void)vcas_kts; (void)beta_deg;
+
     fcs.yshape = input.ypedal * input.ypedal * (input.ypedal >= 0.0 ? 1.0 : -1.0);
     double nycmd = fcs.yshape * 2.0;
     nycmd = limit(nycmd, -2.0, 2.0);
@@ -375,13 +420,19 @@ void FlightControlSystem::runYaw(double dt, double qbar, double qsom, double vt,
     betcmd = limit(betcmd, betmin, betmax);
     fcs.betcmd = betcmd;
 
+    // Integrate beta from betcmd via the yaw lag filter. Matches FreeFalcon
+    // yaw.cpp:206-209: `beta = FLTust(betcmd, ty02 * yawMomentum, dt, oldy03)`.
+    //
+    // Previously this was a no-op: the function had a `(void)tau;` and a
+    // false comment claiming "beta integration is handled by the EOM." No
+    // such EOM code existed -- state.aero.beta_deg was only ever assigned
+    // once, at init (= 0.0), and stayed 0 forever. The yaw damper loop was
+    // therefore fully open: rudder pedals did nothing and any sideslip
+    // induced by rolling maneuvers was not damped.
     const double tau = fcs.ty02 * aux_->yawMomentum;
-    // Apply the lag to beta. We store the result in aero.beta_deg via the
-    // lag filter state. The FCS owns the yaw rate lag filter; the EOM will
-    // read fcs.betcmd for its own purposes.
-    (void)tau;
-    // Note: beta integration is handled by the EOM using betcmd as the
-    // command. Here we just expose betcmd.
+    const double prevBeta = aero.beta_deg;
+    aero.beta_deg = fcs.yawBetaLag.step(betcmd, tau, dt);
+    aero.beta_dot = (aero.beta_deg - prevBeta) / std::max(dt, 1e-6);
 }
 
 // ---------------------------------------------------------------------------
@@ -416,14 +467,14 @@ void FlightControlSystem::update(double dt, double qbar, double qsom, double mac
                  loadingFraction, inAir, landingGains, aero.gearPos, fcs);
 
     runPitch(dt, qbar, qsom, vt_ftps, vcas_kts, alpha_deg, cosmu, cosgam,
-             singam, nzcgs, aero.cl, aero.clalpha, aero.cnalpha,
+             singam, nzcgs, aero.cl, aero.clalpha, aero.clalph0, aero.cnalpha,
              geom_->aoaMin_deg, geom_->aoaMax_deg, geom_->maxGs,
              input, fcs, aero);
 
     runRoll(dt, qbar, vcas_kts, alpha_deg, aero.gearPos, input, fcs);
 
     runYaw(dt, qbar, qsom, vt_ftps, vcas_kts, beta_deg, nycgw,
-           geom_->betaMin_deg, geom_->betaMax_deg, input, fcs);
+           geom_->betaMin_deg, geom_->betaMax_deg, input, fcs, aero);
 }
 
 } // namespace f4flight

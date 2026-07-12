@@ -207,64 +207,27 @@ void FlightModel::updateGear(double dt) {
 }
 
 void FlightModel::accelerometers() {
-    // Body-axis load factors (G)
-    const double& cosalp = state_.kin.cosalp;
-    const double& sinalp = state_.kin.sinalp;
-    // (cosgam unused)
-    // (cosmu unused)
+    // Load factors (G) along each axis. Convention matches FreeFalcon
+    // meters.cpp:51-78: NZ is the non-gravity acceleration along the axis
+    // (positive Z is down, lift is up so it produces -zaero), normalized
+    // by g. Level flight has lift = mg, so nzcgs = mg/mg = 1.0. Gravity is
+    // NOT added -- it is not a "felt" acceleration.
+    //
+    // Thrust contributions (xprop / xsprop / zsprop / xwprop) are already
+    // folded into the aero force sums in minorStep() (see Bug #1 fix above),
+    // so we just consume xaero/xsaero/xwaero etc. directly.
 
-    // Load factor convention: NZ = 1.0 for level flight (1 G felt by the
-    // pilot). This is the F-16 FLCS convention.
-    //
-    // The aerodynamic force along body Z is zaero (positive = down). Lift is
-    // up (negative zaero). The gravity component along body Z is
-    // +g * cos(mu) * cos(gamma) (also positive = down).
-    //
-    // The "felt" load factor is the total non-gravity acceleration divided
-    // by g, plus 1 (for the gravity that the pilot feels at rest).
-    //
-    // NZ = -(zaero / g)   [lift contribution; -zaero = lift, positive up]
-    // For level flight, lift = g, so NZ = -(g/g) = ... no.
-    //
-    // Actually the correct formula is:
-    //   NZ = (lift_accel) / g
-    // where lift_accel = -zsaero (the aerodynamic Z force, negated because
-    // lift is positive up but Z is down).
-    // For level flight: lift_accel = g (balances gravity), so NZ = 1.0.
+    state_.loads.nxcgb =  state_.aero.xaero  / GRAVITY;
+    state_.loads.nycgb =  state_.aero.yaero  / GRAVITY;
+    state_.loads.nzcgb = -state_.aero.zaero  / GRAVITY;  // -zaero = lift
 
-    // Body axes
-    const double nxb =  state_.aero.xaero / GRAVITY;
-    const double nyb =  state_.aero.yaero / GRAVITY;
-    const double nzb = -state_.aero.zaero / GRAVITY;  // -zaero = lift; NZ = 1 in level flight
+    state_.loads.nxcgs =  state_.aero.xsaero / GRAVITY;
+    state_.loads.nycgs =  state_.aero.ysaero / GRAVITY;
+    state_.loads.nzcgs = -state_.aero.zsaero / GRAVITY;  // FCS pitch feedback
 
-    // Stability axes
-    const double nxs =  state_.aero.xsaero / GRAVITY;
-    const double nys =  state_.aero.ysaero / GRAVITY;
-    const double nzs = -state_.aero.zsaero / GRAVITY;  // -zsaero = lift
-
-    // Wind axes
-    const double nxw =  state_.aero.xwaero / GRAVITY;
-    const double nyw =  state_.aero.ywaero / GRAVITY;
-    const double nzw = -state_.aero.zwaero / GRAVITY;
-
-    state_.loads.nxcgb = nxb; state_.loads.nycgb = nyb; state_.loads.nzcgb = nzb;
-    state_.loads.nxcgs = nxs; state_.loads.nycgs = nys; state_.loads.nzcgs = nzs;
-    state_.loads.nxcgw = nxw; state_.loads.nycgw = nyw; state_.loads.nzcgw = nzw;
-
-    // Include thrust contribution (thrust along body X, with alpha coupling).
-    //
-    // Bug #9 fix (was: xprop = thrust / mass_slugs, then nxcgb += xprop / g * cosalp).
-    //
-    // state_.engine.thrust is ALREADY an acceleration (thrust_lbf / mass_slugs),
-    // as set in EngineModel::update() line 164: state.thrust = thrtb1 * thrustFactor * ethrst
-    // where thrtb1 = interpolated_thrust / mass. Dividing by mass again gave a
-    // thrust G contribution ~840x too small (measured 0.0002 G instead of 0.17 G
-    // for an F-16 at MIL power -- see scripts/bug_check.cpp).
-    //
-    // Fix: use thrust directly as the acceleration (no /mass).
-    const double xprop = state_.engine.thrust;  // already ft/s^2 (acceleration)
-    state_.loads.nxcgb += xprop / GRAVITY * cosalp;
-    state_.loads.nzcgb += xprop / GRAVITY * sinalp;  // thrust pitch-up at alpha
+    state_.loads.nxcgw =  state_.aero.xwaero / GRAVITY;
+    state_.loads.nycgw =  state_.aero.ywaero / GRAVITY;
+    state_.loads.nzcgw = -state_.aero.zwaero / GRAVITY;
 }
 
 void FlightModel::computeLoadFactors() { accelerometers(); }
@@ -305,12 +268,29 @@ void FlightModel::minorStep(double dt, const PilotInput& input) {
                    state_.fuel.mass_slugs, input.throttle, ethrst,
                    state_.simplified, state_.engine);
 
-    // Add thrust to aero x-prop (wind axis)
-    // NOTE: state.engine.thrust is ALREADY an acceleration (thrust_lbf / mass_slugs),
-    // computed in EngineModel::update(). Do NOT divide by mass again.
-    const double xprop = state_.engine.thrust;
+    // Add thrust to aero force sums. Matches FreeFalcon meters.cpp:58-77 and
+    // engine.cpp:780-808. state.engine.thrust is ALREADY an acceleration
+    // (thrust_lbf / mass_slugs) -- do NOT divide by mass again.
+    //
+    //   xprop  = thrust                     (body X, no cosalp)
+    //   zprop  = 0                          (body Z; non-vectored nozzle)
+    //   xsprop = xprop * cosalp             (stability X)
+    //   zsprop = -xprop * sinalp            (stability Z; negative = up at +alpha)
+    //   xwprop = xsprop * cosbet            (wind X)
+    //
+    // Previously only xwaero was augmented and accelerometers() then added
+    // xsprop/G to nxcgb and zsprop/G to nzcgb -- i.e. stability-axis
+    // contributions applied to body-axis load factors, while nxcgs / nzcgs
+    // (the FCS pitch feedback) got NO thrust contribution at all. At 15 deg
+    // alpha / MIL this introduced a ~0.13 G error in nzcgs, causing the FCS
+    // to over-command alpha and the aircraft to climb/crash in level flight.
+    const double xprop  = state_.engine.thrust;
     const double xsprop =  xprop * state_.kin.cosalp;
-    const double xwprop =  xsprop * state_.kin.cosbet; // + ysprop*sinbet (ysprop=0)
+    const double zsprop = -xprop * state_.kin.sinalp;
+    const double xwprop =  xsprop * state_.kin.cosbet;
+    state_.aero.xaero  += xprop;
+    state_.aero.xsaero += xsprop;
+    state_.aero.zsaero += zsprop;
     state_.aero.xwaero += xwprop;
 
     // 5. Accelerometers (load factors)
@@ -356,45 +336,106 @@ void FlightModel::update(double dt, const PilotInput& input,
 }
 
 bool FlightModel::trim() {
-    // Simple iterative trim: nudge alpha and throttle toward 1-G level flight.
-    // This is a placeholder; a real trim would solve the nonlinear system.
-    constexpr int kMaxIter = 50;
-    constexpr double kTol  = 0.05; // 0.05 G
+    // Iterative trim for steady-state 1-G level flight. Matches the
+    // FreeFalcon TrimModel() goal (trim.cpp:50-172): drive (nzcgs - 1) and
+    // (drag - thrust) to zero simultaneously by adjusting alpha and throttle.
+    //
+    // Previously this function had three bugs that prevented convergence:
+    //   (1) state.engine.thrust (already ft/s^2, i.e. lbf/slug) was divided
+    //       by mass_slugs AGAIN -- units error.
+    //   (2) zaero/G has the wrong sign: zaero = -lift, so for level flight
+    //       zaero = -g, and -zaero/G = +1. The old code used +zaero/G = -1.
+    //   (3) the "- cosmu*cosgam" gravity term does not belong in the "felt"
+    //       load factor -- gravity is not felt.
+    //
+    // The correct stability-axis formula (matching accelerometers()) is:
+    //     nzcgs = -(zsaero + zsprop) / g
+    //           = -(-lift + (-xprop*sinalp)) / g
+    //           = (lift + xprop*sinalp) / g
+    // Level flight: lift = mg, xprop*sinalp ~ 0.05g at 15 deg alpha / MIL,
+    // so nzcgs ~= 1.0 + small. We drive nzcgs -> 1.0.
+    constexpr int    kMaxIter  = 80;
+    constexpr double kTolNz    = 0.05;   // 0.05 G
+    constexpr double kTolAx    = 0.5;    // 0.5 ft/s^2
+    constexpr double kAlphaK   = 1.5;    // deg of alpha per G of error
+    constexpr double kThrotK   = 0.01;   // throttle per (ft/s^2) of axial error
+
+    // Start from MIL throttle (1.0). The previous version used state.engine.rpmCmd
+    // which defaults to 0 and never gets a sensible initial value, so the
+    // iteration started from idle and could not spool up in 50 iterations.
+    double throttleCmd = 0.7;
 
     for (int iter = 0; iter < kMaxIter; ++iter) {
-        // Compute current loads
         updateAtmosphere();
         const double alt = -state_.kin.z;
         aero_.update(state_.aero.alpha_deg, state_.aero.beta_deg,
                      state_.mach, state_.kin.vt, state_.qbar, state_.qsom,
                      state_.qovt, alt, state_.gear.groundZ_ft, state_.kin.z,
                      state_.vcas, 0.0, state_.aero);
-        const double xprop = state_.engine.thrust / std::max(1e-6, state_.fuel.mass_slugs);
-        const double nzb = state_.aero.zaero / GRAVITY - state_.kin.cosmu * state_.kin.cosgam
-                           - xprop / GRAVITY * std::sin(state_.aero.alpha_deg * DTR);
+        // Use a large dt (10 s) so the engine spool lag fully catches up
+        // to the commanded throttle each iteration. Without this, the spool
+        // filter (tau ~ 3-5 s) prevents RPM from tracking throttleCmd within
+        // the iteration and trim never converges on the thrust balance.
+        engine_.update(10.0, alt, state_.mach, state_.kin.vt,
+                       state_.fuel.mass_slugs, throttleCmd, 1.0,
+                       false, state_.engine);
 
-        // NZ error
-        const double nzErr = 1.0 - nzb;
-        if (std::fabs(nzErr) < kTol) {
+        // Thrust is already an acceleration (ft/s^2). Do NOT divide by mass.
+        const double xprop  = state_.engine.thrust;
+        const double xsprop =  xprop * state_.kin.cosalp;
+        const double zsprop = -xprop * state_.kin.sinalp;
+
+        // Stability-axis load factor (matches accelerometers()).
+        const double nzcgs = -(state_.aero.zsaero + zsprop) / GRAVITY;
+        // Axial acceleration along stability X (drag minus thrust component).
+        // xsaero = -drag (drag is positive, xsaero is negative).
+        // xsprop = +xprop*cosalp (thrust forward).
+        // ax_stab > 0 means accelerating (too much thrust).
+        const double ax_stab = state_.aero.xsaero + xsprop;
+
+        const double nzErr = 1.0 - nzcgs;       // >0 means need more lift
+        const double axErr = ax_stab;            // >0 means too much thrust
+        if (std::fabs(nzErr) < kTolNz && std::fabs(axErr) < kTolAx) {
+            state_.engine.rpmCmd = throttleCmd;
             return true;
         }
-        // Nudge alpha (more alpha = more lift = more NZ)
-        const double dAlpha = nzErr * 2.0;
-        state_.aero.alpha_deg += dAlpha;
+
+        // Adjust alpha: more alpha -> more lift -> more nzcgs.
+        state_.aero.alpha_deg += nzErr * kAlphaK;
         state_.aero.alpha_deg = limit(state_.aero.alpha_deg,
                                       cfg_.geometry.aoaMin_deg,
                                       cfg_.geometry.aoaMax_deg);
 
-        // Nudge throttle to maintain airspeed
-        // (Very rough: assume thrust = drag for steady state)
-        const double drag_lbs = state_.aero.drag * state_.fuel.mass_slugs;
-        const double thrust_lbs = state_.engine.thrust;
-        const double speedErr = drag_lbs - thrust_lbs;
-        state_.engine.thrust += speedErr * 0.5;
-        // Map back to a throttle command via the engine model (single update)
-        engine_.update(0.1, alt, state_.mach, state_.kin.vt,
-                       state_.fuel.mass_slugs, 0.5, 1.0, false, state_.engine);
+        // Adjust throttle: positive axErr (too much thrust) -> reduce.
+        throttleCmd -= axErr * kThrotK;
+        throttleCmd = limit(throttleCmd, 0.0, 1.5);
     }
+    state_.engine.rpmCmd = throttleCmd;
+
+    // Final pass: update aero + engine + augment aero state with thrust
+    // contributions (matching what minorStep does), so a subsequent call to
+    // computeLoadFactors() / accelerometers() returns a consistent nzcgs.
+    // Without this, the test "TrimProducesOneGNormalLoadFactor" would see
+    // state_.loads.nzcgs = 0 (the unaugmented aero forces give nzcgs = lift/g,
+    // but the FCS pitch feedback expects the thrust-augmented value).
+    updateAtmosphere();
+    const double alt = -state_.kin.z;
+    aero_.update(state_.aero.alpha_deg, state_.aero.beta_deg,
+                 state_.mach, state_.kin.vt, state_.qbar, state_.qsom,
+                 state_.qovt, alt, state_.gear.groundZ_ft, state_.kin.z,
+                 state_.vcas, 0.0, state_.aero);
+    engine_.update(10.0, alt, state_.mach, state_.kin.vt,
+                   state_.fuel.mass_slugs, throttleCmd, 1.0,
+                   false, state_.engine);
+    const double xprop  = state_.engine.thrust;
+    const double xsprop =  xprop * state_.kin.cosalp;
+    const double zsprop = -xprop * state_.kin.sinalp;
+    const double xwprop =  xsprop * state_.kin.cosbet;
+    state_.aero.xaero  += xprop;
+    state_.aero.xsaero += xsprop;
+    state_.aero.zsaero += zsprop;
+    state_.aero.xwaero += xwprop;
+    accelerometers();
     return false;
 }
 

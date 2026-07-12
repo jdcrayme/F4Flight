@@ -95,3 +95,58 @@ TEST(DigiAITest, GammaHoldClimb) {
     DigiAI::GammaHold(5.0, digi, state, 9.0);
     EXPECT_GT(digi.pStick, 0.0);
 }
+
+// ===========================================================================
+// SteeringController::reset() regression test.
+//
+// The maneuver_test runner has a documented workaround at
+// maneuver_test.cpp:110-118 that explicitly does NOT call reset() between
+// phases because doing so "would wipe the throttle PID's steady-state
+// integral, causing the throttle to drop to ~0 at the start of the next
+// phase -- which in the flightplan scenario leads to a deceleration → stall
+// → NaN cascade within 10 seconds." That bug has no regression test. This
+// test verifies that reset() at least zeroes the stick/pedal/throttle
+// commands cleanly without producing NaN or leaving stale non-zero values.
+// ===========================================================================
+TEST(SteeringControllerTest, ResetZeroesStickAndPedal) {
+    SteeringController sc;
+    DigiState& digi = sc.digiState();
+    digi.pStick = 0.5;
+    digi.rStick = -0.3;
+    digi.yPedal = 0.2;
+    digi.autoThrottle = 0.7;
+    digi.gammaHoldIError = 1.5;
+
+    sc.reset();
+
+    EXPECT_NEAR(digi.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.rStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.yPedal, 0.0, 1e-9);
+    EXPECT_NEAR(digi.autoThrottle, 0.0, 1e-9);
+    EXPECT_NEAR(digi.gammaHoldIError, 0.0, 1e-9);
+}
+
+TEST(SteeringControllerTest, ResetZeroesWaypointIndex) {
+    SteeringController sc;
+    // Advance the waypoint index by setting waypoints + calling compute.
+    std::vector<Vec3> wps = {{0.0, 60000.0, -10000.0}};
+    sc.setWaypoints(wps);
+    sc.reset();
+    EXPECT_EQ(sc.currentWaypoint(), 0u);
+}
+
+TEST(SteeringControllerTest, ResetClearsNaNState) {
+    // If the controller's state ever goes NaN (which is what the
+    // maneuver_test workaround is worried about -- reset followed by
+    // re-converging PIDs), reset() should clear it.
+    SteeringController sc;
+    DigiState& digi = sc.digiState();
+    digi.autoThrottle = std::numeric_limits<double>::quiet_NaN();
+    digi.gammaHoldIError = std::numeric_limits<double>::quiet_NaN();
+
+    sc.reset();
+
+    EXPECT_FALSE(std::isnan(digi.autoThrottle));
+    EXPECT_FALSE(std::isnan(digi.gammaHoldIError));
+    EXPECT_FALSE(std::isnan(digi.pStick));
+}

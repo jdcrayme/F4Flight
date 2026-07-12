@@ -50,12 +50,16 @@ public:
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
 
-        // Track roll rate (convert from body-axis p in rad/s to deg/s)
+        // Track roll rate (convert from body-axis p in rad/s to deg/s).
+        // Track SIGNED roll rate so we can verify left/right symmetry
+        // (previously we used |rollRate| which let a reversal pass).
         const double rollRate_degps = as.kin.p * RTD;
         const double bank = as.kin.phi * RTD;
 
         // Skip first 2 seconds (transient), then track steady-state roll rate
         if (phaseTime_ >= 2.0) {
+            if (rollRate_degps > maxPosRollRate_) maxPosRollRate_ = rollRate_degps;
+            if (rollRate_degps < maxNegRollRate_) maxNegRollRate_ = rollRate_degps;
             maxRollRate_ = std::max(maxRollRate_, std::fabs(rollRate_degps));
             rollRateSum_ += std::fabs(rollRate_degps);
             rollRateCount_++;
@@ -89,15 +93,27 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // Must achieve some roll rate (> 30 deg/s at 350+ kts)
-        if (maxRollRate_ < 30.0) return false;
+        // Roll rate must reach a meaningful fraction of spec. F-16 spec is
+        // ~190 deg/s at 350+ kts; A-10 is ~80 deg/s. Use 60 deg/s as a floor
+        // that filters broken behavior but accepts low-roll-rate aircraft.
+        // Previously 30 deg/s -- passed at <16% of F-16 spec.
+        if (maxRollRate_ < 60.0) return false;
+        // Verify the roll is in the commanded direction (no reversal).
+        // rstick > 0 should produce positive roll rate (right wing down).
+        // rstick < 0 should produce negative roll rate.
+        if (rstick_ > 0.5 && maxPosRollRate_ < 30.0) return false;
+        if (rstick_ < -0.5 && maxNegRollRate_ > -30.0) return false;
         return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Max roll rate: %.1f deg/s %s\n",
-            maxRollRate_, (maxRollRate_ >= 30.0) ? "[PASS]" : "[FAIL]");
+            maxRollRate_, (maxRollRate_ >= 60.0) ? "[PASS]" : "[FAIL]");
+        std::printf("  Direction check: max +%.1f / min %.1f deg/s (rstick %+.1f) %s\n",
+            maxPosRollRate_, maxNegRollRate_, rstick_,
+            ((rstick_ > 0.5 && maxPosRollRate_ >= 30.0) ||
+             (rstick_ < -0.5 && maxNegRollRate_ <= -30.0)) ? "[PASS]" : "[FAIL]");
         double avgRR = rollRateCount_ > 0 ? rollRateSum_ / rollRateCount_ : 0.0;
         std::printf("  Avg roll rate: %.1f deg/s (steady-state, frames 2-%.0f)\n",
             avgRR, maxTime_);
@@ -110,6 +126,8 @@ private:
     double alt_;
     double speed_;
     double maxRollRate_{0.0};
+    double maxPosRollRate_{std::numeric_limits<double>::lowest()};  // max +rollRate
+    double maxNegRollRate_{std::numeric_limits<double>::max()};     // min -rollRate
     double maxBank_{0.0};
     double rollRateSum_{0.0};
     int rollRateCount_{0};

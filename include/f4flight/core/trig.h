@@ -18,10 +18,14 @@
 // What the helper does:
 //   - Fills sinalp/cosalp, sinbet/cosbet from alpha_deg, beta_deg
 //   - Fills sinpsi/cospsi, sinthe/costhe, sinphi/cosphi from psi, theta, phi
-//   - Computes the velocity-vector euler angles:
-//       gamma = theta - alpha_rad * cos(phi)
-//       sigma = psi
-//       mu    = phi
+//   - Computes the velocity-vector euler angles to MATCH FREEFALCON:
+//       gamma = theta       (FreeFalcon eom.cpp:856 extracts gmma directly
+//                            from the body quaternion; it is the body pitch
+//                            angle, NOT the true flight-path angle. Naming
+//                            is misleading but we match FreeFalcon so the
+//                            FCS gains and EOM gravity terms behave the same.)
+//       sigma = psi         (body yaw; no beta correction in FreeFalcon)
+//       mu    = phi         (body roll)
 //     and fills singam/cosgam, sinsig/cossig, sinmu/cosmu, and the
 //     angle fields gmma, sigma, mu.
 //
@@ -47,6 +51,9 @@ namespace f4flight {
 inline void recomputeKinematicTrig(KinematicState& kin,
                                    double alpha_deg,
                                    double beta_deg) noexcept {
+    (void)alpha_deg; (void)beta_deg;  // aero angles are NOT used by FreeFalcon's
+                                       // sigma/gamma/mu extraction (they come
+                                       // from the body quaternion alone)
     const double alp = alpha_deg * DTR;
     const double bet = beta_deg  * DTR;
 
@@ -61,23 +68,28 @@ inline void recomputeKinematicTrig(KinematicState& kin,
     kin.sinthe = std::sin(kin.theta); kin.costhe = std::cos(kin.theta);
     kin.sinphi = std::sin(kin.phi);   kin.cosphi = std::cos(kin.phi);
 
-    // Velocity-vector euler from body euler + alpha/beta.
-    //   gamma = theta - alpha (in radians), with a small roll-coupling term
-    //   so that at non-zero bank the flight path angle is reduced by the
-    //   alpha*cos(phi) projection. Matches the legacy behaviour for small
-    //   alpha/beta.
-    const double gmma = kin.theta - alp * kin.cosphi;
-    kin.gmma   = gmma;
-    kin.singam = std::sin(gmma);
-    kin.cosgam = std::cos(gmma);
+    // Velocity-vector euler angles -- MATCH FREEFALCON.
+    //
+    // FreeFalcon eom.cpp:855-857 extracts sigma/gamma/mu directly from the
+    // body quaternion, which (after resolving the (e1,e2,e3,e4)=(qw,qz,qy,qx)
+    // storage swap) reduces to the standard ZYX extraction. So FreeFalcon's
+    // "gmma" is actually theta (body pitch), its "sigma" is psi, its "mu" is
+    // phi. The legacy variable names are misleading ("flight path angle")
+    // but the math is just body euler.
+    //
+    // Previously f4flight used the physically-correct flight-path-angle
+    // formula gmma = theta - alpha*cos(phi). This is more accurate physics
+    // but does NOT match FreeFalcon -- it changes every gravity term in the
+    // EOM (qptchc, rstab, vtDot, xdot/ydot/zdot) and was a source of subtle
+    // dynamic divergence from the original. We now match FreeFalcon exactly.
+    kin.gmma   = kin.theta;
+    kin.singam = kin.sinthe;
+    kin.cosgam = kin.costhe;
 
-    // sigma = psi (velocity heading ~ body heading for small beta)
-    const double sigma = kin.psi;
-    kin.sigma  = sigma;
-    kin.sinsig = std::sin(sigma);
-    kin.cossig = std::cos(sigma);
+    kin.sigma  = kin.psi;
+    kin.sinsig = kin.sinpsi;
+    kin.cossig = kin.cospsi;
 
-    // mu = phi (wind-axis roll ~ body roll)
     kin.mu     = kin.phi;
     kin.sinmu  = kin.sinphi;
     kin.cosmu  = kin.cosphi;

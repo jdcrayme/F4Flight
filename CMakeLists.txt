@@ -197,7 +197,19 @@ if(F4FLIGHT_BUILD_TESTS)
     file(GLOB F4FLIGHT_FIXTURES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/*.json"
     )
-    set(F4FLIGHT_MANEUVER_SCENARIOS basic flightplan)
+    # All 6 registered scenarios are exercised via ctest. Previously only
+    # `basic` and `flightplan` were listed, so combat/glimits/engine/roll
+    # regression would not break CI even if they went from passing to
+    # failing. The maneuver_test runner returns non-zero if any phase fails
+    # (see maneuver_test.cpp), so ctest now sees real phase-level results.
+    set(F4FLIGHT_MANEUVER_SCENARIOS
+        basic
+        flightplan
+        combat
+        glimits
+        engine
+        roll
+    )
     foreach(fixture ${F4FLIGHT_FIXTURES})
         get_filename_component(ac_name "${fixture}" NAME_WE)
         foreach(sc ${F4FLIGHT_MANEUVER_SCENARIOS})

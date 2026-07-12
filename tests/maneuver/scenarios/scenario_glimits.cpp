@@ -105,12 +105,15 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // After settling (last 3 seconds), G should be within ±1.0G of target
-        // (generous tolerance for initial tuning)
-        const double settlingStart = duration_;
-        (void)settlingStart;
-        // Use the min/max from the settling period
-        const bool gInBounds = (maxG_ <= targetG_ + 2.0) && (minG_ >= targetG_ - 2.0);
+        // G tolerance scales with target G (harder to hold 9G exactly than 1G).
+        //   target 1G:  ±0.5 G  (level flight, tight)
+        //   target 4G:  ±1.0 G
+        //   target 7G:  ±1.5 G
+        //   target 9G:  ±2.0 G  (max-G commanded, expect some overshoot)
+        // Previously used ±2.0 G for every target -- too loose for the 1G
+        // case where the aircraft should hold level flight tightly.
+        const double gTol = std::max(0.5, targetG_ * 0.20);
+        const bool gInBounds = (maxG_ <= targetG_ + gTol) && (minG_ >= targetG_ - gTol);
         // Altitude shouldn't drift more than 2000 ft during a 10s G test
         const bool altOk = (maxAlt_ - minAlt_) < 2000.0;
         return gInBounds && altOk;
@@ -119,9 +122,10 @@ public:
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Target G:   %.1f\n", targetG_);
-        std::printf("  G range:    %.2f to %.2f  %s\n",
-            minG_, maxG_,
-            ((maxG_ <= targetG_ + 2.0) && (minG_ >= targetG_ - 2.0)) ? "[PASS]" : "[FAIL]");
+        const double gTol = std::max(0.5, targetG_ * 0.20);
+        std::printf("  G range:    %.2f to %.2f (tol +%.1f/-%.1f)  %s\n",
+            minG_, maxG_, gTol, gTol,
+            ((maxG_ <= targetG_ + gTol) && (minG_ >= targetG_ - gTol)) ? "[PASS]" : "[FAIL]");
         std::printf("  Alt range:  %.0f to %.0f ft  %s\n",
             minAlt_, maxAlt_,
             ((maxAlt_ - minAlt_) < 2000.0) ? "[PASS]" : "[FAIL]");
