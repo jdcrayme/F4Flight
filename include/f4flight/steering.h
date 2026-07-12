@@ -91,14 +91,31 @@ public:
 // Vertical behaviors
 // ---------------------------------------------------------------------------
 
-// AltitudeHold: unified altitude control.
-// When far from target: climb/descent mode (throttle for alt, pitch for spd).
-// When near target: level mode (pitch for alt, throttle for spd).
-// The VVI cap handles level-off automatically — no state machine needed.
+// AltitudeHold: unified vertical behavior using a gamma-command controller.
+//
+// Based on the FreeFalcon DigitalBrain approach: instead of separate
+// climb/level/descent modes, a single controller commands a desired
+// flight path angle (gamma) based on altitude error with a lead term
+// that naturally levels off as the aircraft approaches target.
+//
+// Pitch owns altitude; throttle owns speed (via SpeedHold). No coupling.
+//
+// The controller:
+//   1. altErr = targetAlt - currentAlt
+//   2. leadErr = altErr - climbRate * leadTime   (look ahead)
+//   3. gammaCmd = leadErr * altGain              (desired flight path angle)
+//   4. gammaErr = gammaCmd - currentGamma
+//   5. elevCmd = gammaErr * speedScaledGain      (proportional)
+//   6. integral += elevCmd * integGain           (slow correction)
+//   7. pstick = integral + elevCmd + turnCompG   (total pitch command)
+//
+// The lead term (step 2) is the key: as the aircraft climbs, climbRate
+// grows, reducing leadErr, reducing gammaCmd, naturally leveling off
+// before reaching target. No VVI cap or mode switching needed.
 class AltitudeHold : public VerticalBehavior {
 public:
     AltitudeHold(double targetAlt_ft, double cruiseSpeed_kts,
-                 double climbSpeed_kts = 0.0, double climbMach = 0.80, double climbPower = 1.0, 
+                 double climbSpeed_kts = 0.0, double climbMach = 0.80, double climbPower = 1.0,
                  double descentSpeed_kts = 0.0, double descentMach = 0.80, double descentPower = 0.05,
                  double levelBand_ft = 200.0);
 
@@ -112,13 +129,16 @@ public:
 private:
     double targetAlt_;
     double cruiseSpeed_;
-    double climbSpeed_;     // 0 = same as cruise
+    double climbSpeed_;     // unused in gamma approach, kept for API compat
     double climbMach_;
-    double climbPower_;
-    double descentPower_;
-    double descentSpeed_;   // 0 = same as cruise
+    double climbPower_;     // unused — throttle is purely speed-based
+    double descentPower_;   // unused — throttle is purely speed-based
+    double descentSpeed_;   // unused, kept for API compat
     double descentMach_;
     double levelBand_;
+
+    // Gamma-hold integral state (persists across frames)
+    double gammaIError_{0.0};
 };
 
 // ---------------------------------------------------------------------------

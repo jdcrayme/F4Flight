@@ -310,22 +310,86 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Performance profile: per-aircraft tuning for the steering controller.
+//
+// The .dat files contain aerodynamic and engine data, but NOT the
+// operational speeds (cruise, climb, descent) that an AI pilot should
+// fly. Different aircraft have very different performance envelopes —
+// an F-16 cruises at 380 kts, a B-52 at 300, an A-10 at 280 — and
+// using one set of speeds for all aircraft causes oscillation, stalls,
+// or inability to maintain altitude.
+//
+// This struct stores the "flight manual" speeds for each aircraft.
+// It can be:
+//   1. Loaded from the JSON file (if a "performance" section is present)
+//   2. Auto-derived from the aircraft data via deriveProfile()
+//   3. Empirically tuned via the tune_profile tool
+//
+// The auto-derived values are reasonable starting points; the tuned
+// values are better. Both let the maneuver test scenarios use
+// aircraft-appropriate speeds instead of hardcoded defaults.
+// ---------------------------------------------------------------------------
+struct PerformanceProfile {
+    // Aircraft category. Used for selecting default behaviors and for
+    // reporting. One of: "fighter", "interceptor", "attack", "bomber",
+    // "transport", "trainer", "uav".
+    std::string category{"fighter"};
+
+    // Speed schedule (kts CAS, except Mach which is dimensionless).
+    // Convention: climbSpeed < cruiseSpeed < descentSpeed, matching
+    // real aviation practice (slow climb for best angle, fast descent
+    // for efficiency).
+    double cruiseSpeed_kts{380.0};
+    double climbSpeed_kts{320.0};       // 0 = same as cruise
+    double climbMach{0.80};
+    double climbPower{1.0};             // 1.0 = MIL, 1.5 = full AB
+    double descentSpeed_kts{420.0};     // 0 = same as cruise
+    double descentMach{0.80};
+    double descentPower{0.05};          // near idle
+
+    // Altitudes (ft). Used by test scenarios to pick reasonable
+    // cruise/climb/descent target altitudes.
+    double cruiseAlt_ft{15000.0};
+    double climbAlt_ft{25000.0};        // target altitude for climb tests
+    double descentAlt_ft{3000.0};       // target altitude for descent tests
+
+    // Maneuver limits for normal operations (not combat).
+    double maxBank_deg{45.0};
+    double levelBand_ft{200.0};         // altitude band for level-flight mode
+
+    // Whether this profile has been empirically tuned by tune_profile,
+    // or is just the auto-derived starting point. Hosts can check this
+    // to decide whether to warn the user that the profile may need tuning.
+    bool tuned{false};
+};
+
+// ---------------------------------------------------------------------------
 // Top-level aircraft configuration. Combines all the above.
 // ---------------------------------------------------------------------------
 struct AircraftConfig {
     std::string name;
     std::string GetDescription;
 
-    AircraftGeometry geometry;
-    AuxAero          aux;
-    AeroTable        aero;
-    EngineTable      engine;
-    RollCommandTable rollCmd;
-    Limiter          limiters[static_cast<int>(LimiterKey::Count)];
+    AircraftGeometry   geometry;
+    AuxAero            aux;
+    AeroTable          aero;
+    EngineTable        engine;
+    RollCommandTable   rollCmd;
+    PerformanceProfile profile;
+    Limiter            limiters[static_cast<int>(LimiterKey::Count)];
 
     // Convenience: F-16-like default G/AOA schedule
     bool   aoaCommandMode{false};
     double aoaCommandMaxGs{9.0};
+
+    // -----------------------------------------------------------------------
+    // Derive a reasonable PerformanceProfile from the aircraft data.
+    // Uses TWR, wing loading, maxGs, maxVcas, and nEngines to categorize
+    // the aircraft and pick starting speeds. The result is a starting
+    // point — for best results, run the tune_profile tool to empirically
+    // refine the values.
+    // -----------------------------------------------------------------------
+    void deriveProfile();
 
     // -----------------------------------------------------------------------
     // Typed limiter accessors. Preferred over raw `limiters[idx]` array

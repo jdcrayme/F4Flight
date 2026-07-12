@@ -159,11 +159,29 @@ void EngineModel::update(double dt,
         state.aburnLit = false;
     }
 
-    // Thrust scaling
+    // Thrust scaling.
+    //
+    // The thrust tables in the .dat file are PER SINGLE ENGINE (this
+    // matches the FreeFalcon convention — engine.cpp runs the engine
+    // model once per engine and sums the results). For multi-engine
+    // aircraft (F-15, F-18, F-14: nEngines=2; B-52: nEngines=4; etc.),
+    // we multiply the single-engine thrust by nEngines to get the
+    // combined thrust. Without this, multi-engine fighters have ~half
+    // the thrust they should (F-15 TWR drops from ~0.6 to ~0.3) and
+    // can't maintain altitude/speed in climbs.
+    //
+    // This is a simplification — it assumes all engines are at the same
+    // throttle and ignores asymmetric-thrust yaw coupling. The FreeFalcon
+    // code models each engine independently with its own spool dynamics;
+    // a future enhancement could do the same here. For now, multiplying
+    // by nEngines gives the correct steady-state thrust.
+    const double nEngines = (aux_->nEngines > 0) ? static_cast<double>(aux_->nEngines) : 1.0;
     const double thrtab = thrtb1 * table_->thrustFactor;
-    state.thrust = thrtab * ethrst; // ethrst includes thrust-reverse effect
+    state.thrust = thrtab * ethrst * nEngines;
 
     // --- Fuel flow ---
+    // FreeFalcon multiplies the per-engine fuel flow by nEngines
+    // (engine.cpp:568: `fuelFlowSS *= auxaeroData->nEngines`).
     double fuelFlowSS = 0.0;
     if (hasFuelFlowTables_) {
         double ff1, ff2;
@@ -177,12 +195,18 @@ void EngineModel::update(double dt,
             fuelFlowSS = (ff2 - ff1) * pwrlev + ff1;
         }
     } else {
-        // Legacy: fuel flow = factor * thrust * mass
+        // Legacy: fuel flow = factor * thrust * mass.
+        // state.thrust already includes the nEngines multiplier (applied
+        // above), so this path produces the combined fuel flow directly.
         const double factor = state.aburnLit ? aux_->fuelFlowFactorAb : aux_->fuelFlowFactorNormal;
         fuelFlowSS = factor * state.thrust * mass_slugs;
     }
 
     if (simplified) fuelFlowSS *= 0.75;
+    // The table-based fuel flow is per-engine; multiply by nEngines to
+    // get the combined fuel flow (matches FreeFalcon engine.cpp:568).
+    // The legacy path is already correct (uses the nEngines-scaled thrust).
+    if (hasFuelFlowTables_) fuelFlowSS *= nEngines;
     if (fuelFlowSS < aux_->minFuelFlow) fuelFlowSS = aux_->minFuelFlow;
 
     // 10-frame smoothing (1 Hz one-pole)

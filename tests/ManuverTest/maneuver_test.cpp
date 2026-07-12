@@ -197,19 +197,18 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Initialize flight model + steering controller ONCE. 
-        // Each scenario should reinitialize to start from a clean state, 
+    // Initialize flight model + steering controller ONCE.
+    // Each scenario should reinitialize to start from a clean state,
     // but we don't want to re-read the aircraft JSON for each scenario.
+    // The steering controller's max bank comes from the per-aircraft
+    // performance profile (fighters: 45°, heavies: 25-30°).
     FlightModel fm;
-    fm.init(cfg, 15000, 300 * KNOTS_TO_FTPSEC, 0.0, true);
+    fm.init(cfg, cfg.profile.cruiseAlt_ft,
+            calcTasFromKcas(cfg.profile.cruiseSpeed_kts, cfg.profile.cruiseAlt_ft),
+            0.0, true);
 
     SteeringController sc;
-    // 45° max bank — 90° (the old value) is too aggressive for waypoint
-    // navigation: the aircraft overbanks past 90° during the turn to the
-    // next waypoint, which (before the turnCompensatedG fix) caused a NaN
-    // cascade. 45° is a standard airliner/fighter cruise bank limit and
-    // gives smooth turns without overbanking.
-    sc.setMaxBankAngle_deg(45);
+    sc.setMaxBankAngle_deg(cfg.profile.maxBank_deg);
     sc.setMaxGs(cfg.geometry.maxGs);
 
     ScenarioContext sctx{cfg};

@@ -339,6 +339,26 @@ std::string write(const AircraftConfig& cfg) {
     w.key("aoaCommandMode");    w.writeBool(cfg.aoaCommandMode);
     w.key("aoaCommandMaxGs");   w.writeNum(cfg.aoaCommandMaxGs);
 
+    // Performance profile (per-aircraft tuning for the steering controller)
+    w.key("performance");
+    w.beginObjValue();
+    w.key("category");         w.writeString(cfg.profile.category);
+    w.key("cruiseSpeed_kts");  w.writeNum(cfg.profile.cruiseSpeed_kts);
+    w.key("climbSpeed_kts");   w.writeNum(cfg.profile.climbSpeed_kts);
+    w.key("climbMach");        w.writeNum(cfg.profile.climbMach);
+    w.key("climbPower");       w.writeNum(cfg.profile.climbPower);
+    w.key("descentSpeed_kts"); w.writeNum(cfg.profile.descentSpeed_kts);
+    w.key("descentMach");      w.writeNum(cfg.profile.descentMach);
+    w.key("descentPower");     w.writeNum(cfg.profile.descentPower);
+    w.key("cruiseAlt_ft");     w.writeNum(cfg.profile.cruiseAlt_ft);
+    w.key("climbAlt_ft");      w.writeNum(cfg.profile.climbAlt_ft);
+    w.key("descentAlt_ft");    w.writeNum(cfg.profile.descentAlt_ft);
+    w.key("maxBank_deg");      w.writeNum(cfg.profile.maxBank_deg);
+    w.key("levelBand_ft");     w.writeNum(cfg.profile.levelBand_ft);
+    w.key("tuned");            w.writeBool(cfg.profile.tuned);
+    w.endObj();
+    w.endValue();
+
     w.endObj();
     w.writeRaw("\n");
     return w.str();
@@ -751,8 +771,34 @@ IoResult read(const std::string& jsonStr, AircraftConfig& cfg) {
             }
             else if (key == "aoaCommandMode")  r.readInto(cfg.aoaCommandMode);
             else if (key == "aoaCommandMaxGs") r.readInto(cfg.aoaCommandMaxGs);
+            else if (key == "performance") {
+                r.readObject([&](const std::string& k) {
+                    if      (k == "category")         r.readInto(cfg.profile.category);
+                    else if (k == "cruiseSpeed_kts")  r.readInto(cfg.profile.cruiseSpeed_kts);
+                    else if (k == "climbSpeed_kts")   r.readInto(cfg.profile.climbSpeed_kts);
+                    else if (k == "climbMach")        r.readInto(cfg.profile.climbMach);
+                    else if (k == "climbPower")       r.readInto(cfg.profile.climbPower);
+                    else if (k == "descentSpeed_kts") r.readInto(cfg.profile.descentSpeed_kts);
+                    else if (k == "descentMach")      r.readInto(cfg.profile.descentMach);
+                    else if (k == "descentPower")     r.readInto(cfg.profile.descentPower);
+                    else if (k == "cruiseAlt_ft")     r.readInto(cfg.profile.cruiseAlt_ft);
+                    else if (k == "climbAlt_ft")      r.readInto(cfg.profile.climbAlt_ft);
+                    else if (k == "descentAlt_ft")    r.readInto(cfg.profile.descentAlt_ft);
+                    else if (k == "maxBank_deg")      r.readInto(cfg.profile.maxBank_deg);
+                    else if (k == "levelBand_ft")     r.readInto(cfg.profile.levelBand_ft);
+                    else if (k == "tuned")            r.readInto(cfg.profile.tuned);
+                    else r.skipValue();
+                });
+            }
             else r.skipValue();
         });
+
+        // If the JSON didn't include a performance profile, derive one
+        // from the aircraft data. This ensures every loaded aircraft has
+        // a usable profile even if the JSON file predates this feature.
+        if (cfg.profile.cruiseSpeed_kts <= 0.0) {
+            cfg.deriveProfile();
+        }
 
         // If maxFuel wasn't set, default to internalFuel
         if (cfg.geometry.maxFuel_lbs <= 0.0) cfg.geometry.maxFuel_lbs = cfg.geometry.internalFuel_lbs;

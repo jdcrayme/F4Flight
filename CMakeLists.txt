@@ -248,6 +248,16 @@ if(F4FLIGHT_BUILD_EXAMPLES)
     else()
         target_compile_options(dat2json PRIVATE -Wall -Wextra)
     endif()
+
+    # tune_profile: empirically tune a PerformanceProfile for an aircraft
+    # by running short simulations at different speeds and scoring them.
+    add_executable(tune_profile tools/tune_profile.cpp)
+    target_link_libraries(tune_profile PRIVATE f4flight)
+    if(MSVC)
+        target_compile_options(tune_profile PRIVATE /W4 /utf-8)
+    else()
+        target_compile_options(tune_profile PRIVATE -Wall -Wextra)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

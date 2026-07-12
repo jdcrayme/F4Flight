@@ -108,5 +108,7 @@
       "type": "Value",      "x0": 0,      "y0": 0,      "x1": 30,      "y1": 0,      "x2": 0,      "y2": 0
     }
   },
-  "aoaCommandMode": false,  "aoaCommandMaxGs": 9
+  "aoaCommandMode": false,  "aoaCommandMaxGs": 9,  "performance": {
+    "category": "interceptor",    "cruiseSpeed_kts": 410,    "climbSpeed_kts": 380,    "climbMach": 0.8,    "climbPower": 1,    "descentSpeed_kts": 460,    "descentMach": 0.8,    "descentPower": 0.05,    "cruiseAlt_ft": 25000,    "climbAlt_ft": 35000,    "descentAlt_ft": 15000,    "maxBank_deg": 45,    "levelBand_ft": 200,    "tuned": true
+  }
 }

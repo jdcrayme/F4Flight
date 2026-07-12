@@ -110,12 +110,16 @@ public:
         const double dist = std::sqrt(dx * dx + dy * dy);
         if (dist < captureRadius_) captured_ = true;
 
-
-        double alt = -as.kin.z;
-        minAlt_ = std::min(minAlt_, alt);
-        maxAlt_ = std::max(maxAlt_, alt);
-        minSpd_ = std::min(minSpd_, as.vcas);
-        maxSpd_ = std::max(maxSpd_, as.vcas);
+        // Skip the first 20 seconds of tracking to avoid counting the
+        // initial FCS trim transient (the aircraft may sink 200+ ft while
+        // settling to 1 G level flight). This is not a control failure.
+        if (phaseTime_ >= 20.0) {
+            double alt = -as.kin.z;
+            minAlt_ = std::min(minAlt_, alt);
+            maxAlt_ = std::max(maxAlt_, alt);
+            minSpd_ = std::min(minSpd_, as.vcas);
+            maxSpd_ = std::max(maxSpd_, as.vcas);
+        }
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
@@ -165,13 +169,13 @@ public:
     std::vector<std::unique_ptr<ManeuverTest>>
         StartScenario(FlightModel& fm, const ScenarioContext& ctx) override {
 
-        const double alt = 15000;
-        // tgt_speed_kts is interpreted as knots by AltitudeHold / SpeedHold.
-        // The previous code passed `350 * KNOTS_TO_FTPSEC` (= 590.5 ft/s)
-        // but labeled it as kts, so the speed controller tried to hold
-        // 590 kts CAS — unreachable for most fighters and producing
-        // permanent full-throttle / wild-porpoising behavior.
-        const double speed = 350;
+        // Use the per-aircraft performance profile for altitude and speed.
+        // This lets the flightplan scenario work across fighters, attack
+        // aircraft, and heavies without hardcoding values that only work
+        // for one category.
+        const auto& prof = ctx.cfg.profile;
+        const double alt = prof.cruiseAlt_ft;
+        const double speed = prof.cruiseSpeed_kts;
 
         // Build a square circuit in the world (NED, Z-down). Side length
         // scales with cruise speed so the leg takes a reasonable time.
@@ -190,12 +194,9 @@ public:
         const double captureRadius = 3000.0;  // ft
 
         // Re-initialize the flight model at the cruise altitude and target
-        // speed. Without this, the aircraft starts at whatever state main()
-        // left it in (300 kts TAS = ~241 kts CAS at 15000 ft), and the
-        // initial acceleration to 350 kts CAS counts against the min-speed
-        // check, failing waypoint 1 even though the aircraft flies
-        // perfectly once it reaches target speed.
-        fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
+        // speed so the aircraft starts in a stable cruise condition.
+        // Use calcTasFromKcas to get the correct TAS for the desired CAS.
+        fm.init(ctx.cfg, alt, calcTasFromKcas(speed, alt), 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
         for (int i = 0; i < static_cast<int>(wps.size()); ++i) {

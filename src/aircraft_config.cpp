@@ -268,4 +268,199 @@ ConfigValidationReport AircraftConfig::validate() const {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// deriveProfile — auto-derive a PerformanceProfile from the aircraft data.
+//
+// Uses TWR (thrust-to-weight ratio at MIL power, sea level), wing loading
+// (empty weight / wing area), maxGs, maxVcas, and nEngines to categorize
+// the aircraft and pick reasonable starting speeds.
+//
+// The categories and their default speeds are based on real-world aviation
+// practice:
+//   Interceptor: high TWR, high maxVcas — F-14, MiG-31. Cruise 450, climb 380.
+//   Fighter:     high TWR, maxGs >= 7   — F-16, F-15, MiG-29. Cruise 380, climb 320.
+//   Attack:      medium TWR, maxGs 4-7  — A-10. Cruise 280, climb 230.
+//   Bomber:      low maxGs, heavy       — B-52, B-1. Cruise 300, climb 250.
+//   Transport:   low maxGs, very heavy  — C-130. Cruise 250, climb 210.
+//
+// Within each category, speeds are adjusted based on TWR — higher TWR
+// allows higher cruise speeds; lower TWR forces lower speeds. The cruise
+// altitude is adjusted based on the aircraft's service ceiling (approximated
+// from the engine thrust table altitude breakpoints).
+// ---------------------------------------------------------------------------
+void AircraftConfig::deriveProfile() {
+    const double emptyWeight = geometry.emptyWeight_lbs;
+    const double fuel = geometry.internalFuel_lbs;
+    const double grossWeight = emptyWeight + fuel;
+    const double area = geometry.area_ft2;
+    const double maxGs = geometry.maxGs;
+    const double maxVcas = geometry.maxVcas_kts;
+    const double minVcas = geometry.minVcas_kts;
+    const int nEngines = aux.nEngines > 0 ? aux.nEngines : 1;
+
+    // Compute sea-level MIL thrust-to-weight ratio.
+    // The thrust tables are per-engine; total thrust = table[0] * nEngines.
+    double slMilThrust = 0.0;
+    if (!engine.thrust_mil.empty() && !engine.mach.empty()) {
+        slMilThrust = engine.thrust_mil[0] * nEngines; // mach=0, alt=0
+    }
+    const double twr = (grossWeight > 0.0) ? (slMilThrust / grossWeight) : 0.0;
+
+    // Wing loading (psf)
+    const double wingLoading = (area > 0.0) ? (grossWeight / area) : 0.0;
+
+    // --- Categorize ---
+    // The categorization uses maxGs, maxVcas, empty weight, and TWR.
+    //
+    // Attack: maxVcas <= 550 (slow CAS aircraft — A-10 at 500, Su-25).
+    //   These are subsonic ground-attack aircraft regardless of maxGs.
+    // Interceptor: maxVcas >= 900 AND maxGs >= 7 (MiG-31, F-14 at high
+    //   speed). Most fighters (F-16 maxVcas=850, F-15=800) are NOT
+    //   interceptors — they're multirole fighters.
+    // Fighter: maxGs >= 7 (F-16, F-15, MiG-29, etc.).
+    // Bomber: maxGs < 4, medium-heavy (B-52, B-1, Tu-22).
+    // Transport: maxGs < 4, very heavy (C-130, C-5, An-124).
+    // Trainer: everything else (light, moderate performance).
+    std::string category;
+    if (maxVcas <= 550.0 && maxGs >= 4.0) {
+        category = "attack";
+    } else if (maxGs >= 7.0 && maxVcas >= 900.0) {
+        category = "interceptor";
+    } else if (maxGs >= 7.0) {
+        category = "fighter";
+    } else if (maxGs >= 4.0 && emptyWeight < 50000.0) {
+        category = "attack";
+    } else if (maxGs < 4.0 && emptyWeight > 70000.0) {
+        category = "transport";
+    } else if (maxGs < 4.0) {
+        category = "bomber";
+    } else {
+        category = "trainer";
+    }
+
+    // Override: very low TWR (< 0.2) forces transport-like speeds
+    // regardless of maxGs (e.g., heavy aircraft with weak engines).
+    if (twr < 0.2 && category != "transport") {
+        category = "transport";
+    }
+
+    // --- Base speeds per category ---
+    // Convention: climb < cruise < descent
+    double cruiseSpeed, climbSpeed, descentSpeed, maxBank;
+    if (category == "interceptor") {
+        cruiseSpeed = 450; climbSpeed = 380; descentSpeed = 500; maxBank = 45;
+    } else if (category == "fighter") {
+        cruiseSpeed = 380; climbSpeed = 320; descentSpeed = 420; maxBank = 45;
+    } else if (category == "attack") {
+        cruiseSpeed = 280; climbSpeed = 230; descentSpeed = 320; maxBank = 30;
+    } else if (category == "bomber") {
+        cruiseSpeed = 300; climbSpeed = 250; descentSpeed = 340; maxBank = 30;
+    } else if (category == "transport") {
+        cruiseSpeed = 250; climbSpeed = 210; descentSpeed = 290; maxBank = 25;
+    } else { // trainer
+        cruiseSpeed = 320; climbSpeed = 270; descentSpeed = 360; maxBank = 40;
+    }
+
+    // --- Adjust speeds based on TWR ---
+    // High TWR (> 0.6): can maintain higher cruise speeds
+    // Low TWR (< 0.3): must fly slower, but keep the climb/cruise/descent
+    // spread intact (don't flatten the schedule).
+    if (twr > 0.0 && twr < 0.3) {
+        // Low TWR — reduce all speeds by up to 15%, preserving the spread
+        const double factor = 0.85 + (twr / 0.3) * 0.15; // 0.85 at TWR=0, 1.0 at TWR=0.3
+        cruiseSpeed *= factor;
+        climbSpeed *= factor;
+        descentSpeed *= factor;
+    } else if (twr > 0.7) {
+        // High TWR — increase cruise and descent by up to 10%
+        const double factor = 1.0 + std::min(0.10, (twr - 0.7) * 0.2);
+        cruiseSpeed *= factor;
+        descentSpeed *= factor;
+        // Keep climb speed the same — higher TWR doesn't mean we should climb faster
+    }
+
+    // --- Clamp to aircraft limits ---
+    // Cruise speed should be comfortably above minVcas (with 20% margin)
+    const double minSafe = std::max(minVcas * 1.2, 150.0); // never below 150 kts
+    if (cruiseSpeed < minSafe) cruiseSpeed = minSafe;
+    if (climbSpeed < minSafe) climbSpeed = minSafe;
+    if (cruiseSpeed > maxVcas * 0.85) cruiseSpeed = maxVcas * 0.85;
+    if (descentSpeed > maxVcas * 0.95) descentSpeed = maxVcas * 0.95;
+
+    // Ensure the climb < cruise < descent ordering is preserved after
+    // all the adjustments. If clamping collapsed the spread, nudge them apart.
+    if (climbSpeed >= cruiseSpeed) climbSpeed = cruiseSpeed * 0.85;
+    if (descentSpeed <= cruiseSpeed) descentSpeed = cruiseSpeed * 1.10;
+
+    // --- Cruise altitude ---
+    // Pick a conservative cruise altitude based on category and TWR.
+    // The previous approach (65% of the highest engine table altitude)
+    // produced altitudes that were too high for the aircraft to maintain
+    // speed at — the F-16 was assigned 45000 ft, where it can't hold
+    // 450 kts CAS at MIL power with the current engine model.
+    //
+    // Real-world cruise altitudes:
+    //   Fighters:    20000-30000 ft (cruise), up to 40000 for ferry
+    //   Interceptors: 25000-35000 ft
+    //   Attack:       15000-20000 ft
+    //   Bombers:      25000-35000 ft
+    //   Transports:   20000-30000 ft
+    //
+    // We pick the low end of these ranges to ensure the aircraft can
+    // maintain speed. The tune_profile tool can adjust upward if the
+    // aircraft handles it well.
+    double cruiseAlt;
+    if (category == "interceptor") {
+        cruiseAlt = 25000.0;
+    } else if (category == "fighter") {
+        cruiseAlt = 20000.0;
+    } else if (category == "attack") {
+        cruiseAlt = 15000.0;
+    } else if (category == "bomber") {
+        cruiseAlt = 25000.0;
+    } else if (category == "transport") {
+        cruiseAlt = 20000.0;
+    } else {
+        cruiseAlt = 15000.0;
+    }
+    // Reduce for low-TWR aircraft (they struggle at altitude)
+    if (twr < 0.3) {
+        cruiseAlt = std::min(cruiseAlt, 15000.0);
+    }
+    // Clamp
+    cruiseAlt = f4flight::limit(cruiseAlt, 5000.0, 35000.0);
+
+    // --- Climb/descent altitudes ---
+    const double climbAlt = cruiseAlt + 10000.0;
+    const double descentAlt = std::max(3000.0, cruiseAlt - 10000.0);
+
+    // --- Power settings ---
+    // Most aircraft climb at MIL (1.0). High-TWR fighters can climb at
+    // reduced power (0.9) to avoid overspeeding.
+    double climbPower = 1.0;
+    if (twr > 0.7 && category == "fighter") {
+        climbPower = 0.95;
+    }
+    // Heavy/low-TWR aircraft may need full AB to climb. We don't model
+    // this by default — AB climbs are inefficient and the test scenarios
+    // don't require them. Leave climbPower at 1.0 (MIL).
+    double descentPower = 0.05; // near idle
+
+    // --- Assign ---
+    profile.category = category;
+    profile.cruiseSpeed_kts = cruiseSpeed;
+    profile.climbSpeed_kts = climbSpeed;
+    profile.climbMach = 0.80;
+    profile.climbPower = climbPower;
+    profile.descentSpeed_kts = descentSpeed;
+    profile.descentMach = 0.80;
+    profile.descentPower = descentPower;
+    profile.cruiseAlt_ft = cruiseAlt;
+    profile.climbAlt_ft = climbAlt;
+    profile.descentAlt_ft = descentAlt;
+    profile.maxBank_deg = maxBank;
+    profile.levelBand_ft = 200.0;
+    profile.tuned = false;
+}
+
 } // namespace f4flight

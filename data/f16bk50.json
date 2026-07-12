@@ -108,5 +108,7 @@
       "type": "Value",      "x0": 0,      "y0": 0,      "x1": 25.2,      "y1": 0,      "x2": 0,      "y2": 0
     }
   },
-  "aoaCommandMode": false,  "aoaCommandMaxGs": 9
+  "aoaCommandMode": false,  "aoaCommandMaxGs": 9,  "performance": {
+    "category": "fighter",    "cruiseSpeed_kts": 340,    "climbSpeed_kts": 320,    "climbMach": 0.8,    "climbPower": 1,    "descentSpeed_kts": 380,    "descentMach": 0.8,    "descentPower": 0.05,    "cruiseAlt_ft": 20000,    "climbAlt_ft": 30000,    "descentAlt_ft": 10000,    "maxBank_deg": 45,    "levelBand_ft": 200,    "tuned": true
+  }
 }

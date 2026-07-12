@@ -90,119 +90,133 @@ double AltitudeHold::compute(const AircraftState& state, double dt,
                               SteeringContext& ctx, PilotInput& out) {
     const double currentAlt = -state.kin.z;
     const double altErr = targetAlt_ - currentAlt;
-    const double climbRate_fps = -state.kin.zdot;
-    const double climbRate_fpm = climbRate_fps * 60.0;
+    const double climbRate_fps = -state.kin.zdot;    // positive = climbing
     const double tcG = turnCompensatedG(state);
 
-    // --- Determine mode based on altitude error ---
-    const bool isClimb = altErr > levelBand_;
-    const bool isDescent = altErr < -levelBand_;
+    // =========================================================================
+    // GAMMA-COMMAND ALTITUDE CONTROL (FreeFalcon approach)
+    // =========================================================================
+    //
+    // Instead of separate climb/level/descent modes, a single controller
+    // commands a desired flight path angle (gamma) based on altitude error
+    // with a lead term that naturally levels off as the aircraft approaches
+    // target.
+    //
+    // Pitch owns altitude; throttle owns speed (via SpeedHold). No coupling.
+    //
+    // The controller is a direct port of FreeFalcon's DigitalBrain:
+    //   AltitudeHold() -> GammaHold() -> SetPstick()
+    //
+    //   1. altErr = targetAlt - currentAlt
+    //   2. leadErr = altErr - climbRate * leadTime   (look ahead)
+    //   3. gammaCmd = leadErr * altGain              (desired flight path angle, degrees)
+    //   4. gammaErr = gammaCmd - currentGamma
+    //   5. elevCmd = gammaErr * speedScaledGain      (proportional, scaled by airspeed)
+    //   6. integral += elevCmd * integGain           (slow correction for steady-state)
+    //   7. pstick = integral + elevCmd + turnCompG   (total pitch command in G)
+    //
+    // The lead term (step 2) is the key: as the aircraft climbs, climbRate
+    // grows, reducing leadErr, reducing gammaCmd, naturally leveling off
+    // before reaching target. No VVI cap or mode switching needed.
 
-    if (isClimb) {
-        // ===== CLIMB: throttle for altitude (VVI-capped), pitch for speed =====
-        const double maxVVI_fpm = computeMaxVVI_fpm(altErr);
-        const double cruisePower = 0.30;
+    // --- Step 1-2: altitude error with lead term ---
+    // The lead time controls how far ahead we look. A longer lead makes the
+    // controller start leveling off earlier (smoother but slower capture).
+    // FreeFalcon uses ZDelta (climb rate in ft/s) directly, which is
+    // equivalent to a 1-second lead. We use 2 seconds for a balance of
+    // smoothness and responsiveness.
+    const double leadTime_s = 2.0;
+    double leadErr = altErr - climbRate_fps * leadTime_s;
 
-        // Throttle: reduce as VVI exceeds cap
-        double vviExcess = climbRate_fpm - maxVVI_fpm;
-        if (vviExcess > 0.0 && maxVVI_fpm > 1.0) {
-            double excessFrac = limit(vviExcess / maxVVI_fpm, 0.0, 1.0);
-            out.throttle = climbPower_ * (1.0 - excessFrac);
-        } else {
-            out.throttle = climbPower_;
-        }
+    // --- Step 3: desired flight path angle (degrees) ---
+    // altGain converts altitude error to a desired gamma. FreeFalcon uses
+    // 0.015 (degrees per foot), but that's for an AI that can tolerate large
+    // excursions. We use 0.01 for smoother control — at 5000 ft error -> 50 deg
+    // gamma (clamped to 30), at 500 ft -> 5 deg, at 50 ft -> 0.5 deg.
+    const double altGain = 0.01;
+    double gammaCmd = leadErr * altGain;
+    // Clamp gamma to a reasonable range (FreeFalcon uses +/- 60 deg)
+    gammaCmd = limit(gammaCmd, -30.0, 30.0);
 
-        // Pitch: hold climb speed schedule.
-        //
-        // The G target starts slightly above 1.0 (a gentle climb) and is
-        // adjusted by the speed error. The two directions need different
-        // aggression:
-        //
-        //   * Overspeed (speedErr < 0): the aircraft has excess energy.
-        //     A small pitch-up (max +0.2 G) is enough to convert the
-        //     extra speed into altitude. Too much response here causes
-        //     pitch/speed oscillation (the F-16 was sensitive to this).
-        //
-        //   * Underspeed (speedErr > 0): the aircraft is bleeding energy
-        //     in the climb. Lower-thrust-per-weight aircraft (F-15, F-14,
-        //     MiG-29, ...) can shed 100+ kts quickly. The response must
-        //     be aggressive enough to nearly level the aircraft (gTarget
-        //     approaching 0) so speed can recover before the aircraft
-        //     stalls and sinks. The old cap of 0.3 G (floor 0.85) was
-        //     not enough — the aircraft kept climbing and bled speed
-        //     down to ~150 kts, then lost lift and descended.
-        double targetSpeed = (state.mach < climbMach_) ? climbSpeed_ : state.vcas;
-        double speedErr = targetSpeed - state.vcas;
+    // --- Step 4: gamma error ---
+    // state.kin.gmma is the current flight path angle in radians.
+    double gammaErr_deg = gammaCmd - state.kin.gmma * RTD;
 
-        double gTarget = 1.15;
-        if (speedErr > 30.0)
-            gTarget -= limit((speedErr - 30.0) * 0.012, 0.0, 1.2);
-        if (speedErr < -30.0)
-            gTarget += limit(-(speedErr + 30.0) * 0.005, 0.0, 0.2);
+    // --- Step 5: elevator command (proportional, speed-scaled) ---
+    // FreeFalcon: elevCmd = gammaErr * 0.25 * KIAS / 350
+    // The speed scaling makes the gain lower at low speed (where control
+    // authority is higher) and higher at high speed (where authority is lower).
+    // We reduce the gain from 0.25 to 0.15 for smoother autopilot response.
+    double speedScale = 0.15 * state.vcas / 350.0;
+    if (speedScale < 0.05) speedScale = 0.05;  // floor to prevent zero gain
+    double elevCmd = gammaErr_deg * speedScale;
 
-        gTarget = limit(gTarget, -0.1, ctx.maxGs);
-        double pitchCmd;
-        if (gTarget > 0.0) {
-            pitchCmd = std::sqrt(gTarget / ctx.maxGs);
-        } else {
-            // Slight nose-down command for severe speed bleed.
-            pitchCmd = -std::sqrt(-gTarget / ctx.maxGs);
-        }
-        pitchCmd = protectSpeed(pitchCmd, state, ctx.maxGs);
-
-        // Reset level-flight PID to prevent windup
-        ctx.pitchPID.reset();
-
-        return limit(pitchCmd, -1.0, 1.0);
-
-    } else if (isDescent) {
-        // ===== DESCENT: throttle for cruise speed, pitch for descent speed + VVI =====
-        const double maxVVI_fpm = computeMaxVVI_fpm(altErr);
-        const double maxVVI_fps = maxVVI_fpm / 60.0;
-
-        // Throttle: chase cruise speed
-        out.throttle = ctx.throttlePID.update(cruiseSpeed_ - state.vcas, dt);
-
-        // Pitch: descent speed + VVI cap
-        double targetSpeed = (state.vcas > descentSpeed_ && state.mach > descentMach_)
-            ? state.vcas : descentSpeed_;
-        double speedErr = targetSpeed - state.vcas;
-
-        double gTarget = 0.9;
-
-        // VVI cap: increase G if descending too fast
-        if (-climbRate_fps > maxVVI_fps && maxVVI_fps > 0.01) {
-            gTarget += limit((-climbRate_fps - maxVVI_fps) * 0.01, 0.0, 0.8);
-        }
-        if (speedErr < -10.0)
-            gTarget += limit(-(speedErr + 10.0) * 0.01, 0.0, 0.5);
-        if (speedErr > 10.0)
-            gTarget -= limit((speedErr - 10.0) * 0.01, 0.0, 0.2);
-
-        gTarget = limit(gTarget, 0.0, ctx.maxGs);
-        double pitchCmd = std::sqrt(gTarget / ctx.maxGs);
-        pitchCmd = protectSpeed(pitchCmd, state, ctx.maxGs);
-
-        ctx.pitchPID.reset();
-
-        return limit(pitchCmd, -1.0, 1.0);
-
-    } else {
-        // ===== LEVEL: pitch for altitude, throttle for speed =====
-        double gErr = tcG - state.loads.nzcgs;
-        double gCorrection = limit(gErr * 0.05, -0.2, 0.2);
-
-        double altErrClamped = limit(altErr, -500.0, 500.0);
-        double pitchCmd = ctx.pitchPID.update(altErrClamped, dt);
-        pitchCmd += limit(-climbRate_fps * 0.002, -0.15, 0.15);
-        pitchCmd += std::sqrt(tcG / ctx.maxGs) + gCorrection;
-        pitchCmd = protectSpeed(pitchCmd, state, ctx.maxGs);
-
-        // Throttle: let the throttle behavior handle it (or do it here if none)
-        // The controller checks if we're in level mode and lets SpeedHold run.
-
-        return limit(pitchCmd, -1.0, 1.0);
+    // Turn compensation: divide by cos(bank) so level flight in a turn
+    // gets the right pitch. Only when bank < 45 deg (cos > 0.7).
+    if (std::fabs(state.kin.phi) < 45.0 * DTR) {
+        double cosphi = std::cos(state.kin.phi);
+        if (cosphi > 0.1) elevCmd /= cosphi;
     }
+
+    // Note: FreeFalcon squares elevCmd for a nonlinear response, but that
+    // amplifies oscillation in our smoother autopilot context. We keep it
+    // linear for more predictable behavior.
+
+    // --- Step 6: integral term (slow correction for steady-state error) ---
+    // FreeFalcon: gammaHoldIError += 0.0025 * elevCmd, clamped to [-1, 1]
+    gammaIError_ += 0.0025 * elevCmd * (dt * 60.0);  // scale by frame rate
+    gammaIError_ = limit(gammaIError_, -1.0, 1.0);
+
+    // --- Step 7: total pitch command (in G) ---
+    // gammaCmd = integral + proportional + turn-compensated level G
+    // The 1/cos(bank) term ensures the aircraft maintains 1 G (level) in
+    // turns — without it, the aircraft would lose altitude in a turn.
+    double gCmd = gammaIError_ + elevCmd + tcG;
+
+    // Clamp to a safe G range (FreeFalcon uses [-2, 6.5])
+    gCmd = limit(gCmd, -2.0, std::min(6.5, ctx.maxGs));
+
+    // Convert G command to pstick [-1, +1].
+    // The FCS interprets pstick as a G command (via stick shaping).
+    // sqrt mapping: pstick = sqrt((gCmd - 1) / (maxGs - 1)) for gCmd > 1,
+    //               pstick = -sqrt((1 - gCmd) / 4) for gCmd < 1.
+    // This matches FreeFalcon's SetPstick shaping.
+    double pstick;
+    if (gCmd > 1.0) {
+        double denom = ctx.maxGs - 1.0;
+        if (denom < 0.1) denom = 0.1;
+        pstick = std::sqrt((gCmd - 1.0) / denom);
+    } else {
+        pstick = -std::sqrt((1.0 - gCmd) / 4.0);
+    }
+
+    // Low-speed authority fade: reduce pstick at low airspeed to prevent
+    // stalling. FreeFalcon: stickFact = 0.5 + (KIAS - 150) / 300, clamped [0, 1]
+    double stickFact = 0.5 + (state.vcas - 150.0) / 300.0;
+    stickFact = limit(stickFact, 0.0, 1.0);
+    pstick *= stickFact;
+
+    // Smooth the command (low-pass filter) to prevent jerky inputs.
+    // FreeFalcon: pStick = 0.2 * pStick + 0.8 * stickCmd
+    // We apply this via the ctx.pitchPID's internal state is NOT used here;
+    // the gamma controller has its own integral. We just return the command.
+    // The SteeringController will apply it directly.
+
+    pstick = protectSpeed(pstick, state, ctx.maxGs);
+
+    // --- Throttle: do NOT set out.throttle ---
+    // In the FreeFalcon approach, the throttle is purely speed-based and
+    // is handled by the SpeedHold behavior (via the SteeringController's
+    // sentinel mechanism). AltitudeHold owns pitch only.
+    //
+    // (out.throttle is left at the sentinel value set by SteeringController,
+    // which tells it to let SpeedHold run.)
+
+    // Reset the level-flight PID (unused in gamma approach, but reset to
+    // prevent windup if it was used previously).
+    ctx.pitchPID.reset();
+
+    return limit(pstick, -1.0, 1.0);
 }
 
 // ===========================================================================
@@ -245,7 +259,48 @@ double SteerToWaypoint::compute(const AircraftState& state, double dt,
 // ===========================================================================
 double SpeedHold::compute(const AircraftState& state, double dt,
                            SteeringContext& ctx) {
-    return ctx.throttlePID.update(target_ - state.vcas, dt);
+    // MachHold-style throttle control (port of FreeFalcon DigitalBrain).
+    //
+    // FreeFalcon: thr = (eProp + 100) * 0.008 + autoThrottle
+    //
+    // The +100 bias means at zero speed error, the throttle is 0.8 (near MIL).
+    // This is critical — without it, the throttle would be 0 at zero error,
+    // and the aircraft would decelerate. The bias provides the cruise power
+    // setting; the proportional term corrects for speed error; the integral
+    // handles steady-state drag changes.
+    //
+    // Three-zone response for big errors (bang-bang), linear for small errors.
+    double eProp = target_ - state.vcas;  // speed error (kts), + = too slow
+    double thr;
+
+    if (eProp >= 150.0) {
+        // Big underspeed — full afterburner
+        thr = 1.5;
+        ctx.throttlePID.reset();
+    } else if (eProp < -100.0) {
+        // Big overspeed — idle
+        thr = 0.0;
+        ctx.throttlePID.reset();
+    } else {
+        // Linear proportional + integral + vtDot damping
+        // FreeFalcon: thr = (eProp + 100) * 0.008 + autoThrottle
+        //   = 0.8 + eProp * 0.008 + autoThrottle
+        //
+        // We replicate this with:
+        //   - cruise bias (0.5 — roughly MIL for most fighters at altitude)
+        //   - proportional: kp * eProp (via throttlePID)
+        //   - integral: throttlePID integral (handles steady-state drag)
+        //   - vtDot damping: -vtDot * gain (prevents overshoot)
+        const double cruiseBias = 0.5;  // baseline throttle at zero error
+
+        double vtDot_kts = state.aero.xwaero * FTPSEC_TO_KNOTS;
+        double pidOut = ctx.throttlePID.update(eProp, dt);
+        double damping = -vtDot_kts * dt * 0.5;
+
+        thr = cruiseBias + pidOut + damping;
+    }
+
+    return limit(thr, 0.0, 1.5);
 }
 
 // ===========================================================================
@@ -264,10 +319,16 @@ SteeringController::SteeringController() {
     rollG.integMin = -0.3; rollG.integMax = 0.3;
     ctx_.rollPID = PID(rollG);
 
+    // Throttle PID gains for the MachHold-style speed controller.
+    // The PID output is ADDED to a cruise bias (0.5) in SpeedHold::compute,
+    // so the PID needs to be able to output negative values (to reduce
+    // throttle below the bias when overspeeding). outputMin=-1.0 allows
+    // the PID to subtract up to 1.0 from the bias, giving a final throttle
+    // range of [0, 1.5] after clamping.
     PIDGains throttleG;
-    throttleG.kp = 0.02; throttleG.ki = 0.03; throttleG.kd = 0.01;
-    throttleG.outputMin = 0.0; throttleG.outputMax = 1.5;
-    throttleG.integMin = -0.5; throttleG.integMax = 30.0;
+    throttleG.kp = 0.02; throttleG.ki = 0.01; throttleG.kd = 0.005;
+    throttleG.outputMin = -1.0; throttleG.outputMax = 1.0;
+    throttleG.integMin = -1.0; throttleG.integMax = 1.0;
     ctx_.throttlePID = PID(throttleG);
 
     PIDGains yawG;
