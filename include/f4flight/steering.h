@@ -208,6 +208,10 @@ public:
     // Main compute — combines all three behaviors
     PilotInput compute(const AircraftState& state, double dt, double groundZ);
 
+    // Reset all PID controllers (call between independent test phases or
+    // when switching behaviors to prevent integral windup carryover).
+    void reset() noexcept;
+
 private:
     SteeringContext ctx_;
     std::unique_ptr<VerticalBehavior> vert_;

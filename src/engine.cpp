@@ -13,7 +13,8 @@ namespace f4flight {
 
 EngineModel::EngineModel(const EngineTable* table, const AuxAero* aux)
     : table_(table), aux_(aux) {
-    if (table_) {
+    if (table_ && !table_->alt_ft.empty() && !table_->mach.empty() &&
+        !table_->thrust_mil.empty()) {
         thrustIdle_ = table_->makeThrustLookup(0);
         thrustMil_  = table_->makeThrustLookup(1);
         thrustAb_   = table_->makeThrustLookup(2);
@@ -90,7 +91,12 @@ void EngineModel::update(double dt,
                          double ethrst,
                          bool   simplified,
                          EngineState& state) const {
-    if (!table_ || !aux_ || mass_slugs <= 1e-6) {
+    if (!table_ || !aux_ || mass_slugs <= 1e-6 ||
+        table_->alt_ft.empty() || table_->mach.empty() ||
+        table_->thrust_mil.empty()) {
+        // No engine data (e.g., SR-71's J58 combined-cycle engine isn't
+        // representable in the simple thrust-table format). Produce zero
+        // thrust rather than crashing on empty lookups.
         state.thrust = 0.0;
         state.fuelFlow = 0.0;
         return;

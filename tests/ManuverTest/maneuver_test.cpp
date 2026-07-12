@@ -107,6 +107,15 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     const double dt = 1.0 / 60.0;
 
     for (auto& test : tests) {
+        // Note: we deliberately do NOT call sc.reset() between phases.
+        // The throttle-comparison fix in SteeringController::compute (using
+        // a sentinel value instead of comparing to the manual default)
+        // already prevents SpeedHold from winding up during climb/descent
+        // phases where AltitudeHold owns the throttle. Resetting the PIDs
+        // between phases would wipe the throttle PID's steady-state
+        // integral, causing the throttle to drop to ~0 at the start of the
+        // next phase — which in the flightplan scenario leads to a
+        // deceleration → stall → NaN cascade within 10 seconds.
         test->Init(sc, fm);
 
         while (!test->IsFinished()) {
@@ -189,13 +198,18 @@ int main(int argc, char** argv) {
     }
 
     // Initialize flight model + steering controller ONCE. 
-	// Each scenario should reinitialize to start from a clean state, 
+        // Each scenario should reinitialize to start from a clean state, 
     // but we don't want to re-read the aircraft JSON for each scenario.
     FlightModel fm;
     fm.init(cfg, 15000, 300 * KNOTS_TO_FTPSEC, 0.0, true);
 
     SteeringController sc;
-    sc.setMaxBankAngle_deg(90);
+    // 45° max bank — 90° (the old value) is too aggressive for waypoint
+    // navigation: the aircraft overbanks past 90° during the turn to the
+    // next waypoint, which (before the turnCompensatedG fix) caused a NaN
+    // cascade. 45° is a standard airliner/fighter cruise bank limit and
+    // gives smooth turns without overbanking.
+    sc.setMaxBankAngle_deg(45);
     sc.setMaxGs(cfg.geometry.maxGs);
 
     ScenarioContext sctx{cfg};

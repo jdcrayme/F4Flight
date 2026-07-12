@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace f4flight {
@@ -278,6 +280,14 @@ void FlightModel::minorStep(double dt, const PilotInput& input) {
                  state_.qovt, alt, state_.gear.groundZ_ft, state_.kin.z,
                  state_.vcas, input.pstick, state_.aero);
 
+#ifdef F4FLIGHT_NAN_DEBUG
+    if (std::isnan(state_.aero.alpha_deg) || std::isnan(state_.aero.zaero) ||
+        std::isnan(state_.kin.vt) || std::isnan(state_.qbar)) {
+        std::fprintf(stderr, "NaN after aero: alpha=%.3f zaero=%.3f vt=%.1f qbar=%.1f mach=%.3f vcas=%.1f\n",
+            state_.aero.alpha_deg, state_.aero.zaero, state_.kin.vt, state_.qbar, state_.mach, state_.vcas);
+        std::abort();
+    }
+#endif
     // 4. Engine
     const double ethrst = 1.0; // no thrust reverse for now
     engine_.update(dt, alt, state_.mach, state_.kin.vt,
@@ -297,6 +307,16 @@ void FlightModel::minorStep(double dt, const PilotInput& input) {
 
     // 6. Equations of motion
     eom_.update(dt, input, state_);
+
+#ifdef F4FLIGHT_NAN_DEBUG
+    if (std::isnan(state_.kin.z) || std::isnan(state_.kin.vt) ||
+        std::isnan(state_.kin.theta) || std::isnan(state_.kin.phi)) {
+        std::fprintf(stderr, "NaN after EOM: z=%.1f vt=%.1f theta=%.4f phi=%.4f alpha=%.3f pstick=%.3f throttle=%.3f qbar=%.1f\n",
+            state_.kin.z, state_.kin.vt, state_.kin.theta, state_.kin.phi,
+            state_.aero.alpha_deg, input.pstick, input.throttle, state_.qbar);
+        std::abort();
+    }
+#endif
 
     // 7. Burn fuel
     const double burnRate_lbs_per_sec = state_.engine.fuelFlow / 3600.0;

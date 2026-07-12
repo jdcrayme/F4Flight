@@ -22,8 +22,16 @@ double headingError(double setpoint, double current) noexcept {
 }
 
 double turnCompensatedG(const AircraftState& state) noexcept {
+    // The G required to maintain level flight in a bank: G = 1/cos(bank).
+    // For bank > 90° (inverted), cos(bank) < 0 and 1/cos would be negative —
+    // which makes sqrt(tcG/maxGs) in AltitudeHold's level mode produce NaN,
+    // cascading into the FCS and EOM. Clamp to always return a positive
+    // value so the pitch controller never sees a negative G target. The
+    // real fix for overbanking is in the roll controller (maxBank limit);
+    // this is a defensive guard.
     double cosBank = std::cos(state.kin.phi);
-    return (std::fabs(cosBank) > 0.1) ? (1.0 / cosBank) : 1.0;
+    if (std::fabs(cosBank) < 0.1) return 1.0;        // near 90°, fall back to 1.0
+    return std::fabs(1.0 / cosBank);                  // always positive
 }
 
 double computeMaxVVI_fpm(double altErr_ft) noexcept {
@@ -104,18 +112,42 @@ double AltitudeHold::compute(const AircraftState& state, double dt,
             out.throttle = climbPower_;
         }
 
-        // Pitch: hold climb speed schedule
+        // Pitch: hold climb speed schedule.
+        //
+        // The G target starts slightly above 1.0 (a gentle climb) and is
+        // adjusted by the speed error. The two directions need different
+        // aggression:
+        //
+        //   * Overspeed (speedErr < 0): the aircraft has excess energy.
+        //     A small pitch-up (max +0.2 G) is enough to convert the
+        //     extra speed into altitude. Too much response here causes
+        //     pitch/speed oscillation (the F-16 was sensitive to this).
+        //
+        //   * Underspeed (speedErr > 0): the aircraft is bleeding energy
+        //     in the climb. Lower-thrust-per-weight aircraft (F-15, F-14,
+        //     MiG-29, ...) can shed 100+ kts quickly. The response must
+        //     be aggressive enough to nearly level the aircraft (gTarget
+        //     approaching 0) so speed can recover before the aircraft
+        //     stalls and sinks. The old cap of 0.3 G (floor 0.85) was
+        //     not enough — the aircraft kept climbing and bled speed
+        //     down to ~150 kts, then lost lift and descended.
         double targetSpeed = (state.mach < climbMach_) ? climbSpeed_ : state.vcas;
         double speedErr = targetSpeed - state.vcas;
 
         double gTarget = 1.15;
         if (speedErr > 30.0)
-            gTarget -= limit((speedErr - 30.0) * 0.01, 0.0, 0.3);
+            gTarget -= limit((speedErr - 30.0) * 0.012, 0.0, 1.2);
         if (speedErr < -30.0)
             gTarget += limit(-(speedErr + 30.0) * 0.005, 0.0, 0.2);
 
-        gTarget = limit(gTarget, 0.0, ctx.maxGs);
-        double pitchCmd = std::sqrt(gTarget / ctx.maxGs);
+        gTarget = limit(gTarget, -0.1, ctx.maxGs);
+        double pitchCmd;
+        if (gTarget > 0.0) {
+            pitchCmd = std::sqrt(gTarget / ctx.maxGs);
+        } else {
+            // Slight nose-down command for severe speed bleed.
+            pitchCmd = -std::sqrt(-gTarget / ctx.maxGs);
+        }
         pitchCmd = protectSpeed(pitchCmd, state, ctx.maxGs);
 
         // Reset level-flight PID to prevent windup
@@ -248,15 +280,34 @@ SteeringController::SteeringController() {
 PilotInput SteeringController::compute(const AircraftState& state, double dt, double groundZ) {
     PilotInput out = ctx_.manual;
 
-    // Vertical behavior: computes pstick, may set throttle
+    // Vertical behavior: computes pstick, may set throttle.
+    //
+    // We use a sentinel value to detect whether the vertical behavior
+    // actually controlled throttle this frame. Comparing to the manual
+    // throttle value is unreliable: AltitudeHold in climb mode legitimately
+    // sets throttle to 0 when the VVI cap fully reduces it, which would be
+    // indistinguishable from "didn't touch it" if we compared against the
+    // manual default (also 0). That bug caused SpeedHold to override the
+    // climb-mode throttle with its wound-up integral, producing massive
+    // altitude overshoots.
+    constexpr double THROTTLE_UNSET = -1.0;
+    const double manualThrottle = out.throttle;
+    out.throttle = THROTTLE_UNSET;
+
     bool verticalControlsThrottle = false;
     if (vert_) {
-        // Save throttle before vertical behavior runs
-        double throttleBefore = out.throttle;
         out.pstick = vert_->compute(state, dt, ctx_, out);
-        // If the vertical behavior changed the throttle, it's controlling it
-        // (climb/descent mode). If not, we let the throttle behavior run.
-        verticalControlsThrottle = (out.throttle != throttleBefore);
+        verticalControlsThrottle = (out.throttle != THROTTLE_UNSET);
+    }
+
+    if (verticalControlsThrottle) {
+        // Climb/descent mode — vertical behavior owns throttle.
+    } else if (thrott_) {
+        // Level mode (or no vertical behavior) — throttle behavior runs.
+        out.throttle = thrott_->compute(state, dt, ctx_);
+    } else {
+        // No behavior controls throttle — fall back to manual.
+        out.throttle = manualThrottle;
     }
 
     // Horizontal behavior: computes rstick
@@ -264,15 +315,17 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt, do
         out.rstick = horiz_->compute(state, dt, ctx_);
     }
 
-    // Throttle behavior: only runs if vertical behavior didn't control throttle
-    if (thrott_ && !verticalControlsThrottle) {
-        out.throttle = thrott_->compute(state, dt, ctx_);
-    }
-
     // Yaw coordination (always)
     out.ypedal = ctx_.yawPID.update(0.0 - state.aero.beta_deg, dt);
 
     return out;
+}
+
+void SteeringController::reset() noexcept {
+    ctx_.pitchPID.reset();
+    ctx_.rollPID.reset();
+    ctx_.throttlePID.reset();
+    ctx_.yawPID.reset();
 }
 
 } // namespace f4flight

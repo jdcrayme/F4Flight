@@ -175,7 +175,7 @@ if(F4FLIGHT_BUILD_TESTS)
     )
 
     add_executable(maneuver_test ${F4FLIGHT_MANUVER_TEST_SOURCES})
-    
+
     target_include_directories(maneuver_test PRIVATE tests/ManuverTest/)
 
     target_link_libraries(maneuver_test PRIVATE f4flight)
@@ -184,6 +184,24 @@ if(F4FLIGHT_BUILD_TESTS)
     else()
         target_compile_options(maneuver_test PRIVATE -Wall -Wextra)
     endif()
+
+    # Register the maneuver_test scenarios as ctest tests. Each aircraft x
+    # scenario combination becomes a separate test, so `ctest` runs the full
+    # maneuver suite alongside the gtest unit tests.
+    # We only register the "basic" and "flightplan" scenarios (combat is a
+    # placeholder that always reports 0/1 by design).
+    set(F4FLIGHT_MANEUVER_AIRCRAFT
+        f16bk50 f15c f18c f14b mig29a su27 a10a
+        mirage2k5 rafalec ef2000 b52h c130 sr71)
+    set(F4FLIGHT_MANEUVER_SCENARIOS basic flightplan)
+    foreach(ac ${F4FLIGHT_MANEUVER_AIRCRAFT})
+        foreach(sc ${F4FLIGHT_MANEUVER_SCENARIOS})
+            add_test(
+                NAME maneuver_${ac}_${sc}
+                COMMAND maneuver_test ${CMAKE_CURRENT_SOURCE_DIR}/data/${ac}.json --scenario ${sc}
+            )
+        endforeach()
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

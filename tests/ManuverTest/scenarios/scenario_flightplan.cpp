@@ -70,7 +70,8 @@ public:
     TestWaypointLeg(double alt, double speed, Vec3 wp, double captureRadius_ft,
                     int wpIndex, int totalWps)
         : ManeuverTest("Waypoint leg", 600.0)
-		, tgt_alt_ft(alt), tgt_speed_kts(speed)
+                , tgt_alt_ft(alt), tgt_speed_kts(speed)
+        , targetAlt_(alt), targetSpd_(speed)
         , wp_(wp), captureRadius_(captureRadius_ft)
         , wpIndex_(wpIndex), totalWps_(totalWps)
     {
@@ -89,6 +90,12 @@ public:
         std::vector<Vec3> wps = { wp_ };
         sc.setHorizontalBehavior(std::make_unique<SteerToWaypoint>(std::move(wps), captureRadius_));
         sc.setVerticalBehavior(std::make_unique<AltitudeHold>(tgt_alt_ft, tgt_speed_kts));
+        // AltitudeHold only controls throttle in climb/descent mode; in
+        // level flight it defers to the throttle behavior. Without a
+        // SpeedHold installed, level-flight throttle stays at 0 (manual
+        // default) and the aircraft porpoises wildly as it cuts power
+        // every time it crosses the target altitude.
+        sc.setThrottleBehavior(std::make_unique<SpeedHold>(tgt_speed_kts));
     }
 
     bool IsFinished() const override {
@@ -159,7 +166,12 @@ public:
         StartScenario(FlightModel& fm, const ScenarioContext& ctx) override {
 
         const double alt = 15000;
-        const double speed = 350 * KNOTS_TO_FTPSEC;
+        // tgt_speed_kts is interpreted as knots by AltitudeHold / SpeedHold.
+        // The previous code passed `350 * KNOTS_TO_FTPSEC` (= 590.5 ft/s)
+        // but labeled it as kts, so the speed controller tried to hold
+        // 590 kts CAS — unreachable for most fighters and producing
+        // permanent full-throttle / wild-porpoising behavior.
+        const double speed = 350;
 
         // Build a square circuit in the world (NED, Z-down). Side length
         // scales with cruise speed so the leg takes a reasonable time.
@@ -176,6 +188,14 @@ public:
             { 0.0,            0.0,       z },
         };
         const double captureRadius = 3000.0;  // ft
+
+        // Re-initialize the flight model at the cruise altitude and target
+        // speed. Without this, the aircraft starts at whatever state main()
+        // left it in (300 kts TAS = ~241 kts CAS at 15000 ft), and the
+        // initial acceleration to 350 kts CAS counts against the min-speed
+        // check, failing waypoint 1 even though the aircraft flies
+        // perfectly once it reaches target speed.
+        fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
         for (int i = 0; i < static_cast<int>(wps.size()); ++i) {
