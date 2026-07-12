@@ -19,19 +19,19 @@ EquationsOfMotion::EquationsOfMotion(const AircraftGeometry* geom, const AuxAero
 // ---------------------------------------------------------------------------
 // Body rates (p, q, r) from FCS outputs.
 //
-// The legacy Falcon 4 EOM derives body rates from the achieved load factors
-// (nzcgs, nycgw). This "velocity-axis" formulation is mathematically elegant
-// but numerically unstable when the aircraft departs from controlled flight:
-// a negative nzcgs drives q negative, which pitches the nose further down,
-// which makes nzcgs more negative -- a divergent feedback loop.
+// Bug #3 fix: ported from FreeFalcon eom.cpp:595-717 (in-air section).
 //
-// For the refactored library we use a more robust approach: the FCS alpha
-// command directly drives the pitch rate through a first-order response, and
-// the roll rate comes from the FCS roll command. This is closer to how a
-// real fly-by-wire aircraft works (the FLCS commands body rates, not G
-// directly) and is numerically stable.
+// FreeFalcon derives body rates from achieved load factors (nzcgs, nycgw)
+// and FCS roll-rate command (pstab). This is a "velocity-axis" formulation:
+//   q = lag( atan(nzcgs*g/Vt) - atan(gearDrag*g/Vt) + pitch*cosbet
+//            - atan(cosmu*cosgam*g/Vt),  tp01*pitchElasticity, dt )
+//   r = (nycgw + cosgam*sinmu) * g / Vt
+//   p = pstab  (from FCS roll controller)
 //
-// The yaw rate is derived from the lateral acceleration as before.
+// The previous f4flight code used an ad-hoc alpha-error proportional
+// controller with hardcoded rate clamps (±4.5/±3.0/±4.0 rad/s), which is
+// completely different dynamics. It also clamped nzcgs to non-negative,
+// preventing negative-G maneuvers.
 // ---------------------------------------------------------------------------
 void EquationsOfMotion::calcBodyRates(double dt, double qsom, double cnalpha,
                                       double cosmu, double cosgam, double singam,
@@ -41,40 +41,49 @@ void EquationsOfMotion::calcBodyRates(double dt, double qsom, double cnalpha,
                                       AircraftState& state) const {
     auto& k = state.kin;
     auto& a = state.aero;
-    const double tempVt = std::max(1.0, k.vt);
+    const double tempVt = std::max(4.0, std::fabs(k.vt));
+    (void)singam; // not used by FreeFalcon in this section
+    (void)cnalpha; // not used by FreeFalcon in this section
+    (void)cosalp;  // used only in slice coupling (turbulence, omitted)
+    (void)sinalp;
 
-    // Pitch rate: drive q toward a target derived from the alpha command.
-    // The FCS has already set aero.alpha_deg to the commanded alpha (via the
-    // pitchAlphaLag filter). We compute a pitch rate that will rotate the
-    // body toward the commanded alpha over a time constant.
-    //
-    // The relationship is: alpha_dot = q - (g/Vt) * (nzcgs - cos(gamma)*cos(mu))
-    // For a steady-state pull, q ~ alpha_dot + g/Vt * (nz - 1).
-    // We command q to track the alpha error plus a gravity-compensation term.
-    const double alphaCmd_rad = state.fcs.aoacmd * DTR;
-    const double alpha_rad = a.alpha_deg * DTR;
-    const double alphaErr = alphaCmd_rad - alpha_rad;
-    // Pitch rate command = alpha-error gain + gravity turn rate
-    const double gravityTurn = (nzcgs > -2.0)
-        ? std::atan(std::max(0.0, nzcgs) * GRAVITY / tempVt)
-        : -0.5;  // if we're at negative G, command a recovery pitch rate
-    double qptchc = alphaErr * 2.0 + gravityTurn - std::atan(cosmu * cosgam * GRAVITY / tempVt);
+    // --- Pitch rate (body axis) ---
+    // FreeFalcon eom.cpp:605-642
+    double qptchc = 0.0;
+    const double gearPos = a.gearPos;
+    if (gearPos < 1.0) {
+        qptchc += std::atan(nzcgs * GRAVITY / tempVt)
+                - std::atan(0.2 * gearPos * qsom / tempVt);
+    } else {
+        qptchc += std::atan(nzcgs * GRAVITY / tempVt)
+                - std::atan(0.1 * gearPos * qsom / tempVt);
+    }
+    // pitch * cosbet term (pitch = turbulence disturbance, ~0 in normal flight)
+    // qptchc += 0.0 * cosbet;  // omitted: no turbulence model
 
-    // Apply 1st-order lag for pitch rate response
-    const double tau = 0.2 * pitchElasticity;
-    k.q = state.fcs.pitchRateLag.step(qptchc, tau, dt);
+    // Gravity turn-rate compensation
+    qptchc -= std::atan(cosmu * cosgam * GRAVITY / tempVt);
 
-    // Yaw rate from lateral accel (coordinated turn)
-    double rstab = (nycgw + cosgam * std::sin(state.kin.mu)) * GRAVITY / tempVt;
+    // First-order lag using tp01 * pitchElasticity as the time constant.
+    // FreeFalcon: q = FLTust(qptchc, tp01 * pitchElasticity, dt, oldp05)
+    // Note: tp01 is set by the FCS gain computation (default 0.2). We use
+    // the fcs.tp01 value from state.
+    const double tau_q = state.fcs.tp01 * pitchElasticity;
+    k.q = state.fcs.pitchRateLag.step(qptchc, tau_q, dt);
 
-    // Roll rate from FCS
-    k.p = pstab;
+    // --- Yaw rate (body axis) ---
+    // FreeFalcon eom.cpp:693-694
+    // rstab = (nycgw + cosgam * sinmu) * g / Vt
+    const double rstab = (nycgw + cosgam * k.sinmu) * GRAVITY / tempVt;
     k.r = rstab;
 
-    // Clamp body rates
-    k.p = limit(k.p, -4.5, 4.5);
-    k.q = limit(k.q, -3.0, 3.0);
-    k.r = limit(k.r, -4.0, 4.0);
+    // --- Roll rate (body axis) ---
+    // FreeFalcon eom.cpp:701: p = pstab (from FCS roll controller)
+    // (rollCouple is added to pstab in the FCS, not here)
+    k.p = pstab;
+
+    // No hardcoded rate clamps — FreeFalcon has none.
+    // The FCS and aerodynamics naturally limit the rates.
 }
 
 // ---------------------------------------------------------------------------
@@ -204,12 +213,20 @@ void EquationsOfMotion::update(double dt, PilotInput const& input,
     // Recompute trig + DCM
     trigonometry(state);
 
-    // Velocity integration
+    // Velocity integration.
+    //
+    // Bug #2 fix (was: calculateVt(dt, muFric, k.singam, a.xwaero, a.xwaero + 0.0, state)).
+    //
+    // The flight model (flight_model.cpp:303) already adds thrust into
+    // a.xwaero (xwaero += xwprop). Passing xwaero as BOTH the xwaero and
+    // xwprop arguments caused calculateVt() to compute
+    //     vtDot = xwaero + xwprop = (drag+thrust) + (drag+thrust) = 2*(drag+thrust)
+    // i.e. thrust and drag were double-counted, giving ~2x the correct
+    // acceleration. Measured ratio was 1.92 (see scripts/bug2_check.cpp).
+    //
+    // Fix: pass 0 for xwprop since thrust is already in xwaero.
     const double muFric = state.gear.muFric;
-    calculateVt(dt, muFric, k.singam, a.xwaero, a.xwaero + 0.0, state);
-    // Note: xwprop (thrust along wind axis) is added to xwaero by the engine
-    // model when it computes body forces. For now we use a.xwaero + 0 as a
-    // placeholder; the FlightModel will pass the actual xwprop.
+    calculateVt(dt, muFric, k.singam, a.xwaero, 0.0, state);
 
     // Position integration
     integratePosition(dt, k.cosgam, k.singam, k.cossig, k.sinsig,

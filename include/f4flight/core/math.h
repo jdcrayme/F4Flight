@@ -148,4 +148,56 @@ struct WashoutFilter {
     void reset() noexcept { y_prev = 0.0; u_prev = 0.0; }
 };
 
+// Lead-lag filter: H(s) = (tau1*s + 1) / ((tau2*s + 1)*(tau3*s + 1))
+// Direct port of FreeFalcon's F7Tust (simlib/math.cpp:986-1031).
+// Used for the pitch-axis alpha command lag in the FCS.
+struct LeadLagFilter {
+    double y_nm2{0.0};  // y[n-2]  (save[0])
+    double y_nm1{0.0};  // y[n-1]  (save[1])
+    double u_nm2{0.0};  // u[n-2]  (save[3])
+    double u_nm1{0.0};  // u[n-1]  (save[4])
+    int    jstart{0};
+
+    double step(double in, double tau1, double tau2, double tau3, double dt) noexcept {
+        // Guard against zero/negative time constants
+        if (tau1 < 1e-9 || tau2 < 1e-9 || tau3 < 1e-9 || dt < 1e-9) {
+            y_nm2 = y_nm1 = in;
+            u_nm2 = u_nm1 = in;
+            jstart = 2;
+            return in;
+        }
+
+        // Z-transform coefficients
+        const double a = -(std::exp(-dt / tau2) + std::exp(-dt / tau3));
+        const double b =  std::exp(-dt * (1.0 / tau2 + 1.0 / tau3));
+        const double c =  1.0 - std::exp(-dt / tau1);
+        const double d = -std::exp(-dt / tau1);
+
+        double k;
+        if (std::fabs(1.0 + c + d) < 1e-12) k = 0.0;
+        else k = (1.0 + a + b) / (1.0 + c + d);
+
+        // Compute output
+        const double y_n = k * (in + c * u_nm1 + d * u_nm2) - a * y_nm1 - b * y_nm2;
+
+        // Shift history
+        if (jstart >= 2) {
+            y_nm2 = y_nm1;
+            u_nm2 = u_nm1;
+        }
+        if (jstart >= 1) {
+            y_nm1 = y_n;
+            u_nm1 = in;
+        }
+        jstart++;
+        return y_n;
+    }
+
+    void reset(double y = 0.0) noexcept {
+        y_nm2 = y_nm1 = y;
+        u_nm2 = u_nm1 = y;
+        jstart = 0;
+    }
+};
+
 } // namespace f4flight

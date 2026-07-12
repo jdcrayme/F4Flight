@@ -154,7 +154,7 @@ struct FcsState {
     // Pitch
     LagFilter pitchRateLag;     // for q from qptchc
     AdamsBash2 pitchIntegral;   // NZ error integrator
-    LagFilter  pitchAlphaLag;   // F7Tust equivalent (uses LagFilter as 1st-order approx)
+    LeadLagFilter pitchAlphaLag; // F7Tust lead-lag (tau1=tp01, tau2=tp02, tau3=tp03)
     double oldp02[6]{};
     double oldp03[6]{};
     double kp01{1.0}, kp02{1.0}, kp03{2.0}, kp05{1.0};

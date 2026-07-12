@@ -47,6 +47,7 @@ public:
     const AircraftState& state() const noexcept { return state_; }
     AircraftState&       state()       noexcept { return state_; }
     const AircraftConfig& config() const noexcept { return cfg_; }
+    const FlightControlSystem& fcs() const noexcept { return fcs_; }
 
     // Sub-stepping controls
     void   setMinorPerMajor(int n) noexcept { minorPerMajor_ = std::max(1, n); }

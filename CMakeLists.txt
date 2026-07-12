@@ -10,10 +10,10 @@ project(f4flight
 # Library options
 # ---------------------------------------------------------------------------
 option(F4FLIGHT_BUILD_TESTS    "Build the f4flight unit tests"             ON)
-option(F4FLIGHT_BUILD_EXAMPLES "Build the f4flight example programs"       ON)
+option(F4FLIGHT_BUILD_TOOLS    "Build the dat2json/dat_validate/json_diff tools" ON)
 option(F4FLIGHT_BUILD_SHARED   "Build f4flight as a shared library (DLL)"  OFF)
-option(F4FLIGHT_ENABLE_WERROR "Treat warnings as errors"                   OFF)
-option(F4FLIGHT_USE_MSVC_UTF8 "Force /utf-8 on MSVC"                       ON)
+option(F4FLIGHT_ENABLE_WERROR  "Treat warnings as errors"                  OFF)
+option(F4FLIGHT_USE_MSVC_UTF8  "Force /utf-8 on MSVC"                       ON)
 
 # ---------------------------------------------------------------------------
 # C++ standard
@@ -119,9 +119,30 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(f4flight::f4flight ALIAS f4flight)
 
-# ---------------------------------------------------------------------------
-# Unit tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Tests
+# ===========================================================================
+# The test tree is split into:
+#
+#   tests/unit/      — gtest unit tests for each library module (math, aero,
+#                      engine, fcs, eom, json_io, dat_loader, etc.). Quick
+#                      correctness checks, no simulation.
+#
+#   tests/maneuver/  — scenario-based end-to-end integration tests that drive
+#                      the full FlightModel + SteeringController through
+#                      multi-phase maneuvers (climb, turn, orbit, waypoint
+#                      circuit, ...). Each scenario self-registers; the
+#                      runner picks up scenarios by name.
+#
+#   tests/fixtures/  — curated JSON aircraft files used by the maneuver
+#                      tests. The set is intentionally small (13 aircraft)
+#                      but representative: fighters (F-16, F-15, F/A-18,
+#                      F-14, MiG-29, Su-27, EF2000, Rafale, Mirage 2000),
+#                      attack (A-10), bomber (B-52), transport (C-130), and
+#                      interceptor (SR-71). Adding a JSON to this directory
+#                      automatically registers it for every maneuver
+#                      scenario (see file(GLOB) below).
+# ===========================================================================
 if(F4FLIGHT_BUILD_TESTS)
     enable_testing()
 
@@ -134,26 +155,11 @@ if(F4FLIGHT_BUILD_TESTS)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
 
-    set(F4FLIGHT_TEST_SOURCES
-        tests/test_main.cpp
-        tests/test_math.cpp
-        tests/test_types.cpp
-        tests/test_lookup.cpp
-        tests/test_units.cpp
-        tests/test_atmosphere.cpp
-        tests/test_aerodynamics.cpp
-        tests/test_engine.cpp
-        tests/test_gear.cpp
-        tests/test_fcs.cpp
-        tests/test_eom.cpp
-        tests/test_flight_model.cpp
-        tests/test_f16c_config.cpp
-        tests/test_json_io.cpp
-        tests/test_dat_loader.cpp
-        tests/test_steering.cpp
+    # ----- unit tests -----
+    file(GLOB F4FLIGHT_UNIT_TEST_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.cpp"
     )
-
-    add_executable(f4flight_tests ${F4FLIGHT_TEST_SOURCES})
+    add_executable(f4flight_tests ${F4FLIGHT_UNIT_TEST_SOURCES})
     target_link_libraries(f4flight_tests PRIVATE f4flight GTest::gtest)
 
     if(MSVC)
@@ -165,19 +171,19 @@ if(F4FLIGHT_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(f4flight_tests)
 
-
-    
-    set(F4FLIGHT_MANUVER_TEST_SOURCES
-    tests/ManuverTest/maneuver_test.cpp
-    tests/ManuverTest/scenarios/scenario_basic.cpp
-    tests/ManuverTest/scenarios/scenario_flightplan.cpp
-    tests/ManuverTest/scenarios/scenario_combat.cpp
+    # ----- maneuver tests -----
+    set(F4FLIGHT_MANEUVER_TEST_SOURCES
+        tests/maneuver/maneuver_test.cpp
+        tests/maneuver/scenarios/scenario_basic.cpp
+        tests/maneuver/scenarios/scenario_flightplan.cpp
+        tests/maneuver/scenarios/scenario_combat.cpp
+        tests/maneuver/scenarios/scenario_glimits.cpp
+        tests/maneuver/scenarios/scenario_engine.cpp
+        tests/maneuver/scenarios/scenario_roll.cpp
     )
 
-    add_executable(maneuver_test ${F4FLIGHT_MANUVER_TEST_SOURCES})
-
-    target_include_directories(maneuver_test PRIVATE tests/ManuverTest/)
-
+    add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
+    target_include_directories(maneuver_test PRIVATE tests/maneuver/)
     target_link_libraries(maneuver_test PRIVATE f4flight)
     if(MSVC)
         target_compile_options(maneuver_test PRIVATE /W4 /utf-8)
@@ -185,79 +191,52 @@ if(F4FLIGHT_BUILD_TESTS)
         target_compile_options(maneuver_test PRIVATE -Wall -Wextra)
     endif()
 
-    # Register the maneuver_test scenarios as ctest tests. Each aircraft x
-    # scenario combination becomes a separate test, so `ctest` runs the full
-    # maneuver suite alongside the gtest unit tests.
-    # We only register the "basic" and "flightplan" scenarios (combat is a
-    # placeholder that always reports 0/1 by design).
-    set(F4FLIGHT_MANEUVER_AIRCRAFT
-        f16bk50 f15c f18c f14b mig29a su27 a10a
-        mirage2k5 rafalec ef2000 b52h c130 sr71)
+    # Register every fixture x scenario combination as a ctest test.
+    # Adding a JSON to tests/fixtures/ automatically registers it for every
+    # listed scenario -- no need to edit this file.
+    file(GLOB F4FLIGHT_FIXTURES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/*.json"
+    )
     set(F4FLIGHT_MANEUVER_SCENARIOS basic flightplan)
-    foreach(ac ${F4FLIGHT_MANEUVER_AIRCRAFT})
+    foreach(fixture ${F4FLIGHT_FIXTURES})
+        get_filename_component(ac_name "${fixture}" NAME_WE)
         foreach(sc ${F4FLIGHT_MANEUVER_SCENARIOS})
             add_test(
-                NAME maneuver_${ac}_${sc}
-                COMMAND maneuver_test ${CMAKE_CURRENT_SOURCE_DIR}/data/${ac}.json --scenario ${sc}
+                NAME maneuver_${ac_name}_${sc}
+                COMMAND maneuver_test "${fixture}" --scenario ${sc}
             )
         endforeach()
     endforeach()
 endif()
 
-# ---------------------------------------------------------------------------
-# Examples
-# ---------------------------------------------------------------------------
-if(F4FLIGHT_BUILD_EXAMPLES)
-    add_executable(simple_sim examples/simple_sim.cpp)
-    target_link_libraries(simple_sim PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(simple_sim PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(simple_sim PRIVATE -Wall -Wextra)
-    endif()
+# ===========================================================================
+# Tools
+# ===========================================================================
+# Standalone command-line utilities that ship with the library. None of them
+# are linked into f4flight itself; they're just thin mains over the public
+# API.
+#
+#   dat2json        Convert a Falcon 4 .dat file to f4flight JSON.
+#   dat_validate    Load a JSON and run AircraftConfig::validate().
+#   json_diff      Field-by-field diff of two JSON aircraft files.
+# ===========================================================================
+if(F4FLIGHT_BUILD_TOOLS)
+    set(F4FLIGHT_TOOLS
+        tools/dat2json.cpp
+        tools/dat_validate.cpp
+        tools/json_diff.cpp
+    )
 
-    add_executable(steering_demo examples/steering_demo.cpp)
-    target_link_libraries(steering_demo PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(steering_demo PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(steering_demo PRIVATE -Wall -Wextra)
-    endif()
-
-    add_executable(tune_diag examples/tune_diag.cpp)
-    target_link_libraries(tune_diag PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(tune_diag PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(tune_diag PRIVATE -Wall -Wextra)
-    endif()
-
-    add_executable(perf_check examples/perf_check.cpp)
-    target_link_libraries(perf_check PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(perf_check PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(perf_check PRIVATE -Wall -Wextra)
-    endif()
-
-    # dat2json converter tool
-    add_executable(dat2json tools/dat2json.cpp)
-    target_link_libraries(dat2json PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(dat2json PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(dat2json PRIVATE -Wall -Wextra)
-    endif()
-
-    # tune_profile: empirically tune a PerformanceProfile for an aircraft
-    # by running short simulations at different speeds and scoring them.
-    add_executable(tune_profile tools/tune_profile.cpp)
-    target_link_libraries(tune_profile PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(tune_profile PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(tune_profile PRIVATE -Wall -Wextra)
-    endif()
+    foreach(tool_src ${F4FLIGHT_TOOLS})
+        get_filename_component(tool_name "${tool_src}" NAME_WE)
+        add_executable(${tool_name} "${tool_src}")
+        target_link_libraries(${tool_name} PRIVATE f4flight)
+        if(MSVC)
+            target_compile_options(${tool_name} PRIVATE /W4 /utf-8)
+        else()
+            target_compile_options(${tool_name} PRIVATE -Wall -Wextra)
+        endif()
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

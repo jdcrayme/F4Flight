@@ -22,6 +22,15 @@ int main(int argc, char** argv) {
 
     auto result = f4flight::dat::loadFile(inputPath);
     if (!result.ok) {
+        // Check for the recognizable AFM-skip message and exit with a
+        // distinct code so the bulk-conversion script can count AFM skips
+        // separately from real failures.
+        bool isAfm = !result.errors.empty() &&
+                     result.errors[0].find("AFM format not supported") != std::string::npos;
+        if (isAfm) {
+            std::fprintf(stderr, "SKIP (AFM): %s\n", inputPath.c_str());
+            return 4;  // distinct exit code for AFM skips
+        }
         std::fprintf(stderr, "ERROR: Failed to parse %s\n", inputPath.c_str());
         for (auto const& e : result.errors) std::fprintf(stderr, "  %s\n", e.c_str());
         return 2;
@@ -31,11 +40,6 @@ int main(int argc, char** argv) {
         std::printf("Warnings (%zu):\n", result.warnings.size());
         for (auto const& w : result.warnings) std::printf("  %s\n", w.c_str());
     }
-
-    // Derive a performance profile from the aircraft data.
-    // The profile is written into the JSON file so the flight model
-    // and steering controller can use aircraft-appropriate speeds.
-    result.config.deriveProfile();
 
     if (!f4flight::json::writeFile(result.config, outputPath)) {
         std::fprintf(stderr, "ERROR: Failed to write %s\n", outputPath.c_str());
@@ -62,24 +66,9 @@ int main(int argc, char** argv) {
     std::printf("  Has AB:          %s\n", c.engine.hasAB() ? "yes" : "no");
 
     if (!c.engine.thrust_mil.empty() && !c.engine.thrust_ab.empty()) {
-        std::printf("  Sea-level MIL:   %.0f lbf (x%d = %.0f total)\n",
-                    c.engine.thrust_mil[0], c.aux.nEngines,
-                    c.engine.thrust_mil[0] * c.aux.nEngines);
-        std::printf("  Sea-level AB:    %.0f lbf (x%d = %.0f total)\n",
-                    c.engine.thrust_ab[0], c.aux.nEngines,
-                    c.engine.thrust_ab[0] * c.aux.nEngines);
+        std::printf("  Sea-level MIL:   %.0f lbf\n", c.engine.thrust_mil[0]);
+        std::printf("  Sea-level AB:    %.0f lbf\n", c.engine.thrust_ab[0]);
     }
-
-    // Print the derived performance profile
-    std::printf("\nPerformance profile (auto-derived):\n");
-    std::printf("  Category:        %s\n", c.profile.category.c_str());
-    std::printf("  Cruise:          %.0f kts @ %.0f ft\n",
-                c.profile.cruiseSpeed_kts, c.profile.cruiseAlt_ft);
-    std::printf("  Climb:           %.0f kts / Mach %.2f @ power %.2f\n",
-                c.profile.climbSpeed_kts, c.profile.climbMach, c.profile.climbPower);
-    std::printf("  Descent:         %.0f kts / Mach %.2f @ power %.2f\n",
-                c.profile.descentSpeed_kts, c.profile.descentMach, c.profile.descentPower);
-    std::printf("  Max bank:        %.0f deg\n", c.profile.maxBank_deg);
 
     std::printf("\nWrote %s\n", outputPath.c_str());
     return 0;

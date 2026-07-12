@@ -124,20 +124,6 @@ inline double calcKcasFromMach(double mach, double pa) noexcept {
     return vcas;
 }
 
-// Compute true airspeed (ft/s) from calibrated airspeed (kts) and altitude.
-// Uses calcMachFromKcas to get Mach, then Mach * speed of sound at altitude.
-// This is the inverse of the CAS calculation and lets us initialize the
-// flight model at the correct TAS for a desired CAS.
-inline double calcTasFromKcas(double kcas, double alt_ft) noexcept {
-    if (kcas <= 0.0) return 0.0;
-    double ttheta, rsigma;
-    const double pdelta = calcPressureRatio(alt_ft, ttheta, rsigma);
-    const double pa = pdelta * PASL;
-    const double sound = std::sqrt(ttheta) * AASL;
-    const double mach = calcMachFromKcas(kcas, pa);
-    return mach * sound;
-}
-
 // Top-level atmosphere update.
 //
 //   alt_ft     : altitude above sea level, feet, positive upward

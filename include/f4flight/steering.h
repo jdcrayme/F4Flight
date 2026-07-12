@@ -1,14 +1,29 @@
 // f4flight - steering.h
-// AI steering with separated horizontal/vertical/throttle behaviors.
+//
+// AI steering ported from FreeFalcon's DigitalBrain (sim/digi/).
 //
 // Architecture:
-//   SteeringController
-//     ├── VerticalBehavior*   (controls pstick + throttle when climbing/descending)
-//     ├── HorizontalBehavior* (controls rstick)
-//     └── ThrottleBehavior*   (controls throttle when in level flight)
 //
-// Each behavior takes its parameters in its constructor — no shared goal struct.
-// Behaviors are self-contained and composable.
+//   The FreeFalcon digi AI uses GammaHold (flight path angle hold) as the
+//   core pitch controller. GammaHold commands a desired flight path angle,
+//   computes a G-command from the gamma error, then converts the G-command
+//   to a stick deflection via a nonlinear sqrt mapping (SetPstick).
+//
+//   AltHold wraps GammaHold by scaling the altitude error into a gamma
+//   command. MachHold controls throttle from speed error. HeadingHold /
+//   LevelTurn control roll from heading error.
+//
+//   This is NOT a PID-based controller. It is a direct port of the FreeFalcon
+//   digi AI steering functions, preserving the exact control laws, gain
+//   scheduling, and smoothing behavior.
+//
+// Key differences from the old f4flight steering:
+//   - GammaHold uses flight path angle (gamma), not altitude PID
+//   - SetPstick converts G to stick via sqrt((G-1)/(maxGs-costhe))
+//   - SetRstick converts roll error to stick via kr01*tr01 scaling
+//   - Stick commands are smoothed (0.2*old + 0.8*new)
+//   - Low-speed stick authority reduction below 300 kts
+//   - MachHold uses linear throttle + integral, not PID
 
 #pragma once
 
@@ -21,218 +36,236 @@
 namespace f4flight {
 
 // ---------------------------------------------------------------------------
-// PID controller
+// DigiState — persistent state for the digi AI steering functions.
+//
+// In FreeFalcon, this state lives in the DigitalBrain class. Here we
+// encapsulate it in a struct so the SteeringController can own it.
 // ---------------------------------------------------------------------------
-struct PIDGains {
-    double kp{1.0}, ki{0.0}, kd{0.0};
-    double outputMin{-1.0}, outputMax{1.0};
-    double integMin{-1.0}, integMax{1.0};
-};
+struct DigiState {
+    // Stick smoothing state (SetPstick / SetRstick / SetYpedal)
+    double pStick{0.0};
+    double rStick{0.0};
+    double yPedal{0.0};
+    double throttle{0.5};  // current throttle command [0, 1.5]
 
-class PID {
-public:
-    PID() = default;
-    explicit PID(const PIDGains& g) : gains_(g) {}
-    double update(double error, double dt) noexcept;
-    void reset() noexcept { integ_ = 0.0; prevError_ = 0.0; hasPrev_ = false; }
-    void setGains(const PIDGains& g) noexcept { gains_ = g; }
-    const PIDGains& gains() const noexcept { return gains_; }
-private:
-    PIDGains gains_;
-    double integ_{0.0}, prevError_{0.0};
-    bool hasPrev_{false};
-};
+    // GammaHold integral
+    double gammaHoldIError{0.0};
 
-// ---------------------------------------------------------------------------
-// Shared controller state (PID controllers + config)
-// ---------------------------------------------------------------------------
-struct SteeringContext {
-    PilotInput manual;
-    double maxBank_deg{30.0};
+    // MachHold integral
+    double autoThrottle{0.0};
+
+    // LevelTurn state (0 = leveling, 1 = banking, 2 = holding turn)
+    int trackMode{0};
+
+    // Waypoint state
+    int onStation{0};  // 0=NotThereYet, 1=Arrived, 2=Stabalizing, 3=OnStation
+    int waypointMode{1};
+    double holdAlt{0.0};
+    double holdPsi{0.0};
+
+    // Configuration
+    double cornerSpeed{330.0};  // kts, from aircraft config
     double maxGs{9.0};
+    double maxRoll{30.0};       // deg
+    double maxRollDelta{5.0};   // deg
 
-    PID pitchPID;
-    PID rollPID;
-    PID throttlePID;
-    PID yawPID;
+    void reset() noexcept {
+        pStick = rStick = yPedal = 0.0;
+        gammaHoldIError = 0.0;
+        autoThrottle = 0.0;
+        trackMode = 0;
+        onStation = 0;
+        waypointMode = 1;
+    }
 };
 
 // ---------------------------------------------------------------------------
-// Abstract base classes
-// ---------------------------------------------------------------------------
-class VerticalBehavior {
-public:
-    virtual ~VerticalBehavior() = default;
-    // Compute pstick [-1,1]. May also set out.throttle.
-    virtual double compute(const AircraftState& state, double dt,
-                           SteeringContext& ctx, PilotInput& out) = 0;
-    virtual const char* name() const = 0;
-};
-
-class HorizontalBehavior {
-public:
-    virtual ~HorizontalBehavior() = default;
-    // Compute rstick [-1,1].
-    virtual double compute(const AircraftState& state, double dt,
-                           SteeringContext& ctx) = 0;
-    virtual const char* name() const = 0;
-};
-
-class ThrottleBehavior {
-public:
-    virtual ~ThrottleBehavior() = default;
-    // Compute throttle [0, 1.5].
-    virtual double compute(const AircraftState& state, double dt,
-                           SteeringContext& ctx) = 0;
-    virtual const char* name() const = 0;
-};
-
-// ---------------------------------------------------------------------------
-// Vertical behaviors
-// ---------------------------------------------------------------------------
-
-// AltitudeHold: unified vertical behavior using a gamma-command controller.
+// DigiAI — the core FreeFalcon digi AI steering functions.
 //
-// Based on the FreeFalcon DigitalBrain approach: instead of separate
-// climb/level/descent modes, a single controller commands a desired
-// flight path angle (gamma) based on altitude error with a lead term
-// that naturally levels off as the aircraft approaches target.
+// Each function is a direct port of the corresponding DigitalBrain method.
+// They operate on DigiState + AircraftState + FcsState and produce stick
+// commands (pStick, rStick, yPedal, throtl).
+// ---------------------------------------------------------------------------
+class DigiAI {
+public:
+    // SetPstick — convert a G-command (or error/alpha) to a stick deflection.
+    // Direct port of DigitalBrain::SetPstick (mnvers.cpp:300-362).
+    //
+    //   pitchError: the commanded G (for GCommand), pitch error in degrees
+    //               (for ErrorCommand), or alpha in degrees (for AlphaCommand)
+    //   gLimit:     the G limit (typically maxGs)
+    //   commandType: 0=ErrorCommand, 1=GCommand, 2=AlphaCommand
+    //
+    // Updates: digi.pStick
+    static void SetPstick(double pitchError, double gLimit, int commandType,
+                          DigiState& digi, const AircraftState& state);
+
+    // SetRstick — convert a roll error (degrees) to a stick deflection.
+    // Direct port of DigitalBrain::SetRstick (mnvers.cpp:364-390).
+    //
+    // Updates: digi.rStick
+    static void SetRstick(double rollError, DigiState& digi,
+                          const class FlightControlSystem& fcs,
+                          const FcsState& fcsState);
+
+    // SetYpedal — convert a yaw error to a pedal deflection.
+    // Direct port of DigitalBrain::SetYpedal (mnvers.cpp:392-397).
+    //
+    // Updates: digi.yPedal
+    static void SetYpedal(double yawError, DigiState& digi);
+
+    // GammaHold — hold a desired flight path angle (gamma).
+    // Direct port of DigitalBrain::GammaHold (mnvers.cpp:837-866).
+    //
+    //   desGamma: desired flight path angle in degrees
+    //
+    // Updates: digi.pStick, digi.gammaHoldIError
+    static void GammaHold(double desGamma, DigiState& digi,
+                          const AircraftState& state, double maxGs);
+
+    // AltHold — hold a desired altitude.
+    // Direct port of DigitalBrain::AltHold (autopilot.cpp:323-378).
+    //
+    //   desAlt: desired altitude in feet (positive up)
+    //
+    // Updates: digi.pStick (via GammaHold)
+    static void AltHold(double desAlt, DigiState& digi, const AircraftState& state,
+                        double maxGs);
+
+    // AltitudeHold — full altitude hold with wings level.
+    // Direct port of DigitalBrain::AltitudeHold (mnvers.cpp:759-784).
+    //
+    //   desAlt: desired altitude in feet
+    //   Returns: true if within 25 ft of target
+    //
+    // Updates: digi.pStick, digi.rStick, digi.yPedal
+    static bool AltitudeHold(double desAlt, DigiState& digi,
+                             const AircraftState& state,
+                             const FlightControlSystem& fcs,
+                             const FcsState& fcsState, double maxGs);
+
+    // HeadingAndAltitudeHold — hold heading + altitude.
+    // Direct port of DigitalBrain::HeadingAndAltitudeHold (mnvers.cpp:786-835).
+    //
+    //   desPsi: desired heading (radians)
+    //   desAlt: desired altitude (feet)
+    //   Returns: true if within tolerance
+    //
+    // Updates: digi.pStick, digi.rStick, digi.yPedal
+    static bool HeadingAndAltitudeHold(double desPsi, double desAlt,
+                                       DigiState& digi, const AircraftState& state,
+                                       const FlightControlSystem& fcs,
+                                       const FcsState& fcsState, double maxGs);
+
+    // LevelTurn — turn to a heading at a specified load factor.
+    // Direct port of DigitalBrain::LevelTurn (mnvers.cpp:713-757).
+    //
+    //   loadFactor: target G (typically 2.0)
+    //   turnDir: +1 (right) or -1 (left)
+    //   newTurn: true if starting a new turn (resets gamma integral)
+    //
+    // Updates: digi.pStick, digi.rStick, digi.yPedal, digi.trackMode
+    static void LevelTurn(double loadFactor, double turnDir, bool newTurn,
+                          DigiState& digi, const AircraftState& state,
+                          const FlightControlSystem& fcs,
+                          const FcsState& fcsState, double maxGs);
+
+    // MachHold — hold a target speed via throttle.
+    // Direct port of DigitalBrain::MachHold (mnvers.cpp:414-665).
+    //
+    //   targetSpeed: desired speed in knots
+    //   currentSpeed: current speed in knots
+    //   adjustPitch: if true, add pStick/15 to throttle (pitch-throttle coupling)
+    //
+    // Returns: true if within 10% of target speed
+    //
+    // Updates: digi.autoThrottle
+    // Output: throttle [0, 1.5]
+    static bool MachHold(double targetSpeed, double currentSpeed, bool adjustPitch,
+                         DigiState& digi, const AircraftState& state,
+                         double minVcas, double maxVcas);
+
+    // Loiter — orbit pattern.
+    // Direct port of DigitalBrain::Loiter (mnvers.cpp:667+).
+    static void Loiter(DigiState& digi, const AircraftState& state,
+                       const FlightControlSystem& fcs,
+                       const FcsState& fcsState, double maxGs);
+
+    // Constants for commandType (match FreeFalcon AirframeClass flags)
+    static constexpr int ErrorCommand = 0;
+    static constexpr int GCommand = 1;
+    static constexpr int AlphaCommand = 2;
+};
+
+// ---------------------------------------------------------------------------
+// SteeringController — manages the digi AI state and combines behaviors.
 //
-// Pitch owns altitude; throttle owns speed (via SpeedHold). No coupling.
-//
-// The controller:
-//   1. altErr = targetAlt - currentAlt
-//   2. leadErr = altErr - climbRate * leadTime   (look ahead)
-//   3. gammaCmd = leadErr * altGain              (desired flight path angle)
-//   4. gammaErr = gammaCmd - currentGamma
-//   5. elevCmd = gammaErr * speedScaledGain      (proportional)
-//   6. integral += elevCmd * integGain           (slow correction)
-//   7. pstick = integral + elevCmd + turnCompG   (total pitch command)
-//
-// The lead term (step 2) is the key: as the aircraft climbs, climbRate
-// grows, reducing leadErr, reducing gammaCmd, naturally leveling off
-// before reaching target. No VVI cap or mode switching needed.
-class AltitudeHold : public VerticalBehavior {
-public:
-    AltitudeHold(double targetAlt_ft);
-
-    double compute(const AircraftState& state, double dt,
-                   SteeringContext& ctx, PilotInput& out) override;
-    const char* name() const override { return "AltitudeHold"; }
-
-    void setTargetAltitude(double alt_ft) { targetAlt_ = alt_ft; }
-
-private:
-    double targetAlt_;
-
-    // Gamma-hold integral state (persists across frames)
-    double gammaIError_{0.0};
-};
-
-// ---------------------------------------------------------------------------
-// Horizontal behaviors
-// ---------------------------------------------------------------------------
-
-// HeadingHold: hold a specific heading
-class HeadingHold : public HorizontalBehavior {
-public:
-    explicit HeadingHold(double heading_rad) : heading_(heading_rad) {}
-    double compute(const AircraftState& state, double dt,
-                   SteeringContext& ctx) override;
-    const char* name() const override { return "HeadingHold"; }
-    void setHeading(double h) { heading_ = h; }
-private:
-    double heading_;
-};
-
-// SteerToWaypoint: fly toward waypoints, advance on capture
-class SteerToWaypoint : public HorizontalBehavior {
-public:
-    SteerToWaypoint(std::vector<Vec3> wps, double captureRadius_ft)
-        : wps_(std::move(wps)), captureRadius_(captureRadius_ft) {}
-    double compute(const AircraftState& state, double dt,
-                   SteeringContext& ctx) override;
-    const char* name() const override { return "SteerToWaypoint"; }
-    std::size_t currentWaypoint() const { return curWp_; }
-    bool allCaptured() const { return curWp_ >= wps_.size(); }
-private:
-    std::vector<Vec3> wps_;
-    double captureRadius_;
-    std::size_t curWp_{0};
-};
-
-// ---------------------------------------------------------------------------
-// Throttle behaviors
-// ---------------------------------------------------------------------------
-
-// SpeedHold: PID throttle to maintain target speed
-class SpeedHold : public ThrottleBehavior {
-public:
-    explicit SpeedHold(double targetSpeed_kts) : target_(targetSpeed_kts) {}
-    double compute(const AircraftState& state, double dt,
-                   SteeringContext& ctx) override;
-    const char* name() const override { return "SpeedHold"; }
-    void setTargetSpeed(double kts) { target_ = kts; }
-private:
-    double target_;
-};
-
-// ---------------------------------------------------------------------------
-// SteeringController — manages active behaviors and combines outputs
+// The controller owns a DigiState and provides a simplified API for the
+// maneuver test framework. It delegates to DigiAI for the actual control
+// laws.
 // ---------------------------------------------------------------------------
 class SteeringController {
 public:
     SteeringController();
 
-    void setManualInput(const PilotInput& in) noexcept { ctx_.manual = in; }
+    // Set the active steering mode. These configure the DigiAI functions
+    // that will be called each frame.
+    enum class Mode {
+        HeadingAltitude,   // HeadingAndAltitudeHold
+        Waypoint,          // GoToCurrentWaypoint (simplified)
+        Loiter,            // Loiter orbit
+        TerrainFollow,     // (not implemented yet)
+        Formation,         // (not implemented yet)
+        Combat,            // (not implemented yet)
+        Manual,            // direct input passthrough
+    };
 
-    // Behavior management
-    void setVerticalBehavior(std::unique_ptr<VerticalBehavior> b) { vert_ = std::move(b); }
-    void setHorizontalBehavior(std::unique_ptr<HorizontalBehavior> b) { horiz_ = std::move(b); }
-    void setThrottleBehavior(std::unique_ptr<ThrottleBehavior> b) { thrott_ = std::move(b); }
+    void setMode(Mode m) { mode_ = m; }
+    Mode mode() const { return mode_; }
 
-    // Access active behaviors (for inspection — e.g. checking waypoint index)
-    VerticalBehavior* verticalBehavior() { return vert_.get(); }
-    HorizontalBehavior* horizontalBehavior() { return horiz_.get(); }
-    ThrottleBehavior* throttleBehavior() { return thrott_.get(); }
+    // Goal setters
+    void setHeading(double heading_rad) { digi_.holdPsi = heading_rad; }
+    void setAltitude(double alt_ft) { digi_.holdAlt = alt_ft; }
+    void setWaypoints(std::vector<Vec3> wps) { wps_ = std::move(wps); curWp_ = 0; }
+    void setCaptureRadius(double r_ft) { captureRadius_ = r_ft; }
+    void setMaxGs(double g) { digi_.maxGs = g; }
+    void setMaxBank(double bank_deg) { digi_.maxRoll = bank_deg; }
+    void setCornerSpeed(double kts) { digi_.cornerSpeed = kts; }
+    void setManualInput(const PilotInput& in) { manual_ = in; }
 
-    // Configuration
-    void setMaxBankAngle_deg(double v) noexcept { ctx_.maxBank_deg = v; }
-    double maxBankAngle_deg() const noexcept { return ctx_.maxBank_deg; }
-    void setMaxGs(double v) noexcept { ctx_.maxGs = v; }
-    double maxGs() const noexcept { return ctx_.maxGs; }
+    // Accessors
+    double heading() const { return digi_.holdPsi; }
+    double altitude() const { return digi_.holdAlt; }
+    std::size_t currentWaypoint() const { return curWp_; }
+    bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
+    const DigiState& digiState() const { return digi_; }
 
-    // PID accessors
-    PID& pitchPID()    noexcept { return ctx_.pitchPID; }
-    PID& rollPID()     noexcept { return ctx_.rollPID; }
-    PID& throttlePID() noexcept { return ctx_.throttlePID; }
-    PID& yawPID()      noexcept { return ctx_.yawPID; }
+    // Main compute — produces PilotInput from the current state + mode.
+    // Requires the FCS state (for kr01, tr01 used by SetRstick).
+    PilotInput compute(const AircraftState& state, double dt, double groundZ,
+                       const FlightControlSystem& fcs, const FcsState& fcsState);
 
-    // Active behavior names
-    const char* verticalBehaviorName() const { return vert_ ? vert_->name() : "None"; }
-    const char* horizontalBehaviorName() const { return horiz_ ? horiz_->name() : "None"; }
-    const char* throttleBehaviorName() const { return thrott_ ? thrott_->name() : "None"; }
-
-    // Main compute — combines all three behaviors
-    PilotInput compute(const AircraftState& state, double dt, double groundZ);
-
-    // Reset all PID controllers (call between independent test phases or
-    // when switching behaviors to prevent integral windup carryover).
-    void reset() noexcept;
+    // Reset all digi state (call between independent test phases)
+    void reset() noexcept { digi_.reset(); curWp_ = 0; }
 
 private:
-    SteeringContext ctx_;
-    std::unique_ptr<VerticalBehavior> vert_;
-    std::unique_ptr<HorizontalBehavior> horiz_;
-    std::unique_ptr<ThrottleBehavior> thrott_;
+    DigiState digi_;
+    Mode mode_{Mode::HeadingAltitude};
+    std::vector<Vec3> wps_;
+    std::size_t curWp_{0};
+    double captureRadius_{5000.0};  // ft
+    PilotInput manual_;
+
+    // Waypoint following (simplified GoToCurrentWaypoint)
+    void runWaypoint(const AircraftState& state, double dt,
+                     const FlightControlSystem& fcs, const FcsState& fcsState,
+                     PilotInput& out);
 };
 
 // ---------------------------------------------------------------------------
-// Utility functions
+// Utility functions (kept for backward compatibility with test code)
 // ---------------------------------------------------------------------------
 double headingError(double setpoint, double current) noexcept;
 double turnCompensatedG(const AircraftState& state) noexcept;
-double computeMaxVVI_fpm(double altErr_ft) noexcept;
-double protectSpeed(double pitchCmd, const AircraftState& state, double maxGs) noexcept;
 
 } // namespace f4flight

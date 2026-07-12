@@ -278,6 +278,7 @@ std::string write(const AircraftConfig& cfg) {
     w.key("landingAOA");           w.writeNum(cfg.aux.landingAOA);
     w.key("rollCouple");           w.writeNum(cfg.aux.rollCouple);
     w.key("elevatorRolls");        w.writeBool(cfg.aux.elevatorRolls);
+    w.key("criticalAOA");          w.writeNum(cfg.aux.criticalAOA);
     w.key("nEngines");             w.writeInt(cfg.aux.nEngines);
     w.key("typeEngine");           w.writeInt(cfg.aux.typeEngine);
     w.endObj();
@@ -336,28 +337,43 @@ std::string write(const AircraftConfig& cfg) {
     w.endValue();
 
     // Top-level flags
-    w.key("aoaCommandMode");    w.writeBool(cfg.aoaCommandMode);
-    w.key("aoaCommandMaxGs");   w.writeNum(cfg.aoaCommandMaxGs);
+    // NOTE: aoaCommandMode / aoaCommandMaxGs are NOT serialized -- they are
+    // runtime defaults from the f4flight code, not data from the .dat file.
+    // Keeping them out of the JSON ensures the JSON contains only data that
+    // came from the .dat file (no "profile data").
 
-    // Performance profile (per-aircraft tuning for the steering controller)
-    w.key("performance");
+    // Verbatim .dat capture (the "no data loss" channel).
+    // rawAuxAeroData: every key/value pair from the .dat AuxAeroData section.
+    w.key("rawAuxAeroData");
     w.beginObjValue();
-    w.key("category");         w.writeString(cfg.profile.category);
-    w.key("cruiseSpeed_kts");  w.writeNum(cfg.profile.cruiseSpeed_kts);
-    w.key("climbSpeed_kts");   w.writeNum(cfg.profile.climbSpeed_kts);
-    w.key("climbMach");        w.writeNum(cfg.profile.climbMach);
-    w.key("climbPower");       w.writeNum(cfg.profile.climbPower);
-    w.key("descentSpeed_kts"); w.writeNum(cfg.profile.descentSpeed_kts);
-    w.key("descentMach");      w.writeNum(cfg.profile.descentMach);
-    w.key("descentPower");     w.writeNum(cfg.profile.descentPower);
-    w.key("cruiseAlt_ft");     w.writeNum(cfg.profile.cruiseAlt_ft);
-    w.key("climbAlt_ft");      w.writeNum(cfg.profile.climbAlt_ft);
-    w.key("descentAlt_ft");    w.writeNum(cfg.profile.descentAlt_ft);
-    w.key("maxBank_deg");      w.writeNum(cfg.profile.maxBank_deg);
-    w.key("levelBand_ft");     w.writeNum(cfg.profile.levelBand_ft);
-    w.key("tuned");            w.writeBool(cfg.profile.tuned);
+    w.resetFirst();
+    for (const auto& kv : cfg.rawAuxAeroData) {
+        w.key(kv.first);
+        w.writeString(kv.second);
+    }
     w.endObj();
     w.endValue();
+
+    // aeroOptions / engineOptions: literal option names from `aeropt`/`engopt`.
+    w.key("aeroOptions");
+    w.beginArrValue();
+    w.resetFirst();
+    for (const auto& opt : cfg.aeroOptions) w.strValue(opt);
+    w.endArr();
+    w.endValue();
+
+    w.key("engineOptions");
+    w.beginArrValue();
+    w.resetFirst();
+    for (const auto& opt : cfg.engineOptions) w.strValue(opt);
+    w.endArr();
+    w.endValue();
+
+    // Source metadata for traceability.
+    w.key("sourceTitle");     w.writeString(cfg.sourceTitle);
+    w.key("sourceAuthor");    w.writeString(cfg.sourceAuthor);
+    w.key("sourceRevision");  w.writeString(cfg.sourceRevision);
+    w.key("sourceFile");      w.writeString(cfg.sourceFile);
 
     w.endObj();
     w.writeRaw("\n");
@@ -703,6 +719,7 @@ IoResult read(const std::string& jsonStr, AircraftConfig& cfg) {
                     else if (k == "landingAOA")           r.readInto(cfg.aux.landingAOA);
                     else if (k == "rollCouple")           r.readInto(cfg.aux.rollCouple);
                     else if (k == "elevatorRolls")        r.readInto(cfg.aux.elevatorRolls);
+                    else if (k == "criticalAOA")          r.readInto(cfg.aux.criticalAOA);
                     else if (k == "nEngines")             r.readInto(cfg.aux.nEngines);
                     else if (k == "typeEngine")           r.readInto(cfg.aux.typeEngine);
                     else r.skipValue();
@@ -769,39 +786,48 @@ IoResult read(const std::string& jsonStr, AircraftConfig& cfg) {
                     cfg.limiters[idx] = lim;
                 });
             }
-            else if (key == "aoaCommandMode")  r.readInto(cfg.aoaCommandMode);
-            else if (key == "aoaCommandMaxGs") r.readInto(cfg.aoaCommandMaxGs);
-            else if (key == "performance") {
+            else if (key == "rawAuxAeroData") {
                 r.readObject([&](const std::string& k) {
-                    if      (k == "category")         r.readInto(cfg.profile.category);
-                    else if (k == "cruiseSpeed_kts")  r.readInto(cfg.profile.cruiseSpeed_kts);
-                    else if (k == "climbSpeed_kts")   r.readInto(cfg.profile.climbSpeed_kts);
-                    else if (k == "climbMach")        r.readInto(cfg.profile.climbMach);
-                    else if (k == "climbPower")       r.readInto(cfg.profile.climbPower);
-                    else if (k == "descentSpeed_kts") r.readInto(cfg.profile.descentSpeed_kts);
-                    else if (k == "descentMach")      r.readInto(cfg.profile.descentMach);
-                    else if (k == "descentPower")     r.readInto(cfg.profile.descentPower);
-                    else if (k == "cruiseAlt_ft")     r.readInto(cfg.profile.cruiseAlt_ft);
-                    else if (k == "climbAlt_ft")      r.readInto(cfg.profile.climbAlt_ft);
-                    else if (k == "descentAlt_ft")    r.readInto(cfg.profile.descentAlt_ft);
-                    else if (k == "maxBank_deg")      r.readInto(cfg.profile.maxBank_deg);
-                    else if (k == "levelBand_ft")     r.readInto(cfg.profile.levelBand_ft);
-                    else if (k == "tuned")            r.readInto(cfg.profile.tuned);
-                    else r.skipValue();
+                    std::string v;
+                    r.readInto(v);
+                    cfg.rawAuxAeroData[k] = v;
                 });
             }
+            else if (key == "aeroOptions") {
+                r.readObjectArray([&]() {
+                    std::string s;
+                    r.readInto(s);
+                    cfg.aeroOptions.push_back(s);
+                });
+            }
+            else if (key == "engineOptions") {
+                r.readObjectArray([&]() {
+                    std::string s;
+                    r.readInto(s);
+                    cfg.engineOptions.push_back(s);
+                });
+            }
+            else if (key == "sourceTitle")     r.readInto(cfg.sourceTitle);
+            else if (key == "sourceAuthor")    r.readInto(cfg.sourceAuthor);
+            else if (key == "sourceRevision")  r.readInto(cfg.sourceRevision);
+            else if (key == "sourceFile")      r.readInto(cfg.sourceFile);
+            // aoaCommandMode / aoaCommandMaxGs are intentionally NOT read
+            // from JSON -- they are runtime defaults, not .dat data. Old
+            // JSONs that still contain these keys will simply skip them.
+            else if (key == "aoaCommandMode")  r.skipValue();
+            else if (key == "aoaCommandMaxGs") r.skipValue();
             else r.skipValue();
         });
 
-        // If the JSON didn't include a performance profile, derive one
-        // from the aircraft data. This ensures every loaded aircraft has
-        // a usable profile even if the JSON file predates this feature.
-        if (cfg.profile.cruiseSpeed_kts <= 0.0) {
-            cfg.deriveProfile();
-        }
-
         // If maxFuel wasn't set, default to internalFuel
         if (cfg.geometry.maxFuel_lbs <= 0.0) cfg.geometry.maxFuel_lbs = cfg.geometry.internalFuel_lbs;
+
+        // If we loaded rawAuxAeroData but the typed `aux` struct wasn't
+        // populated (e.g. JSON written by an older version that only had
+        // the typed aux object), that's fine -- aux keeps its defaults.
+        // If both are present, the typed aux object was already populated
+        // from the JSON's "aux" section above; rawAuxAeroData is the
+        // authoritative full record.
 
         result.ok = true;
     } catch (const std::exception& e) {

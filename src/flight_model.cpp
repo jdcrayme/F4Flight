@@ -137,8 +137,7 @@ void FlightModel::init(const AircraftConfig& cfg,
 
     // Initialize the FCS lag filters from the trim alpha so the first frame
     // doesn't reset alpha to zero.
-    state_.fcs.pitchAlphaLag.y_prev = state_.aero.alpha_deg;
-    state_.fcs.pitchAlphaLag.u_prev = state_.aero.alpha_deg;
+    state_.fcs.pitchAlphaLag.reset(state_.aero.alpha_deg);
     state_.fcs.pitchRateLag.y_prev = 0.0;
     state_.fcs.pitchRateLag.u_prev = 0.0;
     state_.fcs.oldp03[0] = state_.aero.alpha_deg;
@@ -252,8 +251,18 @@ void FlightModel::accelerometers() {
     state_.loads.nxcgs = nxs; state_.loads.nycgs = nys; state_.loads.nzcgs = nzs;
     state_.loads.nxcgw = nxw; state_.loads.nycgw = nyw; state_.loads.nzcgw = nzw;
 
-    // Include thrust contribution (thrust along body X, with alpha coupling)
-    const double xprop = state_.engine.thrust / std::max(1e-6, state_.fuel.mass_slugs);
+    // Include thrust contribution (thrust along body X, with alpha coupling).
+    //
+    // Bug #9 fix (was: xprop = thrust / mass_slugs, then nxcgb += xprop / g * cosalp).
+    //
+    // state_.engine.thrust is ALREADY an acceleration (thrust_lbf / mass_slugs),
+    // as set in EngineModel::update() line 164: state.thrust = thrtb1 * thrustFactor * ethrst
+    // where thrtb1 = interpolated_thrust / mass. Dividing by mass again gave a
+    // thrust G contribution ~840x too small (measured 0.0002 G instead of 0.17 G
+    // for an F-16 at MIL power -- see scripts/bug_check.cpp).
+    //
+    // Fix: use thrust directly as the acceleration (no /mass).
+    const double xprop = state_.engine.thrust;  // already ft/s^2 (acceleration)
     state_.loads.nxcgb += xprop / GRAVITY * cosalp;
     state_.loads.nzcgb += xprop / GRAVITY * sinalp;  // thrust pitch-up at alpha
 }
@@ -269,6 +278,8 @@ void FlightModel::minorStep(double dt, const PilotInput& input) {
     fcs_.update(dt, state_.qbar, state_.qsom, state_.mach, state_.kin.vt,
                 state_.vcas, state_.aero.alpha_deg, state_.aero.beta_deg,
                 state_.kin.cosmu, state_.kin.cosgam, state_.kin.singam,
+                state_.kin.costhe, state_.kin.cosphi,
+                state_.fuel.loadingFraction, state_.gear.inAir,
                 state_.loads.nzcgs, state_.loads.nycgw,
                 gearDown, input.refueling, gearDown,
                 input, state_.fcs, state_.aero);

@@ -14,6 +14,7 @@
 #include "f4flight/core/lookup.h"
 #include "f4flight/core/types.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -264,6 +265,7 @@ struct AuxAero {
     double landingAOA{12.5};           // deg
     double rollCouple{0.0};            // ARI strength
     bool   elevatorRolls{false};
+    double criticalAOA{0.0};           // deg, AOA above which stall model activates (0 = disabled)
 
     int    nEngines{1};
     int    typeEngine{2};              // 1 PW100, 2 PW220, 3 PW229, 4 GE110, 5 GE129
@@ -310,86 +312,66 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Performance profile: per-aircraft tuning for the steering controller.
-//
-// The .dat files contain aerodynamic and engine data, but NOT the
-// operational speeds (cruise, climb, descent) that an AI pilot should
-// fly. Different aircraft have very different performance envelopes —
-// an F-16 cruises at 380 kts, a B-52 at 300, an A-10 at 280 — and
-// using one set of speeds for all aircraft causes oscillation, stalls,
-// or inability to maintain altitude.
-//
-// This struct stores the "flight manual" speeds for each aircraft.
-// It can be:
-//   1. Loaded from the JSON file (if a "performance" section is present)
-//   2. Auto-derived from the aircraft data via deriveProfile()
-//   3. Empirically tuned via the tune_profile tool
-//
-// The auto-derived values are reasonable starting points; the tuned
-// values are better. Both let the maneuver test scenarios use
-// aircraft-appropriate speeds instead of hardcoded defaults.
-// ---------------------------------------------------------------------------
-struct PerformanceProfile {
-    // Aircraft category. Used for selecting default behaviors and for
-    // reporting. One of: "fighter", "interceptor", "attack", "bomber",
-    // "transport", "trainer", "uav".
-    std::string category{"fighter"};
-
-    // Speed schedule (kts CAS, except Mach which is dimensionless).
-    // Convention: climbSpeed < cruiseSpeed < descentSpeed, matching
-    // real aviation practice (slow climb for best angle, fast descent
-    // for efficiency).
-    double cruiseSpeed_kts{380.0};
-    double climbSpeed_kts{320.0};       // 0 = same as cruise
-    double climbMach{0.80};
-    double climbPower{1.0};             // 1.0 = MIL, 1.5 = full AB
-    double descentSpeed_kts{420.0};     // 0 = same as cruise
-    double descentMach{0.80};
-    double descentPower{0.05};          // near idle
-
-    // Altitudes (ft). Used by test scenarios to pick reasonable
-    // cruise/climb/descent target altitudes.
-    double cruiseAlt_ft{15000.0};
-    double climbAlt_ft{25000.0};        // target altitude for climb tests
-    double descentAlt_ft{3000.0};       // target altitude for descent tests
-
-    // Maneuver limits for normal operations (not combat).
-    double maxBank_deg{45.0};
-    double levelBand_ft{200.0};         // altitude band for level-flight mode
-
-    // Whether this profile has been empirically tuned by tune_profile,
-    // or is just the auto-derived starting point. Hosts can check this
-    // to decide whether to warn the user that the profile may need tuning.
-    bool tuned{false};
-};
-
-// ---------------------------------------------------------------------------
 // Top-level aircraft configuration. Combines all the above.
 // ---------------------------------------------------------------------------
 struct AircraftConfig {
     std::string name;
     std::string GetDescription;
 
-    AircraftGeometry   geometry;
-    AuxAero            aux;
-    AeroTable          aero;
-    EngineTable        engine;
-    RollCommandTable   rollCmd;
-    PerformanceProfile profile;
-    Limiter            limiters[static_cast<int>(LimiterKey::Count)];
+    AircraftGeometry geometry;
+    AuxAero          aux;
+    AeroTable        aero;
+    EngineTable      engine;
+    RollCommandTable rollCmd;
+    Limiter          limiters[static_cast<int>(LimiterKey::Count)];
 
-    // Convenience: F-16-like default G/AOA schedule
+    // -----------------------------------------------------------------------
+    // Verbatim .dat capture (the "no data loss" channel).
+    //
+    // rawAuxAeroData  : every `key value...` line from the AuxAeroData section
+    //                   of the .dat file, stored as key -> exact value string
+    //                   (everything after the key on that line, with leading
+    //                   whitespace trimmed and trailing whitespace/comments
+    //                   preserved verbatim). This is the authoritative record
+    //                   of what was in the .dat file; the typed `aux` struct
+    //                   above is a convenience view populated from a subset of
+    //                   these keys.
+    //
+    // aeroOptions     : the literal option names from every `aeropt <name>`
+    //                   line, in file order.
+    //
+    // engineOptions   : the literal option names from every `engopt <name>`
+    //                   line, in file order (e.g. "fuelflow",
+    //                   "AdvancedDynamics", "AdvancedThrust").
+    //
+    // sourceTitle / sourceAuthor / sourceRevision / sourceFile
+    //                 : metadata from the .dat file header comments and the
+    //                   file name. Not flight data, but recorded for
+    //                   traceability so a JSON can always be traced back to
+    //                   the exact .dat file it came from. Empty when the
+    //                   config is built in code (e.g. f16c_config.cpp).
+    //
+    // These fields together guarantee that the JSON captures *all* data from
+    // the source .dat file and *only* data from the source .dat file. The
+    // round-trip fidelity check (dat -> json -> dat) compares these fields
+    // against a fresh parse of the .dat file.
+    // -----------------------------------------------------------------------
+    std::map<std::string, std::string> rawAuxAeroData;
+    std::vector<std::string> aeroOptions;
+    std::vector<std::string> engineOptions;
+    std::string sourceTitle;
+    std::string sourceAuthor;
+    std::string sourceRevision;
+    std::string sourceFile;
+
+    // Convenience: F-16-like default G/AOA schedule.
+    //
+    // NOTE: these are NOT serialized to JSON and are NOT read from .dat files.
+    // They are runtime-only defaults used by the FCS when the host application
+    // does not override them. Keeping them out of the JSON ensures the JSON
+    // contains only data that came from the .dat file (no "profile data").
     bool   aoaCommandMode{false};
     double aoaCommandMaxGs{9.0};
-
-    // -----------------------------------------------------------------------
-    // Derive a reasonable PerformanceProfile from the aircraft data.
-    // Uses TWR, wing loading, maxGs, maxVcas, and nEngines to categorize
-    // the aircraft and pick starting speeds. The result is a starting
-    // point — for best results, run the tune_profile tool to empirically
-    // refine the values.
-    // -----------------------------------------------------------------------
-    void deriveProfile();
 
     // -----------------------------------------------------------------------
     // Typed limiter accessors. Preferred over raw `limiters[idx]` array

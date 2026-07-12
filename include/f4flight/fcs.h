@@ -29,6 +29,10 @@ public:
                 double cosmu,
                 double cosgam,
                 double singam,
+                double costhe,
+                double cosphi,
+                double loadingFraction,
+                bool   inAir,
                 double nzcgs,
                 double nycgw,
                 bool   gearDown,
@@ -44,8 +48,9 @@ public:
 private:
     void computeGains(double qbar, double qsom, double vt, double alpha_deg,
                       double clift0, double clalph0, double clalpha, double cnalpha,
-                      double cosgam, double cosmu, bool landingGains,
-                      double gearPos, FcsState& fcs) const;
+                      double cosgam, double cosmu, double costhe, double cosphi,
+                      double loadingFraction, bool inAir,
+                      bool landingGains, double gearPos, FcsState& fcs) const;
 
     void runPitch(double dt, double qbar, double qsom, double vt, double vcas_kts,
                   double alpha_deg, double cosmu, double cosgam, double singam,

@@ -114,18 +114,21 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-### Converting BMS aircraft data
+### Converting and validating BMS aircraft data
 
 ```bash
 # Convert a .dat file to JSON
 dat2json f16bk50.dat f16bk50.json
 
-# Run a simulation
-simple_sim f16bk50.json
+# Validate the result
+ dat_validate f16bk50.json
 
 # Run the maneuver test suite
 maneuver_test f16bk50.json
 ```
+
+See `tools/README.md` for the full tool set (`dat2json`, `dat_validate`,
+`json_diff`).
 
 ### Minimal usage example
 
@@ -328,14 +331,16 @@ Checks performed:
 
 ## Tools
 
+See `tools/README.md` for full documentation. Summary:
+
 | Tool | Purpose |
 |------|---------|
 | `dat2json` | Convert Falcon 4 `.dat` files to JSON |
-| `simple_sim` | Run a simple 30-second simulation |
-| `steering_demo` | Interactive demo: AI-piloted 4-waypoint circuit with continuous state logging |
-| `maneuver_test` | Scenario-based maneuver test runner with `--list` / `--scenario` / `--all` |
-| `tune_diag` | Detailed frame-by-frame diagnostic output for PID tuning |
-| `perf_check` | Performance validation against published specs |
+| `dat_validate` | Load a JSON and run `AircraftConfig::validate()` |
+| `json_diff` | Field-by-field diff of two JSON aircraft files |
+
+(`maneuver_test` is built from `tests/maneuver/` and lives with the test
+tree, not `tools/`.)
 
 ## Maneuver Test Scenarios
 
@@ -343,7 +348,7 @@ Checks performed:
 self-contained subclass of `ManeuverScenario` that builds an ordered list of
 test phases (climb, turn, waypoint leg, etc.). Scenarios self-register at
 startup, so adding a new scenario is a matter of dropping a new `.cpp` file
-in `src/scenarios/` and rebuilding — the runner never needs editing.
+in `tests/maneuver/scenarios/` and rebuilding — the runner never needs editing.
 
 ### Built-in Scenarios
 
@@ -372,33 +377,37 @@ maneuver_test f16bk50.json --scenario basic --scenario flightplan
 
 ### Adding a New Scenario
 
-1. Create `src/scenarios/scenario_<name>.cpp`.
+1. Create `tests/maneuver/scenarios/scenario_<name>.cpp`.
 2. Define a `ManeuverScenario` subclass that builds its test sequence in
-   `buildSequence()`.
+   `StartScenario()`.
 3. Self-register with `static RegisterScenario reg("name", []{ ... });`.
-4. Add a force-link symbol `extern "C" void f4flight_forceLink_scenario_<name>() {}`
-   and declare it in `maneuver_test.h` (one line in `forceLinkAllScenarios()`).
-   This step is needed because the static library linker otherwise drops
-   scenario `.o` files that have no referenced symbols.
+4. Add the new `.cpp` to `F4FLIGHT_MANEUVER_TEST_SOURCES` in `CMakeLists.txt`.
 
-See `src/scenarios/scenario_basic.cpp` for a complete worked example. The
-`flightplan`, `approach`, and `combat` scenarios show how to build on top
+See `tests/maneuver/scenarios/scenario_basic.cpp` for a complete worked
+example. The `flightplan` and `combat` scenarios show how to build on top
 of the framework with custom `ManeuverTest` subclasses.
 
-### Scenario vs. `steering_demo`
+### Test fixtures
 
-`maneuver_test` is a **test runner**: it runs registered scenarios, reports
-pass/fail per phase, and exits. Its output is structured for parsing.
+The maneuver tests run against the curated JSON set in `tests/fixtures/`.
+The set is intentionally small but representative:
 
-`steering_demo` is an **interactive demo**: it runs a single hand-crafted
-flight profile and prints a continuous state log meant for human inspection.
-It demonstrates how to compose multiple behaviors (waypoint following +
-altitude hold + speed hold) into a complete mission.
+| Aircraft | Category |
+|----------|----------|
+| `f16bk50` | Fighter (F-16, the primary reference) |
+| `f15c` | Twin-engine fighter |
+| `f18c` | Carrier fighter |
+| `f14b` | Variable-sweep wing fighter |
+| `mig29a`, `su27` | Russian fighters |
+| `ef2000`, `rafalec`, `mirage2k5` | European delta-wing fighters |
+| `a10a` | Attack (low TWR) |
+| `b52h` | Bomber (heavy, multi-engine) |
+| `c130` | Transport |
+| `sr71` | Interceptor (high speed) |
 
-Future scenarios that are too exploratory for the test framework (new
-approach procedures, formation flying, air-to-air refueling, etc.) should
-start life as a `steering_demo` variant, mature until the pass/fail criteria
-are clear, and then be promoted into a registered `maneuver_test` scenario.
+Adding a JSON to `tests/fixtures/` automatically registers it for every
+maneuver scenario (see `file(GLOB F4FLIGHT_FIXTURES ...)` in
+`CMakeLists.txt`) — no need to edit any file.
 
 ## Testing
 
@@ -407,17 +416,31 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-126 unit tests covering math, atmosphere, aerodynamics, engine, gear, FCS,
-EOM, steering, .dat loading, and JSON I/O, plus 32 tests covering the new
-units, validation, reset, trig-cache, and limiter-accessor facilities
-(158 total, all passing).
+The test tree is split into:
+
+- **`tests/unit/`** — gtest unit tests for each library module (math,
+  atmosphere, aerodynamics, engine, FCS, EOM, JSON I/O, .dat loading,
+  units, validation, trig cache, limiter accessors). 170 tests, all
+  passing. Quick correctness checks, no simulation.
+
+- **`tests/maneuver/`** — scenario-based integration tests that drive the
+  full `FlightModel` + `SteeringController` through multi-phase maneuvers
+  (climb, turn, orbit, waypoint circuit, ...). Each scenario
+  self-registers; the runner picks up scenarios by name.
+
+- **`tests/fixtures/`** — curated JSON aircraft files used by the maneuver
+  tests. 13 aircraft covering fighters, attack, bomber, transport, and
+  interceptor categories.
+
+For a quick build without cmake (uses a generated GoogleTest stub), see
+`scripts/build_and_run_tests.sh` in the project root.
 
 ## CMake Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `F4FLIGHT_BUILD_TESTS` | `ON` | Build the unit tests |
-| `F4FLIGHT_BUILD_EXAMPLES` | `ON` | Build example programs and tools |
+| `F4FLIGHT_BUILD_TESTS` | `ON` | Build the unit + maneuver tests |
+| `F4FLIGHT_BUILD_TOOLS` | `ON` | Build `dat2json`, `dat_validate`, `json_diff` |
 | `F4FLIGHT_BUILD_SHARED` | `OFF` | Build as a shared library (DLL) |
 | `F4FLIGHT_ENABLE_WERROR` | `OFF` | Treat warnings as errors |
 | `F4FLIGHT_USE_MSVC_UTF8` | `ON` | Force `/utf-8` on MSVC |

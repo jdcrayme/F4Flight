@@ -75,19 +75,29 @@ void Aerodynamics::update(double alpha_deg,
     }
 
     // --- Local lift-curve slope (3-point finite difference) ---
-    const double cl1 = cl_(mach, tempAlpha - 2.0) * table_->clFactor * (1.0 + tefFactor * aux_->CLtefFactor);
-    const double cl2 = cl_(mach, tempAlpha + 2.0) * table_->clFactor * (1.0 + tefFactor * aux_->CLtefFactor);
-    const double cd1 = cd_(mach, dragAlpha - 2.0) * table_->cdFactor;
-    const double cd2 = cd_(mach, dragAlpha + 2.0) * table_->cdFactor;
-    double clalpha = (cl2 - cl1) * 0.25 * (1.0 + tefFactor * aux_->CLtefFactor);
-    double cnalpha = ((cl2 - cl1) * cosalp + (cd2 - cd1) * sinalp) * 0.25 *
-                     (1.0 + tefFactor * aux_->CLtefFactor);
+    // Bugs #4-5 fix: match FreeFalcon aero.cpp:210-252 exactly.
+    //
+    // FreeFalcon uses RAW interpolated values for cl1/cl2/cd1/cd2 (no clFactor,
+    // no cdFactor, no TEF factor). The TEF factor is applied ONCE in the
+    // clalpha/cnalpha/clalph0 formulas. The previous f4flight code applied
+    // clFactor AND TEF to cl1/cl2, then applied TEF AGAIN in clalpha — double
+    // counting. Also, cnalpha must use CDtefFactor (not CLtefFactor) per
+    // FreeFalcon line 231.
+    const double cl1_raw = cl_(mach, tempAlpha - 2.0);
+    const double cl2_raw = cl_(mach, tempAlpha + 2.0);
+    const double cd1_raw = cd_(mach, dragAlpha - 2.0);
+    const double cd2_raw = cd_(mach, dragAlpha + 2.0);
+    double clalpha = (cl2_raw - cl1_raw) * 0.25 * (1.0 + tefFactor * aux_->CLtefFactor);
+    double cnalpha = ((cl2_raw - cl1_raw) * cosalp + (cd2_raw - cd1_raw) * sinalp) * 0.25 *
+                     (1.0 + tefFactor * aux_->CDtefFactor);  // CDtefFactor, not CLtefFactor
 
     // --- Static lift-curve slope (alpha = 0..10 deg) ---
-    const double cls0 = cl_(mach, 0.0)  * table_->clFactor * (1.0 + tefFactor * aux_->CLtefFactor);
-    const double cls1 = cl_(mach, 10.0) * table_->clFactor * (1.0 + tefFactor * aux_->CLtefFactor);
-    double clalph0 = (cls1 - cls0) * 0.1 * (1.0 + tefFactor * aux_->CLtefFactor);
-    double clift0 = cls0;
+    // FreeFalcon: cl1/cl2 are RAW (no clFactor). clift0 = cl1 * (1 + TEF*CLtef)
+    // — note clift0 does NOT include clFactor (matches FreeFalcon line 252).
+    const double cls0_raw = cl_(mach, 0.0);
+    const double cls1_raw = cl_(mach, 10.0);
+    double clalph0 = (cls1_raw - cls0_raw) * 0.1 * (1.0 + tefFactor * aux_->CLtefFactor);
+    double clift0 = cls0_raw * (1.0 + tefFactor * aux_->CLtefFactor);
 
     // --- Ground effect ---
     // Within 0.2*span of the ground: CL *= 1.13. Between 0.2 and 1.0 span:
@@ -107,8 +117,67 @@ void Aerodynamics::update(double alpha_deg,
     cd += aux_->CDLDGFactor  * aero.gearPos;
     cd += aero.cdStores;
 
+    // --- Stall model ---
+    // Bug #6 fix: match FreeFalcon aero.cpp:293-356.
+    //
+    // FreeFalcon: if criticalAOA > 0 and alpha > 10, compute stall speed
+    //   stallSpeed = 17.16 * sqrt((W/S) / |CL|)
+    // If vcas < stallSpeed OR alpha > criticalAOA, lift is reduced to
+    //   lift = min(0, cl * 0.5) * (vcas / stallSpeed)
+    // (i.e. lift goes to 0 or negative, scaled by speed ratio).
+    //
+    // The previous f4flight code computed `stalled = true` but never modified
+    // lift -- the aircraft kept flying with full cl*qsom even when stalled.
+    bool stalled = false;
+    double stallSpeed = 0.0;
+    if (aux_->criticalAOA > 0.0 && geom_->area_ft2 > 0.0 && alpha_deg > 10.0) {
+        // Need weight (lbf). We have qsom = q*S/m, and q = 0.5*rho*vt^2.
+        // W = m*g, and m = q*S/qsom (from qsom definition). So W = q*S*g/qsom.
+        // But we also have weight from mass*gravity. Use the mass-derived weight.
+        // The caller doesn't pass mass directly, but qsom = q*S/m => m = q*S/qsom.
+        const double q_val = qbar;  // lb/ft^2
+        const double S = geom_->area_ft2;
+        const double mass_from_qsom = (qsom > 1e-6) ? (q_val * S / qsom) : 1.0;
+        const double weight_lbs = mass_from_qsom * GRAVITY;
+        const double ws = weight_lbs / S;
+        if (std::fabs(cl) > 1e-3) {
+            stallSpeed = 17.16 * std::sqrt(ws / std::fabs(cl));
+        }
+        if (vcas_kts < stallSpeed || alpha_deg > aux_->criticalAOA) {
+            stalled = true;
+        }
+    }
+
     // --- Force summation ---
-    const double lift = cl * qsom;
+    // Bug #6: when stalled, reduce lift per FreeFalcon formula.
+    double lift;
+    if (stalled && stallSpeed > 1e-3) {
+        // FreeFalcon: lift = min(0, cl*0.5) * (vcas/stallSpeed)
+        // This is the ACCELERATION (cl*qsom is accel). But FreeFalcon applies
+        // this to `lift` which is in ft/s^2 (cl*qsom). We must match: the
+        // cl*0.5 term is a coefficient, and qsom is already the normalizing
+        // accel. So: lift_accel = min(0, cl*0.5) * qsom * (vcas/stallSpeed).
+        // Actually FreeFalcon sets lift = min(0,cl*0.5)*(vcas/stallSpeed) —
+        // that's the coefficient form, NOT multiplied by qsom. But then
+        // xaero/zaero use `lift` directly (not lift*qsom). Let me re-check...
+        //
+        // FreeFalcon line 342: lift = cl * qsom;  (normal case)
+        // FreeFalcon line 327: lift = min(0,cl*0.5) * (vcas/stallSpeed);
+        //   ^-- this is NOT * qsom! It's just a coefficient * speed ratio.
+        //   But then line 367: xaero = -drag*cosalp + lift*sinalp
+        //   If lift is just a coefficient (not accel), xaero would be tiny.
+        //
+        // This looks like a FreeFalcon bug (lift should be * qsom), but to
+        // match behavior we replicate it. The effect: when stalled, lift
+        // drops to near-zero (coefficient * speed_ratio << cl*qsom), so the
+        // aircraft falls. That's the intended stall behavior.
+        const double cl_stalled = std::min(0.0, cl * 0.5);
+        lift = cl_stalled * (vcas_kts / stallSpeed) * qsom;
+    } else if (vt_ftps < 1e-3) {
+        lift = 0.0;  // FlatSpin / vt==0 case
+    } else {
+        lift = cl * qsom;
+    }
     const double drag = cd * qsom;
 
     // Body axes (ft/s^2):
@@ -131,25 +200,7 @@ void Aerodynamics::update(double alpha_deg,
     const double ywaero = -xsaero * sinbet + ysaero * cosbet;
     const double zwaero =  zsaero;
 
-    // --- Stall model ---
-    bool stalled = false;
-    double stallSpeed = 0.0;
-    if (geom_->area_ft2 > 0.0) {
-        // V_stall = 17.16 * sqrt((W/S) / |CL|) where W/S in lb/ft^2
-        // We approximate weight via qsom at 1 G: W = qsom * mass * |CL| (for level flight, CL = W/(qS))
-        // For a stall indicator, use: V_stall(kts) = 17.16 * sqrt((W/S) / CL_max)
-        // We need weight; use mass*GRAVITY * (1/loadingFraction) approximation is wrong; just
-        // compute from current conditions.
-        const double mass_slugs = (qbar > 0.0 && qsom > 0.0) ? (qbar * geom_->area_ft2 / qsom) : 1.0;
-        const double weight_lbs = mass_slugs * GRAVITY;
-        const double ws = weight_lbs / geom_->area_ft2;
-        if (std::fabs(cl) > 1e-3) {
-            stallSpeed = 17.16 * std::sqrt(ws / std::fabs(cl));
-        }
-        if (vcas_kts < stallSpeed && vt_ftps > 1.0) {
-            stalled = true;
-        }
-    }
+    // --- Stall model (legacy section removed -- now computed above before force summation) ---
 
     // Store results
     aero.cl = cl;

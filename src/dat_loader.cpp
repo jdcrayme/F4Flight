@@ -334,6 +334,7 @@ static void parseEngine(TokenStream& ts, AircraftConfig& cfg,
         while (ts.peek() == "engopt") {
             ts.next(); // consume "engopt"
             std::string optName = ts.next(); // option name
+            cfg.engineOptions.push_back(optName);
             if (optName == "fuelflow") hasFuelFlowOpt = true;
         }
     } else {
@@ -504,66 +505,91 @@ static void parseEngine(TokenStream& ts, AircraftConfig& cfg,
 // ---------------------------------------------------------------------------
 static void parseRollData(TokenStream& ts, AircraftConfig& cfg,
                           std::vector<std::string>& warnings) {
-    // Scan the ENTIRE token stream from the beginning looking for a valid
-    // roll table. This is more robust than scanning from the current
-    // position (which may be wrong if the engine parser overran).
-    ts.setPos(0);
+    // Try to find a valid roll table. We try TWO passes:
+    //
+    //   Pass 1: scan forward FROM THE CURRENT STREAM POSITION (which should
+    //           be right after the engine section, per the FreeFalcon readin
+    //           order: ReadData -> AirframeAeroRead -> AirframeEngineRead ->
+    //           AirframeFcsRead). This is the correct location of the roll
+    //           table, so a match here is authoritative.
+    //
+    //   Pass 2: only if Pass 1 fails, scan from the BEGINNING of the token
+    //           stream. This is a fallback for files where the engine parser
+    //           overran or left the stream in an unexpected position.
+    //
+    // The previous implementation scanned only from position 0, which caused
+    // false positives: the alpha-breakpoints section of the aero table
+    // (sequences like "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 14.5 15 15.5 16
+    // 17 18 19 20 21 22 23 24 25 26 27 28 29 30 ...") looks exactly like a
+    // valid roll table signature to the heuristic, and the parser would
+    // accept "2 3 4 / 5 6 7 8 9 / 10 / 11 12 13 14 14.5 15 15.5 16 17 18
+    // 19" as a 2x5 roll table instead of finding the real 7x7 roll table
+    // later in the file.
 
-    // Scan forward looking for a valid roll table.
-    while (!ts.eof()) {
-        std::size_t savedPos = ts.pos();
+    auto tryParseRollAt = [&](std::size_t startPos) -> bool {
+        ts.setPos(startPos);
+        while (!ts.eof()) {
+            std::size_t savedPos = ts.pos();
 
-        // Try to parse a roll table starting here
-        try {
-            int numAlpha = ts.nextInt();
-            if (numAlpha < 2 || numAlpha > 20) { ts.setPos(savedPos + 1); continue; }
+            try {
+                int numAlpha = ts.nextInt();
+                if (numAlpha < 2 || numAlpha > 20) { ts.setPos(savedPos + 1); continue; }
 
-            std::vector<double> alphas = ts.nextDoubles(static_cast<std::size_t>(numAlpha));
-            // Alpha values should be in a reasonable range (-30 to 90 deg)
-            bool alphasOk = true;
-            for (double a : alphas) {
-                if (a < -30.0 || a > 90.0) { alphasOk = false; break; }
+                std::vector<double> alphas = ts.nextDoubles(static_cast<std::size_t>(numAlpha));
+                // Alpha values should be in a reasonable range (-30 to 90 deg)
+                bool alphasOk = true;
+                for (double a : alphas) {
+                    if (a < -30.0 || a > 90.0) { alphasOk = false; break; }
+                }
+                if (!alphasOk) { ts.setPos(savedPos + 1); continue; }
+
+                int numQbar = ts.nextInt();
+                if (numQbar < 2 || numQbar > 20) { ts.setPos(savedPos + 1); continue; }
+
+                std::vector<double> qbars = ts.nextDoubles(static_cast<std::size_t>(numQbar));
+                // Qbar values should be non-negative
+                bool qbarsOk = true;
+                for (double q : qbars) {
+                    if (q < 0.0 || q > 10000.0) { qbarsOk = false; break; }
+                }
+                if (!qbarsOk) { ts.setPos(savedPos + 1); continue; }
+
+                double scale = ts.nextDouble();
+                if (scale < 0.01 || scale > 100.0) { ts.setPos(savedPos + 1); continue; }
+
+                // Need numAlpha * numQbar more values
+                std::size_t needed = static_cast<std::size_t>(numAlpha) * numQbar;
+                if (ts.pos() + needed > ts.size()) { ts.setPos(savedPos + 1); continue; }
+
+                std::vector<double> rates = ts.nextDoubles(needed);
+
+                // Roll rates should be in a plausible range (0..400 deg/s)
+                bool ratesOk = true;
+                for (double r : rates) {
+                    if (r < -50.0 || r > 500.0) { ratesOk = false; break; }
+                }
+                if (!ratesOk) { ts.setPos(savedPos + 1); continue; }
+
+                // Accept!
+                cfg.rollCmd.alpha_deg = std::move(alphas);
+                cfg.rollCmd.qbar      = std::move(qbars);
+                cfg.rollCmd.scale     = scale;
+                cfg.rollCmd.rollRate  = std::move(rates);
+                return true;
+            } catch (const std::exception&) {
+                ts.setPos(savedPos + 1);
+                continue;
             }
-            if (!alphasOk) { ts.setPos(savedPos + 1); continue; }
-
-            int numQbar = ts.nextInt();
-            if (numQbar < 2 || numQbar > 20) { ts.setPos(savedPos + 1); continue; }
-
-            std::vector<double> qbars = ts.nextDoubles(static_cast<std::size_t>(numQbar));
-            // Qbar values should be non-negative
-            bool qbarsOk = true;
-            for (double q : qbars) {
-                if (q < 0.0 || q > 10000.0) { qbarsOk = false; break; }
-            }
-            if (!qbarsOk) { ts.setPos(savedPos + 1); continue; }
-
-            double scale = ts.nextDouble();
-            if (scale < 0.01 || scale > 100.0) { ts.setPos(savedPos + 1); continue; }
-
-            // Need numAlpha * numQbar more values
-            std::size_t needed = static_cast<std::size_t>(numAlpha) * numQbar;
-            if (ts.pos() + needed > ts.size()) { ts.setPos(savedPos + 1); continue; }
-
-            std::vector<double> rates = ts.nextDoubles(needed);
-
-            // Roll rates should be in a plausible range (0..400 deg/s)
-            bool ratesOk = true;
-            for (double r : rates) {
-                if (r < -50.0 || r > 500.0) { ratesOk = false; break; }
-            }
-            if (!ratesOk) { ts.setPos(savedPos + 1); continue; }
-
-            // Accept!
-            cfg.rollCmd.alpha_deg = std::move(alphas);
-            cfg.rollCmd.qbar      = std::move(qbars);
-            cfg.rollCmd.scale     = scale;
-            cfg.rollCmd.rollRate  = std::move(rates);
-            return;
-        } catch (const std::exception&) {
-            ts.setPos(savedPos + 1);
-            continue;
         }
-    }
+        return false;
+    };
+
+    // Pass 1: from current position (after engine section).
+    if (tryParseRollAt(ts.pos())) return;
+
+    // Pass 2: fallback -- scan from the beginning.
+    if (tryParseRollAt(0)) return;
+
     warnings.push_back("RollData: could not locate a valid roll table");
 }
 
@@ -652,131 +678,281 @@ static void parseLimiters(TokenStream& ts, AircraftConfig& cfg,
 
 // ---------------------------------------------------------------------------
 // Parse the AuxAeroData block (key/value pairs).
-// Direct port of the AuxAeroDataDesc table in readin.cpp.
+// Direct port of the AuxAeroDataDesc table in readin.cpp, but with a
+// critical difference: we capture EVERY key/value pair verbatim into
+// `cfg.rawAuxAeroData`, not just the keys we know about. This guarantees
+// no data is lost in the .dat -> JSON conversion.
 //
-// The block runs from "ADDITIONAL DATA" to the end of the file. We scan
-// for known keys and apply them; unknown keys are silently skipped.
+// The block is line-based: each line is `<key> <value...>` followed by an
+// optional `# comment`. We capture the value as everything after the key
+// (with leading whitespace trimmed) up to the end of the line. The trailing
+// `# comment` (if any) is preserved verbatim as part of the value string
+// (matching what FreeFalcon's ReadLine() would see).
+//
+// Known keys are also dispatched to populate the typed `aux` struct for
+// backward compatibility with existing f4flight code that reads
+// `cfg.aux.normSpoolRate` etc.
 // ---------------------------------------------------------------------------
-static void parseAuxAero(TokenStream& ts, AircraftConfig& cfg,
+static void parseAuxAero(const std::string& contents,
+                         AircraftConfig& cfg,
                          std::vector<std::string>& warnings) {
-    // Scan the entire token stream from the beginning for known keys.
-    // Unknown keys are silently skipped (along with their values, which we
-    // can't always identify as numeric vs string).
-
-    ts.setPos(0);
-
     auto& aux = cfg.aux;
 
-    // Helper: try to read a double; if it fails, return the default and
-    // DON'T advance the stream (so the next iteration can try the token as
-    // a key).
-    auto tryReadDouble = [&](double& out) -> bool {
-        std::size_t saved = ts.pos();
-        try {
-            out = ts.nextDouble();
-            return true;
-        } catch (const std::exception&) {
-            ts.setPos(saved);
-            return false;
-        }
+    // Helper: parse a single double from a string starting at pos; advance pos.
+    auto parseDoubleAt = [](const std::string& s, std::size_t& pos, double& out) -> bool {
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (pos >= s.size()) return false;
+        char* end = nullptr;
+        out = std::strtod(s.c_str() + pos, &end);
+        if (end == s.c_str() + pos) return false;
+        pos = static_cast<std::size_t>(end - s.c_str());
+        return true;
     };
-    auto tryReadInt = [&](int& out) -> bool {
-        std::size_t saved = ts.pos();
-        try {
-            out = ts.nextInt();
-            return true;
-        } catch (const std::exception&) {
-            ts.setPos(saved);
-            return false;
-        }
+    auto parseIntAt = [](const std::string& s, std::size_t& pos, int& out) -> bool {
+        while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        if (pos >= s.size()) return false;
+        char* end = nullptr;
+        long v = std::strtol(s.c_str() + pos, &end, 10);
+        if (end == s.c_str() + pos) return false;
+        out = static_cast<int>(v);
+        pos = static_cast<std::size_t>(end - s.c_str());
+        return true;
     };
 
-    while (!ts.eof()) {
-        std::string tok = ts.next();
+    std::istringstream iss(contents);
+    std::string line;
+    while (std::getline(iss, line)) {
+        // Normalize line endings: strip any trailing \r (Windows CRLF).
+        if (!line.empty() && line.back() == '\r') line.pop_back();
 
-        // Skip "aeropt" / "engopt" lines (option name follows)
-        if (tok == "aeropt" || tok == "engopt") {
-            if (!ts.eof()) ts.next(); // option name
-            continue;
+        // Find first non-whitespace (space, tab, \r, \n, \v, \f).
+        std::size_t start = line.find_first_not_of(" \t\r\n\v\f");
+        if (start == std::string::npos) continue;
+        // Skip comment lines (we keep the raw line's content, but the key
+        // extraction below wouldn't find a valid key on a comment line anyway).
+        if (line[start] == '#') continue;
+
+        // Find end of key (next whitespace)
+        std::size_t keyEnd = line.find_first_of(" \t\r\n\v\f", start);
+        std::string key;
+        std::string value;
+        if (keyEnd == std::string::npos) {
+            key = line.substr(start);
+            value = "";  // key with no value
+        } else {
+            key = line.substr(start, keyEnd - start);
+            // Value is everything after the key, with leading whitespace
+            // trimmed. Trailing whitespace/newline is also trimmed. Embedded
+            // `# comment` is preserved (the .dat format uses `#` only at the
+            // start of a line for full-line comments, so an inline `#` after
+            // a value is treated as part of the value by the legacy parser
+            // when it does ReadLine(); we preserve the same behavior).
+            std::size_t valStart = line.find_first_not_of(" \t\r\n\v\f", keyEnd);
+            if (valStart == std::string::npos) {
+                value = "";
+            } else {
+                std::size_t valEnd = line.find_last_not_of(" \t\r\n\v\f");
+                value = line.substr(valStart, valEnd - valStart + 1);
+            }
         }
 
-        double dv;
-        int iv;
+        // Skip option flags -- they're handled by parseEngine / parseAeroTable
+        // via the TokenStream, and we capture them separately into
+        // aeroOptions/engineOptions. Don't record them here.
+        if (key == "aeropt" || key == "engopt") continue;
 
-        if (tok == "typeEngine") { if (tryReadInt(iv)) aux.typeEngine = iv; }
-        else if (tok == "nEngines") { if (tryReadInt(iv)) aux.nEngines = iv; }
-        else if (tok == "normSpoolRate") { if (tryReadDouble(dv)) aux.normSpoolRate = dv; }
-        else if (tok == "abSpoolRate") { if (tryReadDouble(dv)) aux.abSpoolRate = dv; }
-        else if (tok == "jfsSpoolUpRate") { if (tryReadDouble(dv)) aux.jfsSpoolUpRate = dv; }
-        else if (tok == "jfsSpoolUpLimit") { if (tryReadDouble(dv)) aux.jfsSpoolUpLimit = dv; }
-        else if (tok == "lightupSpoolRate") { if (tryReadDouble(dv)) aux.lightupSpoolRate = dv; }
-        else if (tok == "flameoutSpoolRate") { if (tryReadDouble(dv)) aux.flameoutSpoolRate = dv; }
-        else if (tok == "mainGenRpm") { if (tryReadDouble(dv)) aux.mainGenRpm = dv; }
-        else if (tok == "stbyGenRpm") { if (tryReadDouble(dv)) aux.stbyGenRpm = dv; }
-        else if (tok == "epuBurnTime") { if (tryReadDouble(dv)) aux.epuBurnTime = dv; }
-        else if (tok == "fuelFlowFactorNormal") { if (tryReadDouble(dv)) aux.fuelFlowFactorNormal = dv; }
-        else if (tok == "fuelFlowFactorAb") { if (tryReadDouble(dv)) aux.fuelFlowFactorAb = dv; }
-        else if (tok == "minFuelFlow") { if (tryReadDouble(dv)) aux.minFuelFlow = dv; }
-        else if (tok == "haslef")  { if (tryReadInt(iv)) aux.hasLef = (iv != 0); }
-        else if (tok == "hasTef")  { if (tryReadInt(iv)) aux.hasTef = (iv != 0); }
-        else if (tok == "lefGround") { if (tryReadDouble(dv)) aux.lefGround = dv; }
-        else if (tok == "lefMaxAngle") { if (tryReadDouble(dv)) aux.lefMaxAngle = dv; }
-        else if (tok == "lefMaxMach") { if (tryReadDouble(dv)) aux.lefMaxMach = dv; }
-        else if (tok == "lefRate") { if (tryReadDouble(dv)) aux.lefRate = dv; }
-        else if (tok == "tefMaxAngle") { if (tryReadDouble(dv)) aux.tefMaxAngle = dv; }
-        else if (tok == "tefTakeoff") { if (tryReadDouble(dv)) aux.tefTakeOff = dv; }
-        else if (tok == "tefRate") { if (tryReadDouble(dv)) aux.tefRate = dv; }
-        else if (tok == "CLtefFactor") { if (tryReadDouble(dv)) aux.CLtefFactor = dv; }
-        else if (tok == "CDtefFactor") { if (tryReadDouble(dv)) aux.CDtefFactor = dv; }
-        else if (tok == "CDlefFactor") { if (tryReadDouble(dv)) aux.CDlefFactor = dv; }
-        else if (tok == "CDSPDBFactor") { if (tryReadDouble(dv)) aux.CDSPDBFactor = dv; }
-        else if (tok == "CDLDGFactor") { if (tryReadDouble(dv)) aux.CDLDGFactor = dv; }
-        else if (tok == "dragChuteCd") { if (tryReadDouble(dv)) aux.dragChuteCd = dv; }
-        else if (tok == "area2Span") { if (tryReadDouble(dv)) aux.area2Span = dv; }
-        else if (tok == "pitchMomentum") { if (tryReadDouble(dv)) aux.pitchMomentum = dv; }
-        else if (tok == "rollMomentum") { if (tryReadDouble(dv)) aux.rollMomentum = dv; }
-        else if (tok == "yawMomentum") { if (tryReadDouble(dv)) aux.yawMomentum = dv; }
-        else if (tok == "pitchElasticity") { if (tryReadDouble(dv)) aux.pitchElasticity = dv; }
-        else if (tok == "gearPitchFactor") { if (tryReadDouble(dv)) aux.gearPitchFactor = dv; }
-        else if (tok == "pitchGearGain") { if (tryReadDouble(dv)) aux.pitchGearGain = dv; }
-        else if (tok == "rollGearGain") { if (tryReadDouble(dv)) aux.rollGearGain = dv; }
-        else if (tok == "yawGearGain") { if (tryReadDouble(dv)) aux.yawGearGain = dv; }
-        else if (tok == "rudderMaxAngle") { if (tryReadDouble(dv)) aux.rudderMaxAngle = dv; }
-        else if (tok == "aileronMaxAngle") { if (tryReadDouble(dv)) aux.aileronMaxAngle = dv; }
-        else if (tok == "airbrakeMaxAngle") { if (tryReadDouble(dv)) aux.airbrakeMaxAngle = dv; }
-        else if (tok == "rollCouple") { if (tryReadDouble(dv)) aux.rollCouple = dv; }
-        else if (tok == "elevatorRoll" || tok == "elevatorRolls") { if (tryReadInt(iv)) aux.elevatorRolls = (iv != 0); }
-        else if (tok == "sinkRate") { if (tryReadDouble(dv)) aux.sinkRate = dv; }
-        else if (tok == "landingAOA") { if (tryReadDouble(dv)) aux.landingAOA = dv; }
-        // Unknown keys: skip silently. The token's value (if any) will be
-        // read on the next iteration as a potential key, and skipped if it
-        // doesn't match. This is robust against string-valued keys.
+        // Skip section-end marker
+        if (key == "END" ) continue;
+
+        // Skip keys that are actually positional-table tokens that happen to
+        // start with a letter. The AuxAeroData section uses key/value form
+        // exclusively, but the earlier positional sections (gear coords,
+        // aero/engine/roll tables, limiters) are pure numbers. If a "key"
+        // parses as a number, it's not an AuxAeroData key -- skip it.
+        {
+            char* end = nullptr;
+            std::strtod(key.c_str(), &end);
+            if (end != key.c_str() && *end == '\0') continue;  // numeric key
+        }
+
+        // Capture into the raw map (authoritative record). If a key appears
+        // more than once (some .dat files repeat keys), the last occurrence
+        // wins, matching the legacy ParseSimlibFile behavior.
+        cfg.rawAuxAeroData[key] = value;
+
+        // Dispatch known keys to the typed `aux` struct for backward compat.
+        // We parse from the captured value string.
+        std::size_t pos = 0;
+        double dv = 0.0;
+        int iv = 0;
+
+        auto tryD = [&](double& dst) {
+            if (parseDoubleAt(value, pos, dv)) dst = dv;
+        };
+        auto tryI = [&](int& dst) {
+            if (parseIntAt(value, pos, iv)) dst = iv;
+        };
+
+        if      (key == "typeEngine")   tryI(aux.typeEngine);
+        else if (key == "nEngines")     tryI(aux.nEngines);
+        else if (key == "normSpoolRate")        tryD(aux.normSpoolRate);
+        else if (key == "abSpoolRate")          tryD(aux.abSpoolRate);
+        else if (key == "jfsSpoolUpRate")       tryD(aux.jfsSpoolUpRate);
+        else if (key == "jfsSpoolUpLimit")      tryD(aux.jfsSpoolUpLimit);
+        else if (key == "lightupSpoolRate")     tryD(aux.lightupSpoolRate);
+        else if (key == "flameoutSpoolRate")    tryD(aux.flameoutSpoolRate);
+        else if (key == "mainGenRpm")           tryD(aux.mainGenRpm);
+        else if (key == "stbyGenRpm")           tryD(aux.stbyGenRpm);
+        else if (key == "epuBurnTime")          tryD(aux.epuBurnTime);
+        else if (key == "fuelFlowFactorNormal") tryD(aux.fuelFlowFactorNormal);
+        else if (key == "fuelFlowFactorAb")     tryD(aux.fuelFlowFactorAb);
+        else if (key == "minFuelFlow")          tryD(aux.minFuelFlow);
+        else if (key == "haslef" || key == "hasLef") {
+            if (parseIntAt(value, pos, iv)) aux.hasLef = (iv != 0);
+        }
+        else if (key == "hasTef") {
+            if (parseIntAt(value, pos, iv)) aux.hasTef = (iv != 0);
+        }
+        else if (key == "lefGround")    tryD(aux.lefGround);
+        else if (key == "lefMaxAngle")  tryD(aux.lefMaxAngle);
+        else if (key == "lefMaxMach")   tryD(aux.lefMaxMach);
+        else if (key == "lefRate")      tryD(aux.lefRate);
+        else if (key == "tefMaxAngle")  tryD(aux.tefMaxAngle);
+        else if (key == "tefTakeoff" || key == "tefTakeOff") tryD(aux.tefTakeOff);
+        else if (key == "tefRate")      tryD(aux.tefRate);
+        else if (key == "CLtefFactor")  tryD(aux.CLtefFactor);
+        else if (key == "CDtefFactor")  tryD(aux.CDtefFactor);
+        else if (key == "CDlefFactor")  tryD(aux.CDlefFactor);
+        else if (key == "CDSPDBFactor") tryD(aux.CDSPDBFactor);
+        else if (key == "CDLDGFactor")  tryD(aux.CDLDGFactor);
+        else if (key == "dragChuteCd")  tryD(aux.dragChuteCd);
+        else if (key == "area2Span")    tryD(aux.area2Span);
+        else if (key == "pitchMomentum")   tryD(aux.pitchMomentum);
+        else if (key == "rollMomentum")    tryD(aux.rollMomentum);
+        else if (key == "yawMomentum")     tryD(aux.yawMomentum);
+        else if (key == "pitchElasticity") tryD(aux.pitchElasticity);
+        else if (key == "gearPitchFactor") tryD(aux.gearPitchFactor);
+        else if (key == "pitchGearGain")   tryD(aux.pitchGearGain);
+        else if (key == "rollGearGain")    tryD(aux.rollGearGain);
+        else if (key == "yawGearGain")     tryD(aux.yawGearGain);
+        else if (key == "rudderMaxAngle")  tryD(aux.rudderMaxAngle);
+        else if (key == "aileronMaxAngle") tryD(aux.aileronMaxAngle);
+        else if (key == "airbrakeMaxAngle") tryD(aux.airbrakeMaxAngle);
+        else if (key == "rollCouple")      tryD(aux.rollCouple);
+        else if (key == "elevatorRoll" || key == "elevatorRolls") {
+            if (parseIntAt(value, pos, iv)) aux.elevatorRolls = (iv != 0);
+        }
+        else if (key == "sinkRate")    tryD(aux.sinkRate);
+        else if (key == "landingAOA")  tryD(aux.landingAOA);
+        else if (key == "criticalAOA") tryD(aux.criticalAOA);
+        // Unknown keys: already captured in rawAuxAeroData, nothing else to do.
     }
 
     (void)warnings;
 }
 
 // ---------------------------------------------------------------------------
-// Extract the aircraft name from the title comment.
+// Extract source metadata (Title/Author/Revision) from the header comments.
 // We need to do this BEFORE comment stripping, so it's a separate pass.
 // ---------------------------------------------------------------------------
-static std::string extractTitle(const std::string& contents) {
+static void extractSourceMetadata(const std::string& contents,
+                                  const std::string& sourceName,
+                                  AircraftConfig& cfg) {
+    cfg.sourceFile = sourceName;
+    // Strip directory portion if present
+    {
+        std::size_t slash = cfg.sourceFile.find_last_of("/\\");
+        if (slash != std::string::npos) cfg.sourceFile = cfg.sourceFile.substr(slash + 1);
+    }
+
     std::istringstream iss(contents);
     std::string line;
     while (std::getline(iss, line)) {
-        // Strip leading whitespace
-        std::size_t start = line.find_first_not_of(" \t");
+        // Normalize line endings: strip any trailing \r (Windows CRLF).
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::size_t start = line.find_first_not_of(" \t\r\n\v\f");
         if (start == std::string::npos) continue;
         if (line.compare(start, 8, "# Title:") == 0) {
-            std::string title = line.substr(start + 8);
-            // Trim
-            std::size_t s = title.find_first_not_of(" \t");
-            std::size_t e = title.find_last_not_of(" \t\r\n");
-            if (s == std::string::npos) return "";
-            return title.substr(s, e - s + 1);
+            std::string v = line.substr(start + 8);
+            std::size_t s = v.find_first_not_of(" \t");
+            std::size_t e = v.find_last_not_of(" \t\r\n\v\f");
+            if (s != std::string::npos) cfg.sourceTitle = v.substr(s, e - s + 1);
+        }
+        else if (line.compare(start, 9, "# Author:") == 0) {
+            std::string v = line.substr(start + 9);
+            std::size_t s = v.find_first_not_of(" \t");
+            std::size_t e = v.find_last_not_of(" \t\r\n\v\f");
+            if (s != std::string::npos) cfg.sourceAuthor = v.substr(s, e - s + 1);
+        }
+        else if (line.compare(start, 11, "# Revision:") == 0) {
+            std::string v = line.substr(start + 11);
+            std::size_t s = v.find_first_not_of(" \t");
+            std::size_t e = v.find_last_not_of(" \t\r\n\v\f");
+            if (s != std::string::npos) cfg.sourceRevision = v.substr(s, e - s + 1);
         }
     }
-    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Detect BMS "Advanced Flight Model" (.dat files whose name ends in `_afm`).
+//
+// AFM files use a completely different format from the standard Falcon 4 .dat
+// file: they start with a small integer (the FM type, 1-4) instead of the
+// empty weight, and contain 6-DOF inertia tensors, fuel-tank CG positions,
+// and per-control-surface derivative tables rather than the CL/CD/CY vs
+// Mach/alpha tables the standard format uses.
+//
+// The f4flight library is a port of the *standard* FreeFalcon flight model
+// and cannot consume AFM data. We detect AFM files up-front and return a
+// clean error so the caller can skip them gracefully (e.g. the dat2json
+// tool reports "AFM format -- skipped" instead of crashing with a confusing
+// parse error deep in the engine-table reader).
+//
+// Detection heuristic: the file name ends in `_afm` OR the first non-comment
+// numeric token is a small integer (1..4) AND there is no `aeropt` token
+// anywhere in the file (standard .dat files always have aerodynamic tables
+// preceded by `aeropt` or directly by the mach-breakpoints count).
+// ---------------------------------------------------------------------------
+static bool isAfmFile(const std::string& contents, const std::string& sourceName) {
+    // Quick check: file name suffix.
+    {
+        std::string base = sourceName;
+        std::size_t slash = base.find_last_of("/\\");
+        if (slash != std::string::npos) base = base.substr(slash + 1);
+        // Strip ".dat" suffix to check for "_afm"
+        if (base.size() > 4 && base.compare(base.size() - 4, 4, ".dat") == 0) {
+            base = base.substr(0, base.size() - 4);
+        }
+        if (base.size() >= 4 && base.compare(base.size() - 4, 4, "_afm") == 0) {
+            return true;
+        }
+    }
+
+    // Content check: scan for the first non-comment, non-whitespace token.
+    // If it parses as a small integer (1..4), treat as AFM. Standard .dat
+    // files start with a large floating-point empty weight (typically
+    // > 1000 lbs).
+    std::istringstream iss(contents);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos) continue;
+        if (line[start] == '#') continue;
+        // First non-comment token is at `start`. Extract it.
+        std::size_t end = line.find_first_of(" \t", start);
+        std::string tok = (end == std::string::npos)
+                          ? line.substr(start)
+                          : line.substr(start, end - start);
+        // Try to parse as integer.
+        try {
+            int v = std::stoi(tok);
+            if (v >= 1 && v <= 4) return true;
+        } catch (const std::exception&) {
+            // Not an integer -- not AFM by this check.
+        }
+        return false;  // first non-comment token wasn't a small int
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -786,8 +962,43 @@ ParseResult loadString(const std::string& contents, const std::string& sourceNam
     ParseResult result;
     AircraftConfig& cfg = result.config;
 
-    cfg.name = extractTitle(contents);
+    // AFM detection: fail cleanly with a recognizable error message so the
+    // caller can skip these files.
+    if (isAfmFile(contents, sourceName)) {
+        result.errors.push_back(
+            "AFM format not supported by f4flight (BMS Advanced Flight Model .dat files "
+            "use a different schema with 6-DOF inertia tensors and per-surface derivative "
+            "tables). Use the standard .dat file with the same base name instead.");
+        result.ok = false;
+        return result;
+    }
+
+    // Extract source metadata (Title/Author/Revision/file) before comment
+    // stripping. Also sets cfg.name from the Title.
+    extractSourceMetadata(contents, sourceName, cfg);
+    cfg.name = cfg.sourceTitle;
     if (cfg.name.empty()) cfg.name = sourceName;
+
+    // Capture aeropt options (line-based scan of the raw contents, before
+    // TokenStream stripping -- we want the literal option names in file
+    // order, including duplicates if any).
+    {
+        std::istringstream iss(contents);
+        std::string line;
+        while (std::getline(iss, line)) {
+            // Normalize line endings: strip any trailing \r (Windows CRLF).
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            std::size_t start = line.find_first_not_of(" \t\r\n\v\f");
+            if (start == std::string::npos) continue;
+            if (line.compare(start, 6, "aeropt") != 0) continue;
+            // Make sure it's a standalone token (next char is whitespace)
+            if (start + 6 < line.size() && !std::isspace(static_cast<unsigned char>(line[start + 6]))) continue;
+            std::size_t nameStart = line.find_first_not_of(" \t\r\n\v\f", start + 6);
+            if (nameStart == std::string::npos) continue;
+            std::size_t nameEnd = line.find_last_not_of(" \t\r\n\v\f");
+            cfg.aeroOptions.push_back(line.substr(nameStart, nameEnd - nameStart + 1));
+        }
+    }
 
     TokenStream ts(contents, sourceName);
 
@@ -795,9 +1006,11 @@ ParseResult loadString(const std::string& contents, const std::string& sourceNam
         // 1. Input data (positional, at top of file)
         parseInputData(ts, cfg, result.warnings);
 
-        // 2. Aero tables (CL, CD, CY).
+        // 2. Aero tables (CL, CD, CY). Skip aeropt tokens (already captured
+        // above into cfg.aeroOptions).
         while (ts.peek() == "aeropt") {
-            ts.next(); ts.next();
+            ts.next(); // consume "aeropt"
+            ts.next(); // consume option name
         }
         try {
             parseAeroTable(ts, cfg.aero, "CL", result.warnings);
@@ -828,9 +1041,11 @@ ParseResult loadString(const std::string& contents, const std::string& sourceNam
             result.warnings.push_back(std::string("Limiters: ") + e.what());
         }
 
-        // 6. AuxAeroData (key/value pairs -- scan entire stream from start)
+        // 6. AuxAeroData (key/value pairs -- scan entire raw contents, line
+        // based, capturing EVERY key/value pair verbatim into rawAuxAeroData
+        // for no-loss round-trip fidelity).
         try {
-            parseAuxAero(ts, cfg, result.warnings);
+            parseAuxAero(contents, cfg, result.warnings);
         } catch (const std::exception& e) {
             result.warnings.push_back(std::string("AuxAero: ") + e.what());
         }

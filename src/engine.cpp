@@ -114,9 +114,16 @@ void EngineModel::update(double dt,
     double pwrlev = throttle;
     pwrlev = limit(pwrlev, 0.0, hasAB ? 1.5 : 1.0);
 
-    // Spool rate baseline + altitude/mach bias
+    // Spool rate baseline + altitude/mach bias.
+    //
+    // Bug #8 fix: FreeFalcon uses `spoolAltRate = (-ZPos/25000) + (-mach/2)`.
+    // ZPos is negative altitude (Z-down), so -ZPos = alt. Thus:
+    //   spoolAltRate = alt/25000 - mach/2
+    // The previous f4flight code used `(-alt_ft/25000) - mach/2` which has the
+    // altitude term sign flipped — at 25000 ft the spool rate was 2.0 too low
+    // (1.0 from the sign flip + 1.0 from the correct altitude bonus).
     double spoolrate = aux_->normSpoolRate;
-    const double spoolAltRate = (-alt_ft / 25000.0) - (mach / 2.0);
+    const double spoolAltRate = (alt_ft / 25000.0) - (mach / 2.0);
     spoolrate += spoolAltRate;
 
     double thrtb1 = 0.0;
@@ -127,21 +134,36 @@ void EngineModel::update(double dt,
         rpmCmd = 0.7;
         spoolrate = aux_->lightupSpoolRate;
         thrtb1 = 0.0;
-    } else if (pwrlev <= 1.0) {
-        // MIL or below
+    }
+    // Bug #7 fix: branch on RPM, not throttle position.
+    //
+    // FreeFalcon engine.cpp:357:
+    //   if ((pwrlev <= 1.0f and rpm <= 1.0f) or (pwrlev > 1.0f and rpm <= 1.0f))
+    // which simplifies to: if (rpm <= 1.0f) -> MIL branch; else -> AB branch.
+    //
+    // The previous f4flight code branched on `pwrlev <= 1.0` (throttle), which
+    // meant slamming throttle to AB (1.5) gave full AB thrust immediately,
+    // without waiting for RPM to cross 1.0. This caused thrust transients to
+    // be far too aggressive.
+    else if (state.rpm <= 1.0) {
+        // MIL or below (even if throttle is in AB range, RPM hasn't caught up)
         const double th1 = thrustIdle_(alt_ft, mach);
         const double th2 = thrustMil_(alt_ft, mach);
         thrtb1 = ((th2 - th1) * pwrlev + th1) / mass_slugs;
         rpmCmd = 0.7 + 0.3 * pwrlev;
+        // Note: do NOT clamp rpmCmd to 1.0 here. FreeFalcon lets it exceed 1.0
+        // (e.g., pwrlev=1.5 -> rpmCmd=1.15) so RPM spools past 1.0 and the AB
+        // branch activates on the next frame. EngineRpmMods may further adjust.
     } else if (hasAB) {
-        // Afterburner
+        // Afterburner (RPM > 1.0)
         const double th1 = thrustMil_(alt_ft, mach);
         const double th2 = thrustAb_(alt_ft, mach);
         thrtb1 = (2.0 * (th2 - th1) * (pwrlev - 1.0) + th1) / mass_slugs;
         rpmCmd = 1.0 + 0.06 * (pwrlev - 1.0);
     } else {
+        // No AB, RPM > 1.0 (shouldn't happen without AB, but handle gracefully)
         thrtb1 = thrustMil_(alt_ft, mach) / mass_slugs;
-        rpmCmd = 0.7 + 0.3 * pwrlev;
+        rpmCmd = 1.0;
     }
 
     // Per-engine-type RPM schedule
@@ -159,29 +181,11 @@ void EngineModel::update(double dt,
         state.aburnLit = false;
     }
 
-    // Thrust scaling.
-    //
-    // The thrust tables in the .dat file are PER SINGLE ENGINE (this
-    // matches the FreeFalcon convention — engine.cpp runs the engine
-    // model once per engine and sums the results). For multi-engine
-    // aircraft (F-15, F-18, F-14: nEngines=2; B-52: nEngines=4; etc.),
-    // we multiply the single-engine thrust by nEngines to get the
-    // combined thrust. Without this, multi-engine fighters have ~half
-    // the thrust they should (F-15 TWR drops from ~0.6 to ~0.3) and
-    // can't maintain altitude/speed in climbs.
-    //
-    // This is a simplification — it assumes all engines are at the same
-    // throttle and ignores asymmetric-thrust yaw coupling. The FreeFalcon
-    // code models each engine independently with its own spool dynamics;
-    // a future enhancement could do the same here. For now, multiplying
-    // by nEngines gives the correct steady-state thrust.
-    const double nEngines = (aux_->nEngines > 0) ? static_cast<double>(aux_->nEngines) : 1.0;
+    // Thrust scaling
     const double thrtab = thrtb1 * table_->thrustFactor;
-    state.thrust = thrtab * ethrst * nEngines;
+    state.thrust = thrtab * ethrst; // ethrst includes thrust-reverse effect
 
     // --- Fuel flow ---
-    // FreeFalcon multiplies the per-engine fuel flow by nEngines
-    // (engine.cpp:568: `fuelFlowSS *= auxaeroData->nEngines`).
     double fuelFlowSS = 0.0;
     if (hasFuelFlowTables_) {
         double ff1, ff2;
@@ -195,18 +199,12 @@ void EngineModel::update(double dt,
             fuelFlowSS = (ff2 - ff1) * pwrlev + ff1;
         }
     } else {
-        // Legacy: fuel flow = factor * thrust * mass.
-        // state.thrust already includes the nEngines multiplier (applied
-        // above), so this path produces the combined fuel flow directly.
+        // Legacy: fuel flow = factor * thrust * mass
         const double factor = state.aburnLit ? aux_->fuelFlowFactorAb : aux_->fuelFlowFactorNormal;
         fuelFlowSS = factor * state.thrust * mass_slugs;
     }
 
     if (simplified) fuelFlowSS *= 0.75;
-    // The table-based fuel flow is per-engine; multiply by nEngines to
-    // get the combined fuel flow (matches FreeFalcon engine.cpp:568).
-    // The legacy path is already correct (uses the nEngines-scaled thrust).
-    if (hasFuelFlowTables_) fuelFlowSS *= nEngines;
     if (fuelFlowSS < aux_->minFuelFlow) fuelFlowSS = aux_->minFuelFlow;
 
     // 10-frame smoothing (1 Hz one-pole)
