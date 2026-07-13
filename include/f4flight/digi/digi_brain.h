@@ -78,10 +78,22 @@ public:
     void setIncomingMissile(const DigiEntity* m) { state_.incomingMissile = m; }
     void setGunsThreat(const DigiEntity* t)      { state_.gunsThreat = t; }
 
+    // --- Target entity setter (Tier 2 — offensive) ---
+    // The host sets this each frame to the current target (bandit).
+    // Pass nullptr to clear (brain falls back to navigation).
+    void setTarget(const DigiEntity* t) { target_ = t; }
+
     // --- Own entity (for defensive maneuvers) ---
-    // The host must set this each frame so the brain can compute relative
-    // geometry to threats. If not set, defensive maneuvers are skipped.
-    void setSelfEntity(const DigiEntity* s)      { selfEntity_ = s; }
+    // The host may set this each frame from its own entity model.
+    // If NOT set (nullptr), the brain will auto-sync from AircraftState in
+    // compute() every frame. This makes the brain self-contained for testing.
+    void setSelfEntity(const DigiEntity* s) { selfEntity_ = s; selfEntityExplicit_ = (s != nullptr); }
+    void clearSelfEntity() { selfEntity_ = nullptr; selfEntityExplicit_ = false; }
+
+    // Build a DigiEntity from the current AircraftState. Called automatically
+    // in compute() if no selfEntity_ is set by the host. Also exposed publicly
+    // so hosts can use it to populate their own DigiEntity if desired.
+    static DigiEntity buildSelfEntity(const AircraftState& as);
 
     // --- Mode override (for testing / scripting) ---
     void setForcedMode(DigiMode m) { forcedMode_ = m; }
@@ -112,6 +124,9 @@ private:
     std::size_t curWp_{0};
     double captureRadius_{5000.0};  // ft
     const DigiEntity* selfEntity_{nullptr};
+    DigiEntity selfEntityAuto_;  // auto-synced from AircraftState when selfEntity_ is null
+    bool selfEntityExplicit_{false};  // true if host called setSelfEntity()
+    const DigiEntity* target_{nullptr};  // offensive target (Tier 2)
 
     DigiMode activeMode_{DigiMode::Waypoint};
     DigiMode forcedMode_{DigiMode::NoMode};

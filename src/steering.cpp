@@ -52,36 +52,15 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
         return manual_;
     }
 
-    // Map the old Mode enum to digi::DigiBrain mode forcing.
-    // The brain's own resolveMode() handles priority; we just set the
-    // forced mode for the nav modes (HeadingAltitude, Waypoint, Loiter).
-    // TerrainFollow, Formation, Combat are not yet implemented in the brain;
-    // they fall through to the default (Waypoint) behavior.
-    switch (mode_) {
-        case Mode::HeadingAltitude:
-            brain_.setForcedMode(digi::DigiMode::Waypoint);
-            break;
-        case Mode::Waypoint:
-            brain_.setForcedMode(digi::DigiMode::Waypoint);
-            break;
-        case Mode::Loiter:
-            // Loiter is not a separate DigiMode yet; use Waypoint mode
-            // with a single orbit point. For now, delegate to the brain's
-            // waypoint logic.
-            brain_.setForcedMode(digi::DigiMode::Waypoint);
-            break;
-        case Mode::TerrainFollow:
-        case Mode::Formation:
-        case Mode::Combat:
-            // Not yet implemented in the brain — fall through to Waypoint
-            brain_.setForcedMode(digi::DigiMode::Waypoint);
-            break;
-        case Mode::Manual:
-            return manual_;
-    }
+    // Clear any forced mode so the brain's own resolveMode() can handle
+    // threat-based mode switching (MissileDefeat, GunsJink pre-empt
+    // navigation). The SteeringController's Mode enum only configures the
+    // brain's navigation defaults — it does NOT override threat response.
+    brain_.clearForcedMode();
 
-    // Delegate to the brain. The brain runs GroundCheck, resolves the mode,
-    // dispatches to the active mode's maneuver function, and clamps outputs.
+    // Delegate to the brain. The brain runs GroundCheck, resolves the mode
+    // (GroundAvoid > MissileDefeat > GunsJink > Waypoint), dispatches to
+    // the active mode's maneuver function, and clamps outputs.
     PilotInput out = brain_.compute(state, dt, groundZ, fcs, fcsState);
 
     // For Loiter mode, override the brain's waypoint logic with a direct

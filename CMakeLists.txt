@@ -48,6 +48,7 @@ set(F4FLIGHT_SOURCES
     src/digi/ground/ground_avoid.cpp
     src/digi/defensive/missile_defeat.cpp
     src/digi/defensive/guns_jink.cpp
+    src/digi/offensive/roll_and_pull.cpp
 )
 
 set(F4FLIGHT_HEADERS
@@ -81,6 +82,7 @@ set(F4FLIGHT_HEADERS
     include/f4flight/digi/ground/ground_avoid.h
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h
+    include/f4flight/digi/offensive/roll_and_pull.h
 )
 
 add_library(f4flight
@@ -196,6 +198,8 @@ if(F4FLIGHT_BUILD_TESTS)
         tests/maneuver/scenarios/scenario_fcs_glimits.cpp
         tests/maneuver/scenarios/scenario_fcs_engine.cpp
         tests/maneuver/scenarios/scenario_fcs_roll.cpp
+        tests/maneuver/scenarios/scenario_digi_defensive.cpp
+        tests/maneuver/scenarios/scenario_digi_wvr.cpp
     )
 
     add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
@@ -225,6 +229,8 @@ if(F4FLIGHT_BUILD_TESTS)
         fcs_glimits
         fcs_engine
         fcs_roll
+        digi_defensive
+        digi_wvr
     )
     foreach(fixture ${F4FLIGHT_FIXTURES})
         get_filename_component(ac_name "${fixture}" NAME_WE)

@@ -91,6 +91,13 @@ public:
     void setTurnG(double load_factor) { brain_.setTurnG(load_factor); }
     void setManualInput(const PilotInput& in) { manual_ = in; }
 
+    // --- Threat/target setters (Tier 1-2) ---
+    // These delegate to the underlying DigiBrain. The host sets these each
+    // frame from its own entity model. Pass nullptr to clear.
+    void setIncomingMissile(const digi::DigiEntity* m) { brain_.setIncomingMissile(m); }
+    void setGunsThreat(const digi::DigiEntity* t) { brain_.setGunsThreat(t); }
+    void setTarget(const digi::DigiEntity* t) { brain_.setTarget(t); }
+
     // Accessors
     double heading() const { return brain_.state().holdPsi; }
     double altitude() const { return brain_.state().holdAlt; }
