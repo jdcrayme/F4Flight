@@ -83,7 +83,9 @@ TEST(DigiModeTest, PriorityOrdering) {
     // Lower value = higher priority
     EXPECT_LT(static_cast<int>(DigiMode::GroundAvoid), static_cast<int>(DigiMode::MissileDefeat));
     EXPECT_LT(static_cast<int>(DigiMode::MissileDefeat), static_cast<int>(DigiMode::GunsJink));
-    EXPECT_LT(static_cast<int>(DigiMode::GunsJink), static_cast<int>(DigiMode::WVREngage));
+    EXPECT_LT(static_cast<int>(DigiMode::GunsJink), static_cast<int>(DigiMode::Landing));
+    EXPECT_LT(static_cast<int>(DigiMode::Landing), static_cast<int>(DigiMode::Takeoff));
+    EXPECT_LT(static_cast<int>(DigiMode::Takeoff), static_cast<int>(DigiMode::WVREngage));
     EXPECT_LT(static_cast<int>(DigiMode::WVREngage), static_cast<int>(DigiMode::Waypoint));
 }
 
@@ -91,13 +93,15 @@ TEST(DigiModeTest, NameLookup) {
     EXPECT_STREQ(digiModeName(DigiMode::GroundAvoid), "GroundAvoid");
     EXPECT_STREQ(digiModeName(DigiMode::MissileDefeat), "MissileDefeat");
     EXPECT_STREQ(digiModeName(DigiMode::GunsJink), "GunsJink");
+    EXPECT_STREQ(digiModeName(DigiMode::Landing), "Landing");
+    EXPECT_STREQ(digiModeName(DigiMode::Takeoff), "Takeoff");
     EXPECT_STREQ(digiModeName(DigiMode::WVREngage), "WVREngage");
     EXPECT_STREQ(digiModeName(DigiMode::Waypoint), "Waypoint");
     EXPECT_STREQ(digiModeName(DigiMode::NoMode), "NoMode");
 }
 
 TEST(DigiModeTest, NumModes) {
-    EXPECT_EQ(kNumDigiModes, 5);
+    EXPECT_EQ(kNumDigiModes, 7);
 }
 
 // ===========================================================================

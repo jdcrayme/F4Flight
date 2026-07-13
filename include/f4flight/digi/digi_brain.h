@@ -37,11 +37,16 @@
 #include "f4flight/digi/digi_mode.h"
 #include "f4flight/digi/digi_skill.h"
 #include "f4flight/digi/digi_entity.h"
+#include "f4flight/digi/ground/ground_ops.h"
+#include "f4flight/digi/comms/message_bus.h"
+#include "f4flight/digi/atc/atc_messages.h"
+#include "f4flight/digi/sensors/sensor_fusion.h"
 #include "f4flight/aircraft_state.h"
 #include "f4flight/fcs.h"
 #include "f4flight/core/types.h"
 
 #include <vector>
+#include <optional>
 
 namespace f4flight {
 namespace digi {
@@ -72,16 +77,50 @@ public:
     void setHeading(double rad)              { state_.holdPsi = rad; }
     void setAltitude(double ft)              { state_.holdAlt = ft; }
 
-    // --- Threat entity setters (Tier 1) ---
-    // The host sets these each frame from its own entity model.
-    // Pass nullptr to clear a threat.
+    // --- Threat entity setters (Tier 1) — DEPRECATED ---
+    // These are retained for backward compatibility but should not be used
+    // when SensorFusion is enabled. The brain will auto-detect threats via
+    // the SensorPicture. If both are set, the injected pointers take priority
+    // (for testing).
     void setIncomingMissile(const DigiEntity* m) { state_.incomingMissile = m; }
     void setGunsThreat(const DigiEntity* t)      { state_.gunsThreat = t; }
 
     // --- Target entity setter (Tier 2 — offensive) ---
     // The host sets this each frame to the current target (bandit).
-    // Pass nullptr to clear (brain falls back to navigation).
+    // Pass nullptr to clear (brain falls back to navigation or auto-targeting).
     void setTarget(const DigiEntity* t) { target_ = t; }
+
+    // --- Sensor system (Phase 3) ---
+    // Provide the truth state each frame. The brain runs SensorFusion to
+    // build a SensorPicture, then uses it for autonomous threat/target
+    // detection. If no truth is provided, the brain falls back to injected
+    // threats (backward compatibility).
+    void setTruth(const TruthState* truth) { truth_ = truth; }
+
+    // Access the sensor fusion (for configuration / testing)
+    SensorFusion& sensorFusion() { return sensorFusion_; }
+    const SensorFusion& sensorFusion() const { return sensorFusion_; }
+
+    // Get the current sensor picture (read-only)
+    const SensorPicture& sensorPicture() const { return sensorFusion_.picture(); }
+
+    // --- Ground ops setters (Phase 1-2) ---
+    // Set the aircraft's entity ID (for ATC addressing) and register its
+    // mailbox on the message bus.
+    void setSelfId(EntityId id) { state_.selfId = id; }
+    void setMessageBus(MessageBus* bus) { bus_ = bus; }
+    Mailbox& mailbox() { return state_.mailbox; }
+
+    // --- Ground ops control ---
+    // Command the brain to initiate a takeoff sequence. The brain will
+    // request clearance from ATC (via message bus) and execute the takeoff
+    // when cleared.
+    void startTakeoff(RunwayId rwy, double rwyHeading,
+                       double rwyThresholdX, double rwyThresholdY, double rwyAlt);
+
+    // Command the brain to initiate a landing sequence.
+    void startLanding(RunwayId rwy, double rwyHeading,
+                       double rwyThresholdX, double rwyThresholdY, double rwyAlt);
 
     // --- Own entity (for defensive maneuvers) ---
     // The host may set this each frame from its own entity model.
@@ -127,6 +166,17 @@ private:
     DigiEntity selfEntityAuto_;  // auto-synced from AircraftState when selfEntity_ is null
     bool selfEntityExplicit_{false};  // true if host called setSelfEntity()
     const DigiEntity* target_{nullptr};  // offensive target (Tier 2)
+    MessageBus* bus_{nullptr};  // message bus for ATC/flight comms
+    double simTime_{0.0};  // current sim time (seconds)
+
+    // Sensor system (Phase 3)
+    SensorFusion sensorFusion_;
+    const TruthState* truth_{nullptr};
+
+    // Auto-built entities from SensorPicture (for threat/target detection)
+    std::optional<DigiEntity> missileEntityAuto_;
+    std::optional<DigiEntity> gunsEntityAuto_;
+    std::optional<DigiEntity> targetEntityAuto_;
 
     DigiMode activeMode_{DigiMode::Waypoint};
     DigiMode forcedMode_{DigiMode::NoMode};
@@ -142,6 +192,10 @@ private:
                      const FlightControlSystem& fcs, FcsState& fcsState);
     void runWVREngage(const AircraftState& as, double dt,
                       const FlightControlSystem& fcs, FcsState& fcsState);
+    void runTakeoff(const AircraftState& as, double dt,
+                    FcsState& fcsState, double groundZ);
+    void runLanding(const AircraftState& as, double dt,
+                    FcsState& fcsState, double groundZ);
 
     // Resolve the active mode based on priority + threats.
     void resolveMode(const AircraftState& as, double groundZ, double dt);

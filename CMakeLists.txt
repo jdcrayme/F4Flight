@@ -46,9 +46,15 @@ set(F4FLIGHT_SOURCES
     src/digi/digi_brain.cpp
     src/digi/maneuvers/maneuver_primitives.cpp
     src/digi/ground/ground_avoid.cpp
+    src/digi/ground/ground_ops.cpp
     src/digi/defensive/missile_defeat.cpp
     src/digi/defensive/guns_jink.cpp
     src/digi/offensive/roll_and_pull.cpp
+    src/digi/atc/atc_controller.cpp
+    src/digi/sensors/sensor_fusion.cpp
+    src/digi/sensors/radar_sensor.cpp
+    src/digi/sensors/rwr_sensor.cpp
+    src/digi/sensors/visual_sensor.cpp
 )
 
 set(F4FLIGHT_HEADERS
@@ -80,9 +86,22 @@ set(F4FLIGHT_HEADERS
     include/f4flight/digi/digi_entity.h
     include/f4flight/digi/maneuvers/maneuver_primitives.h
     include/f4flight/digi/ground/ground_avoid.h
+    include/f4flight/digi/ground/ground_ops.h
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h
     include/f4flight/digi/offensive/roll_and_pull.h
+    include/f4flight/digi/comms/message.h
+    include/f4flight/digi/comms/mailbox.h
+    include/f4flight/digi/comms/message_bus.h
+    include/f4flight/digi/atc/atc_messages.h
+    include/f4flight/digi/atc/taxi_graph.h
+    include/f4flight/digi/atc/atc_controller.h
+    include/f4flight/digi/sensors/sensor_picture.h
+    include/f4flight/digi/sensors/sensor.h
+    include/f4flight/digi/sensors/sensor_fusion.h
+    include/f4flight/digi/sensors/radar_sensor.h
+    include/f4flight/digi/sensors/rwr_sensor.h
+    include/f4flight/digi/sensors/visual_sensor.h
 )
 
 add_library(f4flight
@@ -200,6 +219,8 @@ if(F4FLIGHT_BUILD_TESTS)
         tests/maneuver/scenarios/scenario_fcs_roll.cpp
         tests/maneuver/scenarios/scenario_digi_defensive.cpp
         tests/maneuver/scenarios/scenario_digi_wvr.cpp
+        tests/maneuver/scenarios/scenario_digi_groundops.cpp
+        tests/maneuver/scenarios/scenario_digi_sensors.cpp
     )
 
     add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
@@ -231,6 +252,8 @@ if(F4FLIGHT_BUILD_TESTS)
         fcs_roll
         digi_defensive
         digi_wvr
+        digi_groundops
+        digi_sensors
     )
     foreach(fixture ${F4FLIGHT_FIXTURES})
         get_filename_component(ac_name "${fixture}" NAME_WE)

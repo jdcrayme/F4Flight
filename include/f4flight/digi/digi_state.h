@@ -18,6 +18,8 @@
 
 #include "f4flight/digi/digi_skill.h"
 #include "f4flight/digi/digi_entity.h"
+#include "f4flight/digi/ground/ground_ops.h"
+#include "f4flight/digi/comms/mailbox.h"
 
 namespace f4flight {
 namespace digi {
@@ -88,6 +90,13 @@ struct DigiState {
     double newRoll{0.0};       // target roll angle (rad)
     double jinkTimer{0.0};     // seconds in pull phase
 
+    // --- Ground ops state (Phase 1-2) ---
+    GroundOpsState groundOps;
+
+    // --- Communication (Phase 1) ---
+    Mailbox mailbox;           // incoming messages from ATC, flight lead, etc.
+    EntityId selfId{kInvalidEntityId};  // this aircraft's entity ID (for addressing)
+
     void reset() noexcept {
         pStick = rStick = yPedal = 0.0;
         gammaHoldIError = 0.0;
@@ -109,6 +118,8 @@ struct DigiState {
         jinkTime = -1;
         newRoll = 0.0;
         jinkTimer = 0.0;
+        groundOps.reset();
+        mailbox.clear();
     }
 };
 

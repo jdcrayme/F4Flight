@@ -32,12 +32,13 @@ enum class DigiMode : int {
     GroundAvoid     = 0,   // terrain avoidance (PullUp)
     MissileDefeat   = 1,   // defensive maneuvering vs incoming missile
     GunsJink        = 2,   // defensive jink vs guns fire
-    WVREngage       = 3,   // within-visual-range dogfight
-    Waypoint        = 4,   // navigation / waypoint following
+    Landing         = 3,   // landing approach + rollout
+    Takeoff         = 4,   // takeoff roll + climbout
+    WVREngage       = 5,   // within-visual-range dogfight
+    Waypoint        = 6,   // navigation / waypoint following
 
     // --- Not yet ported (will be added as capabilities land) ---
-    // TakeoffMode, LandingMode, RefuelingMode, CollisionAvoid,
-    // GunsEngage, MissileEngage, MergeMode, RoopMode, OverBMode,
+    // CollisionAvoid, MergeMode, RoopMode, OverBMode,
     // BVREngage, LoiterMode, FollowOrdersMode, RTBMode, WingyMode,
     // BugoutMode, GroundMnvrMode
 
@@ -45,7 +46,7 @@ enum class DigiMode : int {
 };
 
 // Number of active modes (for array sizing in the dispatcher).
-constexpr int kNumDigiModes = 5;
+constexpr int kNumDigiModes = 7;
 
 // Return the human-readable name of a mode (for debugging / test output).
 inline const char* digiModeName(DigiMode m) {
@@ -53,6 +54,8 @@ inline const char* digiModeName(DigiMode m) {
         case DigiMode::GroundAvoid:   return "GroundAvoid";
         case DigiMode::MissileDefeat: return "MissileDefeat";
         case DigiMode::GunsJink:      return "GunsJink";
+        case DigiMode::Landing:       return "Landing";
+        case DigiMode::Takeoff:       return "Takeoff";
         case DigiMode::WVREngage:     return "WVREngage";
         case DigiMode::Waypoint:      return "Waypoint";
         case DigiMode::NoMode:        return "NoMode";
