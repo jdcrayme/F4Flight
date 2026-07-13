@@ -38,7 +38,12 @@ public:
         sc.setCornerSpeed(targetSpd_);
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(45.0);
-        sc.setMaxGamma(15.0);
+        // Cruise is level flight, so maxGamma rarely bites — but keep the
+        // class-aware scaling consistent with ai_basic / ai_flightplan so
+        // heavy aircraft don't get an aggressive gamma command during the
+        // initial altitude capture transient.
+        const bool heavy = isHeavy(fm.config());
+        sc.setMaxGamma(heavy ? 10.0 : 15.0);
     }
 
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {

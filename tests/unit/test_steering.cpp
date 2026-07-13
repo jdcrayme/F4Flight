@@ -32,19 +32,19 @@ TEST(DigiAITest, SetPstickGCommand) {
 
     // Command 1G (level) -> pstick should be ~0
     digi.pStick = 0.0;
-    DigiAI::SetPstick(1.0, 9.0, DigiAI::GCommand, digi, state);
+    DigiAI::SetPstick(1.0, 9.0, digi::CommandType::GCommand, digi, state);
     // 1G maps to sqrt((1-1)/(9-1)) = 0
     EXPECT_NEAR(digi.pStick, 0.0, 0.01);
 
     // Command 4G -> pstick should be positive
     digi.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, DigiAI::GCommand, digi, state);
+    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     EXPECT_GT(digi.pStick, 0.0);
     EXPECT_LT(digi.pStick, 1.0);
 
     // Command -2G -> pstick should be negative
     digi.pStick = 0.0;
-    DigiAI::SetPstick(-2.0, 9.0, DigiAI::GCommand, digi, state);
+    DigiAI::SetPstick(-2.0, 9.0, digi::CommandType::GCommand, digi, state);
     EXPECT_LT(digi.pStick, 0.0);
 }
 
@@ -56,12 +56,12 @@ TEST(DigiAITest, SetPstickLowSpeed) {
 
     // At low speed, stick authority is reduced
     digi.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, DigiAI::GCommand, digi, state);
+    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     double lowSpeedPstick = digi.pStick;
 
     state.vcas = 400.0;  // normal speed
     digi.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, DigiAI::GCommand, digi, state);
+    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     double normalPstick = digi.pStick;
 
     EXPECT_LT(lowSpeedPstick, normalPstick);

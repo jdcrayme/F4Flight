@@ -44,8 +44,10 @@ void EquationsOfMotion::calcBodyRates(double dt, double qsom, double cnalpha,
     const double tempVt = std::max(4.0, std::fabs(k.vt));
     (void)singam; // not used by FreeFalcon in this section
     (void)cnalpha; // not used by FreeFalcon in this section
+    (void)cosbet;  // used only in slice coupling (turbulence, omitted)
     (void)cosalp;  // used only in slice coupling (turbulence, omitted)
     (void)sinalp;
+    (void)pitchMomentum; // FreeFalcon scales qptchc by pitchMomentum; we use pitchElasticity only
 
     // --- Pitch rate (body axis) ---
     // FreeFalcon eom.cpp:605-642
@@ -213,6 +215,7 @@ void EquationsOfMotion::integratePosition(double dt, double cosgam, double singa
 // ---------------------------------------------------------------------------
 void EquationsOfMotion::update(double dt, PilotInput const& input,
                                AircraftState& state) const {
+    (void)input; // EOM does not read pilot input directly (FCS already wrote alpha/beta/pstab)
     if (!geom_ || !aux_) return;
 
     auto& k = state.kin;

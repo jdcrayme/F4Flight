@@ -21,11 +21,12 @@ namespace manuver_test {
 class EnginePhase : public ManeuverTest {
 public:
     EnginePhase(const char* name, double throttle, double duration,
-                double alt, double speed)
+                double alt, double speed, bool heavy)
         : ManeuverTest(name, duration)
         , throttle_(throttle)
         , alt_(alt)
         , speed_(speed)
+        , isHeavy_(heavy)
     {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
@@ -98,10 +99,21 @@ public:
         if (hasNaN_) return false;
         const bool isIdle = (throttle_ < 0.1);
         if (isIdle) {
-            if (std::fabs(maxThrust_) < 0.1 && std::fabs(minThrust_) < 0.1)
-                return false;
+            // Idle thrust SHOULD be near zero for turboprops (C-130 T56 at
+            // flight idle) and low for turbofans. The previous test rejected
+            // zero thrust at idle, which incorrectly failed the C-130 (whose
+            // idle thrust table is 0.0). Accept any thrust below 1.0 ft/s^2
+            // at idle (fighters produce ~0.5-2.0 ft/s^2 idle, heavies ~0.0).
+            if (maxThrust_ > 1.0) return false;
         } else {
-            const double thrustMin = 5.0;
+            // Non-idle thrust threshold scales with aircraft class.
+            //   Fighter: T/W ~ 0.6-1.2 → thrust accel >= 5.0 ft/s^2 at MIL
+            //   Heavy  : T/W ~ 0.2-0.3 → thrust accel >= 1.0 ft/s^2 at MIL
+            // (C-130 at 15000 ft / 350 kts: ~3.2 ft/s^2; B-52H similar.)
+            // Also: aircraft without afterburner (C-130, B-52H, A-10) will
+            // produce the same thrust at throttle=1.5 as at 1.0 — that's
+            // correct, not a failure.
+            const double thrustMin = isHeavy_ ? 1.0 : 5.0;
             if (maxThrust_ < thrustMin) return false;
         }
         if (minRpm_ < 0.0 || maxRpm_ > 1.6) return false;
@@ -126,6 +138,7 @@ private:
     double throttle_;
     double alt_;
     double speed_;
+    bool   isHeavy_;
 
     double minRpm_{std::numeric_limits<double>::max()};
     double maxRpm_{std::numeric_limits<double>::lowest()};
@@ -151,15 +164,16 @@ public:
 
         const double alt = 15000.0;
         const double speed = 350.0;
+        const bool heavy = isHeavy(ctx.cfg);
 
         fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
-        tests.push_back(std::make_unique<EnginePhase>("Idle", 0.0, 10.0, alt, speed));
-        tests.push_back(std::make_unique<EnginePhase>("MIL", 1.0, 10.0, alt, speed));
-        tests.push_back(std::make_unique<EnginePhase>("Afterburner", 1.5, 10.0, alt, speed));
-        tests.push_back(std::make_unique<EnginePhase>("Back to MIL", 1.0, 10.0, alt, speed));
-        tests.push_back(std::make_unique<EnginePhase>("Back to Idle", 0.0, 10.0, alt, speed));
+        tests.push_back(std::make_unique<EnginePhase>("Idle", 0.0, 10.0, alt, speed, heavy));
+        tests.push_back(std::make_unique<EnginePhase>("MIL", 1.0, 10.0, alt, speed, heavy));
+        tests.push_back(std::make_unique<EnginePhase>("Afterburner", 1.5, 10.0, alt, speed, heavy));
+        tests.push_back(std::make_unique<EnginePhase>("Back to MIL", 1.0, 10.0, alt, speed, heavy));
+        tests.push_back(std::make_unique<EnginePhase>("Back to Idle", 0.0, 10.0, alt, speed, heavy));
         return tests;
     }
 };

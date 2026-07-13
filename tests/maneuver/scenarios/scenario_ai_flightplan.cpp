@@ -40,7 +40,18 @@ public:
         sc.setCornerSpeed(speed_);
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(45.0);
-        sc.setMaxGamma(15.0);
+        // Heavy aircraft need a lower gamma envelope to avoid stalling during
+        // turns (see scenario_ai_basic for the same rationale). The waypoint
+        // circuit has 90° turns at each corner; heavy aircraft at 15° gamma
+        // bleed speed and overshoot altitude. 10° keeps them sustainable.
+        // Heavy aircraft also need a shallower turn load factor (1.3G vs 2.0G)
+        // so the turn doesn't demand more G than they can sustain. A B-52H
+        // (maxGs=2.3) in a 2.0G turn leaves only 0.3G for altitude recovery;
+        // at 1.3G (35° bank) it has 1.0G of margin.
+        const bool heavy = isHeavy(fm.config());
+        sc.setMaxGamma(heavy ? 10.0 : 15.0);
+        sc.setMaxBank(heavy ? 25.0 : 45.0);
+        sc.setTurnG(heavy ? 1.3 : 2.0);
         inputTracker_ = &sc;
         waypointsVisited_ = 0;
         lastWpIndex_ = 0;

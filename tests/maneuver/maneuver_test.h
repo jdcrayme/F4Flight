@@ -99,7 +99,7 @@ protected:
 
 };
 
-inline void ManeuverTest::Evaluate(const AircraftState& as, const PilotInput& input, double dt) {
+inline void ManeuverTest::Evaluate(const AircraftState& /*as*/, const PilotInput& /*input*/, double dt) {
     phaseTime_ += dt;
 }
 
@@ -113,6 +113,33 @@ inline void ManeuverTest::Evaluate(const AircraftState& as, const PilotInput& in
 struct ScenarioContext {
     const AircraftConfig&    cfg;
 };
+
+// ---------------------------------------------------------------------------
+// AircraftClass — coarse aerodynamic classification used by scenarios to
+// scale test tolerances. Derived at runtime from the config so JSON files
+// don't need a new field.
+//
+//   Fighter : maxGs > 5.0          (F-16, F-15, F-14, MiG-29, Su-27, EF2000,
+//                                    Rafale, A-10 — A-10 is borderline but
+//                                    its 7.3G / 30° AOA gives it fighter-like
+//                                    pitch authority for the transient tests)
+//   Heavy   : maxGs <= 4.0         (B-52H 2.3G, C-130 2.3G — low T/W, low G,
+//                                    low roll authority, no afterburner)
+//
+// The gap (4.0 < maxGs <= 5.0) is intentionally empty in the current fleet;
+// if an aircraft lands there it will be treated as Fighter. Add an `Attack`
+// class here if a future aircraft (e.g. A-10 with revised data, Su-25) needs
+// separate tolerances.
+// ---------------------------------------------------------------------------
+enum class AircraftClass { Fighter, Heavy };
+
+inline AircraftClass aircraftClass(const AircraftConfig& cfg) {
+    return (cfg.geometry.maxGs <= 4.0) ? AircraftClass::Heavy : AircraftClass::Fighter;
+}
+
+inline bool isHeavy(const AircraftConfig& cfg) {
+    return aircraftClass(cfg) == AircraftClass::Heavy;
+}
 
 // A scenario is a named, self-contained test sequence. Subclasses build a
 // list of ManeuverTest phases in buildSequence(); the runner executes them
@@ -186,4 +213,4 @@ struct RegisterScenario {
     }
 };
 
-} // namespace f4flight
+} // namespace manuver_test

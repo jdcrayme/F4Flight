@@ -51,8 +51,15 @@ void FlightControlSystem::computeGains(double qbar, double qsom, double vt,
                                        double loadingFraction, bool inAir,
                                        bool landingGains, double gearPos,
                                        FcsState& fcs) const {
+    // Parameters retained for API parity with FreeFalcon gain.cpp but not yet
+    // consumed by the current FCS port. Will be used when the corresponding
+    // sub-models (alpha-command mode, landing gains, cy-driven yaw) are ported.
+    (void)clift0;  // retained for parity; current gsAvail uses clalph0
+    (void)clalpha; // retained for parity; current gsAvail uses clalph0
+    (void)cosgam;  // used by FreeFalcon in CatIII mode (not yet ported)
+    (void)cosmu;   // used by FreeFalcon in pitch-rate derivation (EOM handles it here)
+    (void)gearPos; // used by FreeFalcon for landing-gain fade (landingGains flag covers it)
     const double cosphiLim = std::max(0.0, cosphi);
-    const double cosmuLim  = std::max(0.0, cosmu);
 
     // --- Available G (max load factor at aoamax) ---
     // Bug B fix: FreeFalcon uses clalph (static slope 0..10), not clalpha (local)
@@ -246,6 +253,13 @@ void FlightControlSystem::runPitch(double dt, double qbar, double qsom,
                                    double aoamin, double aoamax, double maxGs,
                                    PilotInput const& input,
                                    FcsState& fcs, AeroState& aero) const {
+    // Parameters retained for API parity with FreeFalcon runPitch but not yet
+    // consumed. Will be used when alpha-command mode and nz-rate cross-feed
+    // are ported.
+    (void)vt;       // used by FreeFalcon for dynamic-pressure scheduling (qsom covers it)
+    (void)singam;   // used by FreeFalcon in CatIII/terrain-followance (not yet ported)
+    (void)clalpha;  // retained for parity; aoaCmdMode path uses clalph0
+    (void)input;    // pstick already consumed in update() to set fcs.pshape
     // pshape is now computed in update() before computeGains(), since kp01
     // depends on it. Don't recompute it here.
 
@@ -415,6 +429,7 @@ void FlightControlSystem::runRoll(double dt, double qbar, double vcas_kts,
                                   double alpha_deg, double gearPos,
                                   double phi_rad,
                                   PilotInput const& input, FcsState& fcs) const {
+    (void)qbar;   // retained for API parity; current roll FCS uses vcas_kts for slow-speed fade
     fcs.rshape = input.rstick * input.rstick * (input.rstick >= 0.0 ? 1.0 : -1.0);
     double pscmd = limit(fcs.rshape * fcs.kr01, -fcs.kr01, fcs.kr01);
 
@@ -529,6 +544,7 @@ void FlightControlSystem::update(double dt, double qbar, double qsom, double mac
                                  bool landingGainsActive, PilotInput const& input,
                                  FcsState& fcs, AeroState& aero) const {
     if (!geom_ || !aux_) return;
+    (void)mach; // retained for API parity; current FCS sub-functions use qsom/qbar, not mach
 
     const bool landingGains = landingGainsActive || gearDown || refueling;
 

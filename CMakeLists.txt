@@ -42,6 +42,12 @@ set(F4FLIGHT_SOURCES
     src/dat_loader.cpp
     src/json_io.cpp
     src/config/f16c_config.cpp
+    # digi/ subsystem (AI brain)
+    src/digi/digi_brain.cpp
+    src/digi/maneuvers/maneuver_primitives.cpp
+    src/digi/ground/ground_avoid.cpp
+    src/digi/defensive/missile_defeat.cpp
+    src/digi/defensive/guns_jink.cpp
 )
 
 set(F4FLIGHT_HEADERS
@@ -65,6 +71,16 @@ set(F4FLIGHT_HEADERS
     include/f4flight/dat_loader.h
     include/f4flight/json_io.h
     include/f4flight/config/f16c_config.h
+    # digi/ subsystem (AI brain)
+    include/f4flight/digi/digi_brain.h
+    include/f4flight/digi/digi_state.h
+    include/f4flight/digi/digi_mode.h
+    include/f4flight/digi/digi_skill.h
+    include/f4flight/digi/digi_entity.h
+    include/f4flight/digi/maneuvers/maneuver_primitives.h
+    include/f4flight/digi/ground/ground_avoid.h
+    include/f4flight/digi/defensive/missile_defeat.h
+    include/f4flight/digi/defensive/guns_jink.h
 )
 
 add_library(f4flight
@@ -135,13 +151,12 @@ add_library(f4flight::f4flight ALIAS f4flight)
 #                      runner picks up scenarios by name.
 #
 #   tests/fixtures/  — curated JSON aircraft files used by the maneuver
-#                      tests. The set is intentionally small (13 aircraft)
-#                      but representative: fighters (F-16, F-15, F/A-18,
-#                      F-14, MiG-29, Su-27, EF2000, Rafale, Mirage 2000),
-#                      attack (A-10), bomber (B-52), transport (C-130), and
-#                      interceptor (SR-71). Adding a JSON to this directory
-#                      automatically registers it for every maneuver
-#                      scenario (see file(GLOB) below).
+#                      tests. The set is intentionally small (10 aircraft)
+#                      but representative: fighters (F-16, F-15, F-14,
+#                      MiG-29, Su-27, EF2000, Rafale), attack (A-10),
+#                      bomber (B-52), and transport (C-130). Adding a JSON
+#                      to this directory automatically registers it for
+#                      every maneuver scenario (see file(GLOB) below).
 # ===========================================================================
 if(F4FLIGHT_BUILD_TESTS)
     enable_testing()
@@ -150,6 +165,7 @@ if(F4FLIGHT_BUILD_TESTS)
     FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     # On Windows / MSVC, prevent overriding the parent project's compiler/linker options
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)

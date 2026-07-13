@@ -21,11 +21,12 @@ namespace manuver_test {
 class RollStepPhase : public ManeuverTest {
 public:
     RollStepPhase(const char* name, double rstick, double duration,
-                  double alt, double speed)
+                  double alt, double speed, bool heavy)
         : ManeuverTest(name, duration + 3.0)
         , rstick_(rstick)
         , alt_(alt)
         , speed_(speed)
+        , isHeavy_(heavy)
     {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
@@ -65,8 +66,8 @@ public:
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
-                std::printf("\n%s (rstick: %.1f, %d kts)\n", testName_.c_str(),
-                    rstick_, (int)speed_);
+                std::printf("\n%s (rstick: %.1f, %d kts)%s\n", testName_.c_str(),
+                    rstick_, (int)speed_, isHeavy_ ? " [HEAVY]" : "");
                 std::printf("%6s %8s %10s %8s %8s %6s %8s\n",
                     "t(s)", "bank(d)", "roll(d/s)", "G", "alpha", "throt", "vt(kts)");
             }
@@ -84,20 +85,30 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        if (maxRollRate_ < 60.0) return false;
-        if (rstick_ > 0.5 && maxPosRollRate_ < 30.0) return false;
-        if (rstick_ < -0.5 && maxNegRollRate_ > -30.0) return false;
+        // Roll-rate threshold scales with aircraft class. Fighters with
+        // maxRoll ~190° and high aileron authority reach 60+ deg/s. Heavy
+        // aircraft (B-52 185 ft span, 60° max bank, no ailerons — spoilers
+        // only) reach ~15 deg/s at 350 kts. C-130 similar.
+        //   Fighter : 60 deg/s peak, 30 deg/s directional
+        //   Heavy   : 12 deg/s peak,  6 deg/s directional
+        const double peakThr = isHeavy_ ? 12.0 : 60.0;
+        const double dirThr  = isHeavy_ ?  6.0 : 30.0;
+        if (maxRollRate_ < peakThr) return false;
+        if (rstick_ > 0.5 && maxPosRollRate_ < dirThr) return false;
+        if (rstick_ < -0.5 && maxNegRollRate_ > -dirThr) return false;
         return true;
     }
 
     void Finish() const override {
+        const double peakThr = isHeavy_ ? 12.0 : 60.0;
+        const double dirThr  = isHeavy_ ?  6.0 : 30.0;
         std::printf("  --- Summary ---\n");
-        std::printf("  Max roll rate: %.1f deg/s %s\n",
-            maxRollRate_, (maxRollRate_ >= 60.0) ? "[PASS]" : "[FAIL]");
-        std::printf("  Direction check: max +%.1f / min %.1f deg/s (rstick %+.1f) %s\n",
-            maxPosRollRate_, maxNegRollRate_, rstick_,
-            ((rstick_ > 0.5 && maxPosRollRate_ >= 30.0) ||
-             (rstick_ < -0.5 && maxNegRollRate_ <= -30.0)) ? "[PASS]" : "[FAIL]");
+        std::printf("  Max roll rate: %.1f deg/s (need >= %.0f) %s\n",
+            maxRollRate_, peakThr, (maxRollRate_ >= peakThr) ? "[PASS]" : "[FAIL]");
+        std::printf("  Direction check: max +%.1f / min %.1f deg/s (rstick %+.1f, need +/-%.0f) %s\n",
+            maxPosRollRate_, maxNegRollRate_, rstick_, dirThr,
+            ((rstick_ > 0.5 && maxPosRollRate_ >= dirThr) ||
+             (rstick_ < -0.5 && maxNegRollRate_ <= -dirThr)) ? "[PASS]" : "[FAIL]");
         double avgRR = rollRateCount_ > 0 ? rollRateSum_ / rollRateCount_ : 0.0;
         std::printf("  Avg roll rate: %.1f deg/s (steady-state, frames 2-%.0f)\n",
             avgRR, maxTime_);
@@ -109,6 +120,7 @@ private:
     double rstick_;
     double alt_;
     double speed_;
+    bool   isHeavy_;
     double maxRollRate_{0.0};
     double maxPosRollRate_{std::numeric_limits<double>::lowest()};
     double maxNegRollRate_{std::numeric_limits<double>::max()};
@@ -132,13 +144,14 @@ public:
         StartScenario(FlightModel& fm, const ScenarioContext& ctx) override {
 
         const double alt = 15000.0;
+        const bool heavy = isHeavy(ctx.cfg);
         fm.init(ctx.cfg, alt, 350.0 * KNOTS_TO_FTPSEC, 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
-        tests.push_back(std::make_unique<RollStepPhase>("Roll right 350kts", 1.0, 8.0, alt, 350.0));
-        tests.push_back(std::make_unique<RollStepPhase>("Roll left 350kts", -1.0, 8.0, alt, 350.0));
-        tests.push_back(std::make_unique<RollStepPhase>("Roll right 250kts", 1.0, 8.0, alt, 250.0));
-        tests.push_back(std::make_unique<RollStepPhase>("Roll right 450kts", 1.0, 8.0, alt, 450.0));
+        tests.push_back(std::make_unique<RollStepPhase>("Roll right 350kts", 1.0, 8.0, alt, 350.0, heavy));
+        tests.push_back(std::make_unique<RollStepPhase>("Roll left 350kts", -1.0, 8.0, alt, 350.0, heavy));
+        tests.push_back(std::make_unique<RollStepPhase>("Roll right 250kts", 1.0, 8.0, alt, 250.0, heavy));
+        tests.push_back(std::make_unique<RollStepPhase>("Roll right 450kts", 1.0, 8.0, alt, 450.0, heavy));
         return tests;
     }
 };

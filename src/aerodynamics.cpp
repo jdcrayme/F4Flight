@@ -36,6 +36,8 @@ void Aerodynamics::update(double alpha_deg,
                           double vcas_kts,
                           double pstick,
                           AeroState& aero) const {
+    (void)qovt;        // retained for API parity with FreeFalcon; not used by current aero model
+    (void)altitude_ft; // retained for API parity; ground-effect uses z_ft - groundZ_ft instead
     if (!table_ || !geom_ || !aux_) {
         aero.lift = aero.drag = 0.0;
         aero.xaero = aero.yaero = aero.zaero = 0.0;

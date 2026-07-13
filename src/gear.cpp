@@ -19,6 +19,7 @@ void GearModel::init(GearState& gear) const {
 }
 
 double GearModel::computeMinHeight(const GearState& gear) const {
+    (void)gear; // minHeight depends only on the configured gear points, not the runtime state
     if (!geom_ || geom_->gear.empty()) return 0.0;
     // minHeight is the maximum strut-extended Z (most-positive Z in body axes,
     // since body Z is down). This corresponds to the lowest point on the
