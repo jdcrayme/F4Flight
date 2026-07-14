@@ -2,22 +2,40 @@ cmake_minimum_required(VERSION 3.16)
 
 project(f4flight
     VERSION 1.0.0
-    DESCRIPTION "Modern C++17 flight model library extracted from Falcon 4 / FreeFalcon"
+    DESCRIPTION "Modern C++17 flight model + digi AI library extracted from Falcon 4 / FreeFalcon"
     LANGUAGES CXX
 )
 
-# ---------------------------------------------------------------------------
-# Library options
-# ---------------------------------------------------------------------------
-option(F4FLIGHT_BUILD_TESTS    "Build the f4flight unit tests"             ON)
-option(F4FLIGHT_BUILD_TOOLS    "Build the dat2json/dat_validate/json_diff tools" ON)
-option(F4FLIGHT_BUILD_SHARED   "Build f4flight as a shared library (DLL)"  OFF)
-option(F4FLIGHT_ENABLE_WERROR  "Treat warnings as errors"                  OFF)
-option(F4FLIGHT_USE_MSVC_UTF8  "Force /utf-8 on MSVC"                       ON)
+# ===========================================================================
+# Overview
+# ===========================================================================
+# F4Flight is split into two libraries with a one-way dependency:
+#
+#   flight/  →  f4flight::flight   (pure flight model, no AI dependency)
+#   digi/    →  f4flight::digi     (AI brain; depends on f4flight::flight)
+#
+# Hosts that only need flight physics can link f4flight::flight directly.
+# Hosts that need AI link f4flight::digi (which transitively brings flight).
+#
+# Directory layout:
+#
+#   flight/          Flight Model library (aerodynamics, engine, FCS, EOM, gear)
+#   digi/            Digi AI library (brain, maneuvers, sensors, weapons, ATC)
+#   tests/           Test suite (framework + flight tests + digi tests)
+#   tools/           Standalone CLI tools (dat conversion, visualization)
+#   cmake/           CMake package config templates
+#
+# ===========================================================================
+# Options
+# ===========================================================================
+option(F4FLIGHT_BUILD_TESTS    "Build the test suite"                     ON)
+option(F4FLIGHT_BUILD_TOOLS    "Build the standalone CLI tools"           ON)
+option(F4FLIGHT_ENABLE_WERROR  "Treat warnings as errors"                 OFF)
+option(F4FLIGHT_USE_MSVC_UTF8  "Force /utf-8 on MSVC"                      ON)
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # C++ standard
-# ---------------------------------------------------------------------------
+# ===========================================================================
 set(CMAKE_CXX_STANDARD          17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS        OFF)
@@ -27,303 +45,34 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# ---------------------------------------------------------------------------
-# Library target
-# ---------------------------------------------------------------------------
-set(F4FLIGHT_SOURCES
-    src/aircraft_config.cpp
-    src/aerodynamics.cpp
-    src/engine.cpp
-    src/fcs.cpp
-    src/gear.cpp
-    src/eom.cpp
-    src/flight_model.cpp
-    src/steering.cpp
-    src/dat_loader.cpp
-    src/json_io.cpp
-    src/config/f16c_config.cpp
-    # digi/ subsystem (AI brain)
-    src/digi/digi_brain.cpp
-    src/digi/maneuvers/maneuver_primitives.cpp
-    src/digi/ground/ground_avoid.cpp
-    src/digi/ground/ground_ops.cpp
-    src/digi/defensive/missile_defeat.cpp
-    src/digi/defensive/guns_jink.cpp
-    src/digi/defensive/collision_avoid.cpp
-    src/digi/offensive/roll_and_pull.cpp
-    src/digi/offensive/guns_engage.cpp
-    src/digi/offensive/missile_engage.cpp
-    src/digi/offensive/bvr_engage.cpp
-    src/digi/offensive/merge.cpp
-    src/digi/atc/atc_controller.cpp
-    src/digi/sensors/sensor_fusion.cpp
-    src/digi/sensors/radar_sensor.cpp
-    src/digi/sensors/rwr_sensor.cpp
-    src/digi/sensors/visual_sensor.cpp
-)
-
-set(F4FLIGHT_HEADERS
-    include/f4flight/f4flight.h
-    include/f4flight/core/constants.h
-    include/f4flight/core/types.h
-    include/f4flight/core/math.h
-    include/f4flight/core/lookup.h
-    include/f4flight/core/units.h
-    include/f4flight/core/trig.h
-    include/f4flight/atmosphere.h
-    include/f4flight/aircraft_config.h
-    include/f4flight/aircraft_state.h
-    include/f4flight/aerodynamics.h
-    include/f4flight/engine.h
-    include/f4flight/gear.h
-    include/f4flight/fcs.h
-    include/f4flight/eom.h
-    include/f4flight/flight_model.h
-    include/f4flight/steering.h
-    include/f4flight/dat_loader.h
-    include/f4flight/json_io.h
-    include/f4flight/config/f16c_config.h
-    # digi/ subsystem (AI brain)
-    include/f4flight/digi/digi_brain.h
-    include/f4flight/digi/digi_state.h
-    include/f4flight/digi/digi_mode.h
-    include/f4flight/digi/digi_skill.h
-    include/f4flight/digi/digi_entity.h
-    include/f4flight/digi/maneuvers/maneuver_primitives.h
-    include/f4flight/digi/ground/ground_avoid.h
-    include/f4flight/digi/ground/ground_ops.h
-    include/f4flight/digi/defensive/missile_defeat.h
-    include/f4flight/digi/defensive/guns_jink.h
-    include/f4flight/digi/defensive/collision_avoid.h
-    include/f4flight/digi/offensive/roll_and_pull.h
-    include/f4flight/digi/offensive/guns_engage.h
-    include/f4flight/digi/offensive/missile_engage.h
-    include/f4flight/digi/offensive/bvr_engage.h
-    include/f4flight/digi/offensive/merge.h
-    include/f4flight/digi/weapons/weapon_types.h
-    include/f4flight/digi/weapons/weapon_spec.h
-    include/f4flight/digi/weapons/sms.h
-    include/f4flight/digi/weapons/fire_control.h
-    include/f4flight/digi/comms/message.h
-    include/f4flight/digi/comms/mailbox.h
-    include/f4flight/digi/comms/message_bus.h
-    include/f4flight/digi/atc/atc_messages.h
-    include/f4flight/digi/atc/taxi_graph.h
-    include/f4flight/digi/atc/atc_controller.h
-    include/f4flight/digi/sensors/sensor_picture.h
-    include/f4flight/digi/sensors/sensor.h
-    include/f4flight/digi/sensors/sensor_fusion.h
-    include/f4flight/digi/sensors/radar_sensor.h
-    include/f4flight/digi/sensors/rwr_sensor.h
-    include/f4flight/digi/sensors/visual_sensor.h
-)
-
-add_library(f4flight
-    ${F4FLIGHT_SOURCES}
-    ${F4FLIGHT_HEADERS}
-)
-
-if(F4FLIGHT_BUILD_SHARED)
-    set_target_properties(f4flight PROPERTIES
-        WINDOWS_EXPORT_ALL_SYMBOLS ON
-        CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON
-    )
-    set_target_properties(f4flight PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-    )
-else()
-    set_target_properties(f4flight PROPERTIES
-        POSITION_INDEPENDENT_CODE ON
-    )
-endif()
-
-target_include_directories(f4flight
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-
-target_compile_features(f4flight PUBLIC cxx_std_17)
-
-# ---------------------------------------------------------------------------
-# Compiler warnings
-# ---------------------------------------------------------------------------
-if(MSVC)
-    set(F4FLIGHT_MSVC_OPTIONS /W4 /permissive- /Zc:__cplusplus /Zc:preprocessor)
-    if(F4FLIGHT_ENABLE_WERROR)
-        list(APPEND F4FLIGHT_MSVC_OPTIONS /WX)
-    endif()
-    if(F4FLIGHT_USE_MSVC_UTF8)
-        list(APPEND F4FLIGHT_MSVC_OPTIONS /utf-8)
-    endif()
-    target_compile_options(f4flight PRIVATE ${F4FLIGHT_MSVC_OPTIONS})
-else()
-    set(F4FLIGHT_GCC_OPTIONS -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
-    if(F4FLIGHT_ENABLE_WERROR)
-        list(APPEND F4FLIGHT_GCC_OPTIONS -Werror)
-    endif()
-    target_compile_options(f4flight PRIVATE ${F4FLIGHT_GCC_OPTIONS})
-endif()
-
-# ---------------------------------------------------------------------------
-# Alias target so consumers can use f4flight::f4flight
-# ---------------------------------------------------------------------------
-add_library(f4flight::f4flight ALIAS f4flight)
+# ===========================================================================
+# Libraries
+# ===========================================================================
+add_subdirectory(flight)
+add_subdirectory(digi)
 
 # ===========================================================================
 # Tests
 # ===========================================================================
-# The test tree is split into:
-#
-#   tests/unit/      — gtest unit tests for each library module (math, aero,
-#                      engine, fcs, eom, json_io, dat_loader, etc.). Quick
-#                      correctness checks, no simulation.
-#
-#   tests/maneuver/  — scenario-based end-to-end integration tests that drive
-#                      the full FlightModel + SteeringController through
-#                      multi-phase maneuvers (climb, turn, orbit, waypoint
-#                      circuit, ...). Each scenario self-registers; the
-#                      runner picks up scenarios by name.
-#
-#   tests/fixtures/  — curated JSON aircraft files used by the maneuver
-#                      tests. The set is intentionally small (10 aircraft)
-#                      but representative: fighters (F-16, F-15, F-14,
-#                      MiG-29, Su-27, EF2000, Rafale), attack (A-10),
-#                      bomber (B-52), and transport (C-130). Adding a JSON
-#                      to this directory automatically registers it for
-#                      every maneuver scenario (see file(GLOB) below).
-# ===========================================================================
 if(F4FLIGHT_BUILD_TESTS)
     enable_testing()
-
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    # On Windows / MSVC, prevent overriding the parent project's compiler/linker options
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-
-    # ----- unit tests -----
-    file(GLOB F4FLIGHT_UNIT_TEST_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.cpp"
-    )
-    add_executable(f4flight_tests ${F4FLIGHT_UNIT_TEST_SOURCES})
-    target_link_libraries(f4flight_tests PRIVATE f4flight GTest::gtest)
-
-    if(MSVC)
-        target_compile_options(f4flight_tests PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8)
-    else()
-        # -Wno-deprecated-declarations: the unit tests intentionally exercise
-        # the [[deprecated]] DigiBrain shims (setXxx, startXxx) to verify
-        # backward compatibility. The shims are documented as "retained for
-        # backward compat" — suppressing the deprecation warning here keeps
-        # the test build clean while still catching real regressions.
-        target_compile_options(f4flight_tests PRIVATE -Wall -Wextra -Wpedantic
-            -Wno-deprecated-declarations)
-    endif()
-
-    include(GoogleTest)
-    gtest_discover_tests(f4flight_tests)
-
-    # ----- maneuver tests -----
-    set(F4FLIGHT_MANEUVER_TEST_SOURCES
-        tests/maneuver/maneuver_test.cpp
-        tests/maneuver/scenarios/scenario_ai_basic.cpp
-        tests/maneuver/scenarios/scenario_ai_flightplan.cpp
-        tests/maneuver/scenarios/scenario_ai_cruise.cpp
-        tests/maneuver/scenarios/scenario_fcs_glimits.cpp
-        tests/maneuver/scenarios/scenario_fcs_engine.cpp
-        tests/maneuver/scenarios/scenario_fcs_roll.cpp
-        tests/maneuver/scenarios/scenario_digi_defensive.cpp
-        tests/maneuver/scenarios/scenario_digi_wvr.cpp
-        tests/maneuver/scenarios/scenario_digi_groundops.cpp
-        tests/maneuver/scenarios/scenario_digi_sensors.cpp
-        tests/maneuver/scenarios/scenario_digi_guns.cpp
-    )
-
-    add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
-    target_include_directories(maneuver_test PRIVATE tests/maneuver/)
-    target_link_libraries(maneuver_test PRIVATE f4flight)
-    if(MSVC)
-        target_compile_options(maneuver_test PRIVATE /W4 /utf-8)
-    else()
-        target_compile_options(maneuver_test PRIVATE -Wall -Wextra)
-    endif()
-
-    # Register every fixture x scenario combination as a ctest test.
-    # Adding a JSON to tests/fixtures/ automatically registers it for every
-    # listed scenario -- no need to edit this file.
-    file(GLOB F4FLIGHT_FIXTURES CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/*.json"
-    )
-    # All 6 registered scenarios are exercised via ctest. Previously only
-    # `basic` and `flightplan` were listed, so combat/glimits/engine/roll
-    # regression would not break CI even if they went from passing to
-    # failing. The maneuver_test runner returns non-zero if any phase fails
-    # (see maneuver_test.cpp), so ctest now sees real phase-level results.
-    set(F4FLIGHT_MANEUVER_SCENARIOS
-        ai_basic
-        ai_flightplan
-        ai_cruise
-        fcs_glimits
-        fcs_engine
-        fcs_roll
-        digi_defensive
-        digi_wvr
-        digi_groundops
-        digi_sensors
-        digi_guns
-    )
-    foreach(fixture ${F4FLIGHT_FIXTURES})
-        get_filename_component(ac_name "${fixture}" NAME_WE)
-        foreach(sc ${F4FLIGHT_MANEUVER_SCENARIOS})
-            add_test(
-                NAME maneuver_${ac_name}_${sc}
-                COMMAND maneuver_test "${fixture}" --scenario ${sc}
-            )
-        endforeach()
-    endforeach()
+    add_subdirectory(tests)
 endif()
 
 # ===========================================================================
 # Tools
 # ===========================================================================
-# Standalone command-line utilities that ship with the library. None of them
-# are linked into f4flight itself; they're just thin mains over the public
-# API.
-#
-#   dat2json        Convert a Falcon 4 .dat file to f4flight JSON.
-#   dat_validate    Load a JSON and run AircraftConfig::validate().
-#   json_diff      Field-by-field diff of two JSON aircraft files.
-# ===========================================================================
 if(F4FLIGHT_BUILD_TOOLS)
-    set(F4FLIGHT_TOOLS
-        tools/dat2json.cpp
-        tools/dat_validate.cpp
-        tools/json_diff.cpp
-    )
-
-    foreach(tool_src ${F4FLIGHT_TOOLS})
-        get_filename_component(tool_name "${tool_src}" NAME_WE)
-        add_executable(${tool_name} "${tool_src}")
-        target_link_libraries(${tool_name} PRIVATE f4flight)
-        if(MSVC)
-            target_compile_options(${tool_name} PRIVATE /W4 /utf-8)
-        else()
-            target_compile_options(${tool_name} PRIVATE -Wall -Wextra)
-        endif()
-    endforeach()
+    add_subdirectory(tools)
 endif()
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Install rules
-# ---------------------------------------------------------------------------
+# ===========================================================================
 include(GNUInstallDirs)
 
-install(TARGETS f4flight
+# Install both libraries + their headers
+install(TARGETS f4flight_flight f4flight_digi
     EXPORT f4flightTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -331,7 +80,11 @@ install(TARGETS f4flight
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-install(DIRECTORY include/f4flight
+install(DIRECTORY flight/include/f4flight
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.h"
+)
+install(DIRECTORY digi/include/f4flight
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
 )
