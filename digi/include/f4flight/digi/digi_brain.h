@@ -282,6 +282,7 @@ public:
     const DigiState& state() const { return state_; }
     std::size_t currentWaypoint() const { return curWp_; }
     bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
+    const std::vector<Vec3>& waypoints() const { return wps_; }
 
     /// TESTING ONLY — mutable state access. Production code should never
     /// write to DigiState directly; use configure() / setFrameInputs() /

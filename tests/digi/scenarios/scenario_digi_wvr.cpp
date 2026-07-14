@@ -143,6 +143,11 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter WVREngage mode; Turn within 35° of target bearing; Max G >= 2.0; "
+               "Min alt >= 5000ft; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
@@ -271,6 +276,11 @@ public:
         if (minRange_ > 0.5 * initialRange_) return false;
         if (minAlt_ < 5000.0) return false;
         return true;
+    }
+
+    std::string criteria() const override {
+        return "Enter WVREngage mode; Max heading change >= 45°; Min range <= 50% of initial; "
+               "Min alt >= 5000ft; No NaN";
     }
 
     void Finish() const override {

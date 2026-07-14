@@ -125,6 +125,12 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter Takeoff mode; Apply takeoff throttle; "
+               "Fighter: airborne + alt >= 500ft + speed >= 200kts; "
+               "Heavy: speed >= 80kts; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Takeoff mode:    %s\n", enteredTakeoff_ ? "[PASS]" : "[FAIL]");
@@ -286,6 +292,11 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter Landing mode; Descend >= 500ft; Max alt <= initial+400ft; "
+               "Touch down; Min alt >= -500ft; Decel >= 30kts after touchdown; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Landing mode: %s\n", enteredLanding_ ? "[PASS]" : "[FAIL]");
@@ -331,6 +342,46 @@ public:
     std::string GetDescription() const override {
         return "Digi AI ground ops: takeoff (accelerate, rotate, climb out) and "
                "landing (approach, flare, touchdown, rollout). End-to-end.";
+    }
+
+    // 10,000 ft runway centered at origin, running north-south (along +Y).
+    // The takeoff starts at the threshold (origin) and the landing approaches
+    // from 3 NM south (-Y) heading north toward the threshold. We draw:
+    //   - Runway centerline (gold, thick)
+    //   - Runway threshold markings (two perpendicular lines at each end)
+    std::vector<SceneLine> sceneGeometry() const override {
+        std::vector<SceneLine> lines;
+        const double rwLen = 10000.0;  // 10,000 ft
+        const double rwHalf = rwLen / 2.0;
+        const double rwWidth = 200.0;  // 200 ft wide
+
+        // Runway centerline — dark so it's visible under the flight path
+        SceneLine centerline;
+        centerline.label = "RWY";
+        centerline.x1 = 0.0; centerline.y1 = -rwHalf; centerline.z1 = 0.0;
+        centerline.x2 = 0.0; centerline.y2 =  rwHalf; centerline.z2 = 0.0;
+        centerline.color = "#3a3a4a";
+        centerline.width = 150.0;  // 150 ft wide (drawn as a thick line)
+        lines.push_back(centerline);
+
+        // Threshold markings (perpendicular lines at each end)
+        SceneLine threshN;
+        threshN.label = "RWY_End_N";
+        threshN.x1 = -rwWidth; threshN.y1 = rwHalf; threshN.z1 = 0.0;
+        threshN.x2 =  rwWidth; threshN.y2 = rwHalf; threshN.z2 = 0.0;
+        threshN.color = "#3a3a4a";
+        threshN.width = 80.0;
+        lines.push_back(threshN);
+
+        SceneLine threshS;
+        threshS.label = "RWY_End_S";
+        threshS.x1 = -rwWidth; threshS.y1 = -rwHalf; threshS.z1 = 0.0;
+        threshS.x2 =  rwWidth; threshS.y2 = -rwHalf; threshS.z2 = 0.0;
+        threshS.color = "#3a3a4a";
+        threshS.width = 80.0;
+        lines.push_back(threshS);
+
+        return lines;
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>

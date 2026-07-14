@@ -143,6 +143,11 @@ public:
 
     virtual bool IsPassed() const { return checkAltPass() && checkSpdPass() && checkHdgPass(); }
 
+    std::string criteria() const override {
+        return "Altitude ±150ft of target over last 30s; Speed ±25kts (±50kts heavy) "
+               "over last 30s; Heading ±10° over last 30s; Alt+Spd capture achieved; No NaN";
+    }
+
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
 

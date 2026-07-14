@@ -29,22 +29,54 @@ endforeach()
 # ---------------------------------------------------------------------------
 # viz/ — visualization + tracing
 # ---------------------------------------------------------------------------
-#   trace2svg       Convert a trace file to SVG.
-#   f4flight_viz    Real-time visualization tool.
-# These depend on trace.cpp (a shared util).
+#   trace2svg       Convert a trace file to a static 2-panel SVG.
+#   trace2html      Convert one or more trace files to a self-contained
+#                   interactive HTML report (dashboard + per-trace detail
+#                   view with top-down flight path, altitude/speed/G
+#                   time-series, scrubber, color-by controls).
+#   f4flight_viz    Real-time 3D visualization tool (RayLib). Currently
+#                   disabled — see the commented block below.
+#
+# f4flight_trace is a static lib shared by trace2svg, trace2html, and the
+# test framework (so the scenario runner can record traces in-process and
+# emit an HTML report via --html).
+#
+# All of these are pure standard C++ (no POSIX-specific calls in the lib
+# itself; trace2html.cpp's realpath() is guarded by #ifdef __linux__).
+# They build on GCC, Clang, and MSVC without platform guards.
+add_library(f4flight_trace STATIC
+    viz/trace.cpp viz/trace.h
+    viz/html_report.cpp viz/html_report.h
+)
+target_link_libraries(f4flight_trace PUBLIC f4flight::flight f4flight::digi)
+target_include_directories(f4flight_trace PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/viz)
 if(MSVC)
-    # Skip viz tools on MSVC for now — they may need platform-specific code
-    # (the trace lib uses POSIX file ops). Add later.
+    target_compile_options(f4flight_trace PRIVATE /W4 /utf-8)
 else()
-    add_library(f4flight_trace STATIC viz/trace.cpp viz/trace.h)
-    target_link_libraries(f4flight_trace PUBLIC f4flight::flight f4flight::digi)
-    target_include_directories(f4flight_trace PUBLIC viz)
-
-    add_executable(trace2svg viz/trace2svg.cpp)
-    target_link_libraries(trace2svg PRIVATE f4flight_trace)
-    target_compile_options(trace2svg PRIVATE -Wall -Wextra)
-
-    # add_executable(f4flight_viz viz/f4flight_viz.cpp)
-    # target_link_libraries(f4flight_viz PRIVATE f4flight_trace f4flight_test_framework)
-    # target_compile_options(f4flight_viz PRIVATE -Wall -Wextra)
+    target_compile_options(f4flight_trace PRIVATE -Wall -Wextra)
 endif()
+
+add_executable(trace2svg viz/trace2svg.cpp)
+target_link_libraries(trace2svg PRIVATE f4flight_trace)
+if(MSVC)
+    target_compile_options(trace2svg PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(trace2svg PRIVATE -Wall -Wextra)
+endif()
+
+add_executable(trace2html viz/trace2html.cpp)
+target_link_libraries(trace2html PRIVATE f4flight_trace)
+if(MSVC)
+    target_compile_options(trace2html PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(trace2html PRIVATE -Wall -Wextra)
+endif()
+
+# add_executable(f4flight_viz viz/f4flight_viz.cpp)
+# target_link_libraries(f4flight_viz PRIVATE f4flight_trace f4flight_test_framework)
+# if(MSVC)
+#     target_compile_options(f4flight_viz PRIVATE /W4 /utf-8)
+# else()
+#     target_compile_options(f4flight_viz PRIVATE -Wall -Wextra)
+# endif()

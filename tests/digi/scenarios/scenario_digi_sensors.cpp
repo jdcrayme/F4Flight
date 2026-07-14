@@ -130,6 +130,11 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter MissileDefeat mode via autonomous sensor fusion; "
+               "Sensor pipeline saw incomingMissile; Min alt >= 5000ft; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Autonomous MissileDefeat: %s\n",
@@ -250,6 +255,11 @@ public:
         // 3. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
+    }
+
+    std::string criteria() const override {
+        return "Enter WVREngage mode via autonomous sensor fusion; "
+               "Sensor pipeline saw bestTarget; Min alt >= 5000ft; No NaN";
     }
 
     void Finish() const override {

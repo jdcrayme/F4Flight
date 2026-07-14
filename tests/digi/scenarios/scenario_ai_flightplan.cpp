@@ -31,7 +31,7 @@ public:
         , alt_(alt), speed_(speed) {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, 0.0, true);
+        fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, 90*DTR, true);
         sc.setMode(SteeringController::Mode::Waypoint);
         sc.setWaypoints(wps_);
         sc.setCaptureRadius(captureRadius_);
@@ -99,6 +99,10 @@ public:
         const bool altOk = std::fabs(maxAlt_ - alt_) < 500.0 &&
                            std::fabs(minAlt_ - alt_) < 500.0;
         return wpOk && altOk;
+    }
+
+    std::string criteria() const override {
+        return "All waypoints captured; Altitude band within ±500ft of target; No NaN";
     }
 
     void Finish() const override {

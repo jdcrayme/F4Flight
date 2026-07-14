@@ -29,12 +29,14 @@ FetchContent_MakeAvailable(googletest)
 # ---------------------------------------------------------------------------
 # Extracted from the old tests/maneuver/{maneuver_test,maneuver_test_assertions}
 # into a reusable lib so both flight/scenarios and digi/scenarios can link it.
+# Links f4flight_trace so the runner can record traces and emit HTML reports
+# via --html / --open.
 add_library(f4flight_test_framework STATIC
     framework/scenario_framework.cpp
     framework/scenario_framework.h
     framework/scenario_assertions.h
 )
-target_link_libraries(f4flight_test_framework PUBLIC f4flight::digi GTest::gtest)
+target_link_libraries(f4flight_test_framework PUBLIC f4flight::digi f4flight_trace GTest::gtest)
 target_include_directories(f4flight_test_framework PUBLIC framework)
 
 # ===========================================================================
@@ -63,7 +65,7 @@ file(GLOB F4FLIGHT_FLIGHT_SCENARIO_SOURCES CONFIGURE_DEPENDS
 )
 add_executable(f4flight_flight_scenarios ${F4FLIGHT_FLIGHT_SCENARIO_SOURCES})
 set_property(TARGET f4flight_flight_scenarios PROPERTY DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")  
-set_target_properties(f4flight_flight_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json") 
+set_target_properties(f4flight_flight_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json --open") 
 target_link_libraries(f4flight_flight_scenarios PRIVATE f4flight_test_framework)
 if(MSVC)
     target_compile_options(f4flight_flight_scenarios PRIVATE /W4 /utf-8)
@@ -99,7 +101,7 @@ file(GLOB F4FLIGHT_DIGI_SCENARIO_SOURCES CONFIGURE_DEPENDS
 
 add_executable(f4flight_digi_scenarios ${F4FLIGHT_DIGI_SCENARIO_SOURCES})
 set_property(TARGET f4flight_digi_scenarios PROPERTY DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")  
-set_target_properties(f4flight_digi_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json") 
+set_target_properties(f4flight_digi_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json --open") 
 target_link_libraries(f4flight_digi_scenarios PRIVATE f4flight_test_framework)
 if(MSVC)
     target_compile_options(f4flight_digi_scenarios PRIVATE /W4 /utf-8)

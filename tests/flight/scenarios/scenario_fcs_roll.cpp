@@ -110,6 +110,12 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Peak roll rate >= 60 deg/s (12 heavy); Directional rate >= 30 deg/s "
+               "(6 heavy) matching stick sign; Avg |rate| >= 40% of peak; "
+               "Max bank >= 60° (30° heavy); No NaN";
+    }
+
     void Finish() const override {
         const double peakThr = isHeavy_ ? 12.0 : 60.0;
         const double dirThr  = isHeavy_ ?  6.0 : 30.0;

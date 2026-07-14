@@ -142,6 +142,11 @@ public:
         return pullOk && settleOk;
     }
 
+    std::string criteria() const override {
+        return "Peak G during pull >= 55% of target (40% heavy); Settle G within "
+               "[0.5, 1.8] (2.0 heavy) over last 3s; No NaN";
+    }
+
     void Finish() const override {
         const double pullFraction = isHeavy_ ? 0.40 : 0.55;
         const double settleHi = isHeavy_ ? 2.0 : 1.8;
@@ -240,6 +245,10 @@ public:
         const double avgG = (gSum_ / std::max(1, gCount_));
         const double hi = isHeavy_ ? -0.2 : -0.4;
         return (avgG <= hi) && (maxG_ <= 0.5);  // never went significantly positive
+    }
+
+    std::string criteria() const override {
+        return "Avg G <= -0.4 (-0.2 heavy) over last 3s; Max G <= 0.5; No NaN";
     }
 
     void Finish() const override {
@@ -354,6 +363,11 @@ public:
         // 4. No divergence.
         const bool noDiverge = minG_ >= -1.0;
         return limiterEngaged && clampedOk && alphaOk && noDiverge;
+    }
+
+    std::string criteria() const override {
+        return "AOA limiter engaged (max alpha >= 80% of aoaMax; waived heavy); "
+               "Max G <= gsAvail + 0.5; Max alpha <= aoaMax + 0.5°; Min G >= -1.0; No NaN";
     }
 
     void Finish() const override {

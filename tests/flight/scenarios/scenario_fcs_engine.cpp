@@ -129,6 +129,13 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "No NaN; RPM stays in [0.0, 1.6]; "
+               "Idle: max thrust <= 1.0, max RPM <= 0.80; "
+               "MIL/AB: max thrust >= 5 ft/s² (1.0 heavy), max RPM >= 0.95; "
+               "AB (if fitted): afterburner lit";
+    }
+
     void Finish() const override {
         const bool isIdle = (throttle_ < 0.1);
         const bool isAB   = (throttle_ > 1.1);

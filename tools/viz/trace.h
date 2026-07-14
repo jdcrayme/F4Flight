@@ -3,17 +3,19 @@
 // Trace recording for maneuver visualization.
 //
 // A Trace is a per-frame snapshot of the aircraft state during a maneuver
-// test, plus any threat/target entities. Traces can be:
-//   1. Written to a JSON file via the --trace flag on maneuver_test
+// test, plus any threat/target entities, waypoints, and scene geometry
+// (runway, taxiways). Traces can be:
+//   1. Written to a JSON file via --trace-dir on the scenario runner
 //   2. Read by trace2svg to produce 2D top-down + side-profile SVGs
-//   3. Read by f4flight_viz for interactive 3D replay (RayLib)
+//   3. Read by trace2html to produce a self-contained interactive HTML report
+//   4. Embedded inline in the HTML report via traceToJson()
 //
 // The format is a single JSON document (not JSON lines) for simplicity — a
 // 90-second trace at 60 Hz is ~5400 frames, well under 2 MB.
 //
 // Trace files are NEVER generated during normal test runs. They are opt-in
-// via --trace <file> on maneuver_test, or generated in-memory by the
-// interactive viewer. This keeps ctest output clean.
+// via --trace-dir / --html on the scenario runner. This keeps ctest output
+// clean.
 
 #pragma once
 
@@ -32,6 +34,24 @@ struct ThreatEntity {
     std::string type;   // "missile", "guns", "target"
     double x{0.0}, y{0.0}, z{0.0};
     double speed{0.0};  // ft/s
+};
+
+// Waypoint — a navigation waypoint for the trace (scenario-level, not
+// per-frame). Captured once from the SteeringController after Init().
+struct Waypoint {
+    double x{0.0}, y{0.0}, z{0.0};
+    std::string name;   // "WP1", "North", etc. — may be empty
+};
+
+// SceneLine — a static line in the world used for scene geometry overlays
+// (runway centerline, runway edges, taxiway paths, approach corridor, etc.).
+// All coordinates are NED (ft, altitude = -z).
+struct SceneLine {
+    std::string label;           // "RWY 27", "Taxiway A", etc.
+    double x1{0.0}, y1{0.0}, z1{0.0};  // start point
+    double x2{0.0}, y2{0.0}, z2{0.0};  // end point
+    std::string color;           // hex "#FFD700", or empty for default
+    double width{0.0};           // stroke width in ft (0 = default 2)
 };
 
 // TraceFrame — one frame of the trace.
@@ -72,6 +92,9 @@ struct PhaseResult {
     double end_s{0.0};
     bool passed{false};
     bool skipped{false};
+    bool reinitializes{false};  // true if the phase called fm.init() (flight
+                                // model re-initialized → discontinuity)
+    std::string criteria;       // human-readable pass/fail criteria (what's checked)
 };
 
 // Trace — a complete maneuver trace.
@@ -81,6 +104,8 @@ struct Trace {
     double duration_s{0.0};
     std::vector<PhaseResult> phases;
     std::vector<TraceFrame> frames;
+    std::vector<Waypoint> waypoints;    // navigation waypoints (scenario-level)
+    std::vector<SceneLine> sceneLines;  // static geometry (runway, taxiways, etc.)
 };
 
 // TraceRecorder — collects frames during a scenario run.
@@ -88,10 +113,13 @@ struct Trace {
 // Usage:
 //   TraceRecorder rec;
 //   rec.start("f16bk50", "digi_groundops");
+//   // set scenario-level data (once, after Init):
+//   rec.setWaypoints(wps);
+//   rec.addSceneLine(runwayLine);
 //   // each frame:
-//   rec.record(t, state, input, modeName, phaseName);
+//   rec.record(t, state, input, modeName, phaseName, threats);
 //   // at phase boundaries:
-//   rec.markPhase("Takeoff", startT, endT, passed, skipped);
+//   rec.markPhase("Takeoff", startT, endT, passed, skipped, criteria);
 //   // at end:
 //   rec.finish(duration);
 //   rec.write("trace.json");
@@ -109,9 +137,16 @@ public:
                 const std::string& modeName, const std::string& phaseName,
                 const std::vector<ThreatEntity>& threats);
 
+    // Set navigation waypoints (scenario-level, called once after Init).
+    void setWaypoints(const std::vector<Waypoint>& wps);
+
+    // Add a scene geometry line (runway, taxiway, etc.).
+    void addSceneLine(const SceneLine& line);
+
     // Mark a phase boundary (called at the end of each phase).
     void markPhase(const std::string& name, double start_s, double end_s,
-                   bool passed, bool skipped);
+                   bool passed, bool skipped, bool reinitializes,
+                   const std::string& criteria = "");
 
     void finish(double duration_s);
 
@@ -128,5 +163,10 @@ private:
 // Read a trace from a JSON file. Returns true on success.
 // On failure, fills error_msg and returns false.
 bool readTrace(const std::string& path, Trace& out, std::string& error_msg);
+
+// Serialize a Trace to compact JSON (no whitespace). Appends to `out`.
+// Used by TraceRecorder::write() and by the HTML report generator (to embed
+// traces inline in a <script> tag).
+void traceToJson(const Trace& trace, std::string& out);
 
 } // namespace f4flight

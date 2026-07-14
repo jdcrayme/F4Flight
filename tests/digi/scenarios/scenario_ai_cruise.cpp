@@ -105,6 +105,11 @@ public:
                std::fabs(spdMax - targetSpd_) < 25.0  && std::fabs(spdMin - targetSpd_) < 25.0;
     }
 
+    std::string criteria() const override {
+        return "Altitude capture achieved; Speed capture achieved; 60s past last capture; "
+               "Altitude ±200ft over last 30s; Speed ±25kts over last 30s; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         if (altCaptureTime_ > 0.0) {

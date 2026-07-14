@@ -27,6 +27,7 @@
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/steering.h"  // SteeringController (AI compat shim)
+#include "trace.h"                    // SceneLine (for sceneGeometry())
 
 #include <cstdio>
 #include <cmath>
@@ -92,6 +93,11 @@ public:
     virtual bool inputOverride(PilotInput& out, const AircraftState& state) const {
         (void)out; (void)state; return false;
     }
+
+    // Human-readable pass/fail criteria for this phase. Shown in the HTML
+    // report so reviewers can see what's being checked without reading the
+    // source. Default: empty (phase has no explicit criteria text).
+    virtual std::string criteria() const { return ""; }
 
 protected:
     std::string testName_;
@@ -160,6 +166,11 @@ public:
     // the scenario context (aircraft config, profile, cruise altitude).
     virtual std::vector<std::unique_ptr<ManeuverTest>>
         StartScenario(FlightModel& fm, const ScenarioContext& ctx) = 0;
+
+    // Static scene geometry overlays for the visualization (runway
+    // centerline, taxiway paths, approach corridor, etc.). Called once
+    // after StartScenario. Default: empty (no scene geometry).
+    virtual std::vector<SceneLine> sceneGeometry() const { return {}; }
 
 protected:
     std::string scenarioName_;

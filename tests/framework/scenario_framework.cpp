@@ -8,6 +8,15 @@
 //   --scenario NAME       Run only the named scenario. May be repeated to
 //                         run several scenarios back-to-back.
 //   --all                 Run every registered scenario (default).
+//   --trace-dir DIR       Write one trace JSON per scenario to DIR (created
+//                         if it does not exist). Traces are never written
+//                         unless this flag or --html is given.
+//   --html FILE           After running, emit a self-contained interactive
+//                         HTML flight-path report to FILE (embeds all traces
+//                         from this run inline — no external files needed).
+//   --open                Open the HTML report in the default browser after
+//                         writing it. Implies --html if no --html path given
+//                         (writes to ./f4flight_report.html).
 //   --max-time SEC        Per-phase hard cap (default: taken from each phase).
 //   -h, --help            Show usage.
 //
@@ -19,12 +28,19 @@
 //   f4flight_scenario_test f16bk50.json                       # run all scenarios
 //   f4flight_scenario_test f16bk50.json --scenario basic     # just the basic sequence
 //   f4flight_scenario_test f16bk50.json --list               # show what's available
+//   f4flight_scenario_test f16bk50.json --html report.html --open   # run + view
 
 #include "f4flight/flight/f4flight.h"
+#include "f4flight/digi/digi_mode.h"
 #include "scenario_framework.h"
+#include "trace.h"
+#include "html_report.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -37,6 +53,9 @@ using namespace f4flight_test;
 struct CliOptions {
     std::string aircraftPath;
     std::vector<std::string> scenarios;  // empty => run all
+    std::string traceDir;               // --trace-dir: write per-scenario JSON here
+    std::string htmlPath;               // --html: write aggregated HTML report here
+    bool doOpen{false};                 // --open: launch browser on the HTML
     bool list{false};
     bool help{false};
 };
@@ -49,12 +68,15 @@ static void printHelp() {
         "  --list              List available scenarios and exit.\n"
         "  --scenario NAME     Run only the named scenario. May be repeated.\n"
         "  --all               Run every registered scenario (default).\n"
+        "  --trace-dir DIR     Write one trace JSON per scenario to DIR.\n"
+        "  --html FILE         Write an interactive HTML flight-path report to FILE.\n"
+        "  --open              Open the HTML report in the default browser.\n"
         "  -h, --help          Show this help.\n"
         "\n"
         "Examples:\n"
         "  f4flight_scenario_test f16bk50.json                       # run all scenarios\n"
         "  f4flight_scenario_test f16bk50.json --scenario basic     # just 'basic'\n"
-        "  f4flight_scenario_test f16bk50.json --list               # list scenarios\n");
+        "  f4flight_scenario_test f16bk50.json --html r.html --open  # run + view report\n");
 }
 
 static CliOptions parseArgs(int argc, char** argv) {
@@ -74,6 +96,22 @@ static CliOptions parseArgs(int argc, char** argv) {
                 return opt;
             }
             opt.scenarios.push_back(argv[++i]);
+        } else if (a == "--trace-dir") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --trace-dir requires a path\n");
+                opt.help = true;
+                return opt;
+            }
+            opt.traceDir = argv[++i];
+        } else if (a == "--html") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --html requires a path\n");
+                opt.help = true;
+                return opt;
+            }
+            opt.htmlPath = argv[++i];
+        } else if (a == "--open") {
+            opt.doOpen = true;
         } else if (a.size() > 0 && a[0] == '-') {
             std::fprintf(stderr, "Error: unknown option '%s'\n\n", a.c_str());
             opt.help = true;
@@ -84,12 +122,17 @@ static CliOptions parseArgs(int argc, char** argv) {
             opt.help = true;
         }
     }
+    // --open implies --html (default path if none given).
+    if (opt.doOpen && opt.htmlPath.empty()) {
+        opt.htmlPath = "f4flight_report.html";
+    }
     return opt;
 }
 
 // ---------------------------------------------------------------------------
 // Run one scenario end-to-end. Returns the number of phases that passed
-// (out of total).
+// (out of total). If `rec` is non-null, records every frame and phase
+// boundary into it for visualization.
 // ---------------------------------------------------------------------------
 struct ScenarioResult {
     int passed{0};
@@ -99,52 +142,124 @@ struct ScenarioResult {
 static ScenarioResult runScenario(ManeuverScenario& scenario,
                                   FlightModel& fm,
                                   SteeringController& sc,
-                                  const ScenarioContext& sctx) {
+                                  const ScenarioContext& sctx,
+                                  const std::string& aircraftName,
+                                  TraceRecorder* rec) {
     ScenarioResult res;
     auto tests = scenario.StartScenario(fm, sctx);
     res.total = static_cast<int>(tests.size());
 
     const double dt = 1.0 / 60.0;
 
+    // Clear any navigation state left over from a previous scenario. The
+    // SteeringController (and its DigiBrain) is initialized once in main()
+    // and shared across scenarios, so waypoints set by e.g. ai_flightplan
+    // would otherwise leak into digi_defensive and show up in its trace.
+    sc.setWaypoints({});
+
+    if (rec) {
+        rec->start(aircraftName, scenario.name());
+        // Capture scene geometry (runway, taxiways, etc.) once per scenario.
+        for (const auto& line : scenario.sceneGeometry()) {
+            rec->addSceneLine(line);
+        }
+    }
+
+    // Global simulation clock (continuous across phases) for the trace.
+    double simT = 0.0;
+
     for (auto& test : tests) {
-        // Note: we deliberately do NOT call sc.reset() between phases.
-        // The throttle-comparison fix in SteeringController::compute (using
-        // a sentinel value instead of comparing to the manual default)
-        // already prevents SpeedHold from winding up during climb/descent
-        // phases where AltitudeHold owns the throttle. Resetting the PIDs
-        // between phases would wipe the throttle PID's steady-state
-        // integral, causing the throttle to drop to ~0 at the start of the
-        // next phase — which in the flightplan scenario leads to a
-        // deceleration → stall → NaN cascade within 10 seconds.
-        //
-        // We DO clear the brain's frame inputs between phases. Without this,
-        // an injected threat/target pointer from phase N persists into
-        // phase N+1 (the brain commits it to state_ and never clears it on
-        // its own). When phase N's local DigiEntity goes out of scope, the
-        // pointer dangles — a use-after-free that produces plausible-looking
-        // but garbage commands. Clearing frame inputs (not PIDs) breaks the
-        // chain without disturbing control state.
+        // Detect whether this phase re-initializes the flight model (calls
+        // fm.init()). We do this by saving body rates (p, q) before Init and
+        // checking if they were reset to ~0 afterward. fm.init() always zeros
+        // body rates; a maneuvering aircraft will have non-zero rates. This
+        // is the most reliable way to detect a flight model reset even when
+        // the position/heading happen to be similar.
+        const double preP = fm.state().kin.p;
+        const double preQ = fm.state().kin.q;
+        const double preR = fm.state().kin.r;
+        const double preXdot = fm.state().kin.xdot;
+        const double preYdot = fm.state().kin.ydot;
+
         sc.brain().setFrameInputs({});
         test->Init(sc, fm);
 
+        // A reinit is detected if body rates dropped to near-zero (from
+        // non-zero) OR velocity components changed. This catches fm.init()
+        // even when the aircraft position doesn't change much.
+        const bool reinitializes =
+            (std::fabs(preP) > 0.01 || std::fabs(preQ) > 0.01 || std::fabs(preR) > 0.01) &&
+            (std::fabs(fm.state().kin.p) < 0.001 &&
+             std::fabs(fm.state().kin.q) < 0.001 &&
+             std::fabs(fm.state().kin.r) < 0.001);
+
+        // After Init, capture waypoints from the brain (set by Waypoint mode).
+        // Done once per phase — if a later phase changes waypoints, the trace
+        // picks up the latest set.
+        if (rec) {
+            const auto& wps = sc.brain().waypoints();
+            if (!wps.empty()) {
+                std::vector<Waypoint> twps;
+                twps.reserve(wps.size());
+                for (size_t i = 0; i < wps.size(); ++i) {
+                    twps.push_back({wps[i].x, wps[i].y, wps[i].z,
+                                    "WP" + std::to_string(i + 1)});
+                }
+                rec->setWaypoints(twps);
+            }
+        }
+
+        const double phaseStartT = simT;
+
         while (!test->IsFinished()) {
             PilotInput input;
+            std::string modeName;
             if (test->inputOverride(input, fm.state())) {
-                // Phase is directly controlling the input (G-step, throttle
-                // step, etc.). Skip the steering controller entirely.
+                modeName = "Manual";
             } else {
                 input = sc.compute(fm.state(), dt, 0.0, fm.fcs(), fm.state().fcs);
-
-                // If the phase wants a direct bank-angle override (e.g. Orbit,
-                // high-G turn), apply it as a roll-rate command.
                 const double bankCmd = test->bankOverride_rad();
                 if (bankCmd >= 0.0) {
                     input.rstick = limit((bankCmd - fm.state().kin.phi) * 2.0, -1.0, 1.0);
                 }
+                modeName = digiModeName(sc.brain().activeMode());
             }
 
             fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
             test->Evaluate(fm.state(), input, dt);
+
+            if (rec) {
+                // Extract active threats/targets from the brain state for
+                // the trace. These are per-frame snapshots — the HTML viewer
+                // draws missile tracks (moving points + trails) and bearing
+                // lines from them.
+                std::vector<ThreatEntity> threats;
+                const auto& ds = sc.brain().state();
+                if (ds.incomingMissile) {
+                    threats.push_back({"missile",
+                        ds.incomingMissile->x, ds.incomingMissile->y,
+                        ds.incomingMissile->z, ds.incomingMissile->speed});
+                }
+                if (ds.gunsThreat) {
+                    threats.push_back({"guns",
+                        ds.gunsThreat->x, ds.gunsThreat->y,
+                        ds.gunsThreat->z, ds.gunsThreat->speed});
+                }
+                if (ds.groundTarget) {
+                    threats.push_back({"target",
+                        ds.groundTarget->x, ds.groundTarget->y,
+                        ds.groundTarget->z, ds.groundTarget->speed});
+                }
+                rec->record(simT, fm.state(), input, modeName, test->name(), threats);
+            }
+            simT += dt;
+        }
+
+        const double phaseEndT = simT;
+        if (rec) {
+            rec->markPhase(test->name(), phaseStartT, phaseEndT,
+                           test->IsPassed(), /*skipped=*/false,
+                           reinitializes, test->criteria());
         }
 
         test->Finish();
@@ -152,6 +267,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
         if (test->IsPassed()) res.passed++;
     }
+
+    if (rec) rec->finish(simT);
     return res;
 }
 
@@ -212,6 +329,26 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --- Visualization setup ---
+    // Derive a short aircraft name from the file path (e.g. "f16bk50").
+    std::string aircraftName = "aircraft";
+    {
+        std::error_code ec;
+        auto p = std::filesystem::path(opt.aircraftPath).stem();
+        if (!p.empty()) aircraftName = p.string();
+    }
+    // Record traces if either --trace-dir or --html is set.
+    const bool recordTraces = !opt.traceDir.empty() || !opt.htmlPath.empty();
+    if (recordTraces && !opt.traceDir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(opt.traceDir, ec);
+        if (ec) {
+            std::fprintf(stderr, "Warning: could not create trace dir '%s': %s\n",
+                        opt.traceDir.c_str(), ec.message().c_str());
+        }
+    }
+    std::vector<Trace> traces;  // collected for the HTML report
+
     // Initialize flight model + steering controller ONCE.
     FlightModel fm;
     // Use the aircraft's corner speed for the initial condition, not a
@@ -247,11 +384,28 @@ int main(int argc, char** argv) {
         std::printf("=== Scenario: %s ===\n", scenario->name().c_str());
         std::printf("%s\n\n", scenario->GetDescription().c_str());
 
-        ScenarioResult r = runScenario(*scenario, fm, sc, sctx);
+        TraceRecorder rec;
+        ScenarioResult r = runScenario(*scenario, fm, sc, sctx, aircraftName,
+                                      recordTraces ? &rec : nullptr);
 
         std::printf("  Scenario '%s' result: %d/%d\n\n",
                     scenario->name().c_str(),
                     r.passed, r.total);
+
+        if (recordTraces) {
+            // Write per-scenario JSON if --trace-dir was given.
+            if (!opt.traceDir.empty()) {
+                std::string fname = aircraftName + "_" + name + ".json";
+                std::string path = (std::filesystem::path(opt.traceDir) / fname).string();
+                if (rec.write(path)) {
+                    std::printf("  trace written: %s\n", path.c_str());
+                } else {
+                    std::fprintf(stderr, "  warning: could not write trace %s\n", path.c_str());
+                }
+            }
+            // Keep a copy for the HTML report.
+            traces.push_back(rec.trace());
+        }
 
         totalPassed   += r.passed;
         totalTests    += r.total;
@@ -261,6 +415,54 @@ int main(int argc, char** argv) {
     std::printf("=== Overall ===\n");
     std::printf("Scenarios run: %zu\n", scenarioNames.size());
     std::printf("Phases: %d/%d passed\n", totalPassed, totalTests);
+
+    // --- Generate the HTML report if requested ---
+    if (recordTraces && !opt.htmlPath.empty()) {
+        std::printf("\nGenerating HTML report...\n");
+        std::ofstream hf(opt.htmlPath);
+        if (!hf) {
+            std::fprintf(stderr, "Error: cannot write HTML report to %s\n", opt.htmlPath.c_str());
+        } else {
+            HtmlReportOptions hopts;
+            hopts.title = "F4Flight — " + aircraftName;
+            generateHtmlReport(traces, hf, hopts);
+            hf.close();
+            // Report file size.
+            std::ifstream sz(opt.htmlPath, std::ios::ate | std::ios::binary);
+            long bytes = sz ? (long)sz.tellg() : 0;
+            std::printf("HTML report written: %s (%.1f KB, %zu trace%s)\n",
+                        opt.htmlPath.c_str(), bytes / 1024.0,
+                        traces.size(), traces.size() == 1 ? "" : "s");
+            if (opt.doOpen) {
+                // Build a file:// URL and launch the default browser.
+                std::string absPath = opt.htmlPath;
+                std::error_code ec;
+                auto abs = std::filesystem::absolute(opt.htmlPath, ec);
+                if (!ec) absPath = abs.string();
+                std::string url = "file://";
+                for (char c : absPath) {
+                    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '/' || c == '-' ||
+                        c == '_' || c == '.' || c == '~') {
+                        url += c;
+                    } else {
+                        char hex[4];
+                        std::snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
+                        url += hex;
+                    }
+                }
+                std::printf("Opening: %s\n", url.c_str());
+#if defined(_WIN32) || defined(_WIN64)
+                std::string cmd = "start \"\" \"" + absPath + "\"";
+#elif defined(__APPLE__)
+                std::string cmd = "open \"" + url + "\"";
+#else
+                std::string cmd = "xdg-open \"" + url + "\" 2>/dev/null";
+#endif
+                std::system(cmd.c_str());
+            }
+        }
+    }
 
     // Exit non-zero if any phase failed so ctest/CI sees the real result.
     // Previously this returned 0 unconditionally, which meant ctest reported

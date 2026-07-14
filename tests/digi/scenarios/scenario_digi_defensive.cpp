@@ -156,6 +156,11 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter MissileDefeat mode; Max G >= 1.2; Turn within 60° of south; "
+               "Min alt >= 5000ft; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered MissileDefeat mode: %s\n", enteredMissileDefeat_ ? "[PASS]" : "[FAIL]");
@@ -278,6 +283,11 @@ public:
         const double gFraction = isHeavy_ ? 0.30 : 0.40;
         if (maxG_ < gFraction * maxGs_) return false;
         return true;
+    }
+
+    std::string criteria() const override {
+        return "Enter MissileDefeat mode; Max pstick >= 0.3; Max G >= 40% of maxGs "
+               "(30% heavy); No NaN";
     }
 
     void Finish() const override {
@@ -409,6 +419,11 @@ public:
         // 4. Must not lawn-dart. Test starts at 15000 ft; 5000 ft floor.
         if (minAlt_ < 5000.0) return false;
         return true;
+    }
+
+    std::string criteria() const override {
+        return "Enter GunsJink mode; Max bank change >= 25°; Max G >= 2.0 (1.05 heavy); "
+               "Min alt >= 5000ft; No NaN";
     }
 
     void Finish() const override {

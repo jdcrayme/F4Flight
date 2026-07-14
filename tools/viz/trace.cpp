@@ -11,6 +11,18 @@
 
 namespace f4flight {
 
+namespace detail {
+// Write a JSON string literal (with escaping) into `out`.
+void writeJsonString(std::string& out, const std::string& s) {
+    out += '"';
+    for (char c : s) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    out += '"';
+}
+} // namespace detail
+
 // ---------------------------------------------------------------------------
 // TraceRecorder
 // ---------------------------------------------------------------------------
@@ -54,8 +66,17 @@ void TraceRecorder::record(double t, const AircraftState& as, const PilotInput& 
 }
 
 void TraceRecorder::markPhase(const std::string& name, double start_s, double end_s,
-                               bool passed, bool skipped) {
-    trace_.phases.push_back({name, start_s, end_s, passed, skipped});
+                               bool passed, bool skipped, bool reinitializes,
+                               const std::string& criteria) {
+    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria});
+}
+
+void TraceRecorder::setWaypoints(const std::vector<Waypoint>& wps) {
+    trace_.waypoints = wps;
+}
+
+void TraceRecorder::addSceneLine(const SceneLine& line) {
+    trace_.sceneLines.push_back(line);
 }
 
 void TraceRecorder::finish(double duration_s) {
@@ -63,113 +84,160 @@ void TraceRecorder::finish(double duration_s) {
 }
 
 // ---------------------------------------------------------------------------
-// JSON writing
+// JSON writing (compact, no whitespace)
 // ---------------------------------------------------------------------------
+//
+// traceToJson() is the single source of truth for trace serialization. It
+// produces compact JSON suitable for both file output and inline embedding
+// in HTML <script> tags. TraceRecorder::write() is now a thin wrapper.
 
-static void writeString(std::string& out, const std::string& s) {
-    out += '"';
-    for (char c : s) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
+void traceToJson(const Trace& trace, std::string& out) {
+    out.reserve(out.size() + trace.frames.size() * 180 + 256);
+    out += '{';
+
+    // Metadata
+    out += "\"aircraft\":";
+    detail::writeJsonString(out, trace.aircraft);
+    out += ",\"scenario\":";
+    detail::writeJsonString(out, trace.scenario);
+    out += ",\"duration_s\":";
+    out += std::to_string(trace.duration_s);
+
+    // Phases
+    out += ",\"phases\":[";
+    for (size_t i = 0; i < trace.phases.size(); ++i) {
+        if (i > 0) out += ',';
+        const auto& p = trace.phases[i];
+        out += "{\"name\":";
+        detail::writeJsonString(out, p.name);
+        out += ",\"start_s\":";
+        out += std::to_string(p.start_s);
+        out += ",\"end_s\":";
+        out += std::to_string(p.end_s);
+        out += ",\"passed\":";
+        out += p.passed ? "true" : "false";
+        out += ",\"skipped\":";
+        out += p.skipped ? "true" : "false";
+        out += ",\"reinitializes\":";
+        out += p.reinitializes ? "true" : "false";
+        out += ",\"criteria\":";
+        detail::writeJsonString(out, p.criteria);
+        out += '}';
     }
-    out += '"';
-}
+    out += ']';
 
-static void writeFrame(std::string& out, const TraceFrame& f) {
-    out += "  {\"t\":";
-    out += std::to_string(f.t);
-    out += ",\"x\":";
-    out += std::to_string(f.x);
-    out += ",\"y\":";
-    out += std::to_string(f.y);
-    out += ",\"z\":";
-    out += std::to_string(f.z);
-    out += ",\"psi\":";
-    out += std::to_string(f.psi);
-    out += ",\"theta\":";
-    out += std::to_string(f.theta);
-    out += ",\"phi\":";
-    out += std::to_string(f.phi);
-    out += ",\"vt\":";
-    out += std::to_string(f.vt);
-    out += ",\"vcas\":";
-    out += std::to_string(f.vcas);
-    out += ",\"nzcgs\":";
-    out += std::to_string(f.nzcgs);
-    out += ",\"throttle\":";
-    out += std::to_string(f.throttle);
-    out += ",\"pstick\":";
-    out += std::to_string(f.pstick);
-    out += ",\"rstick\":";
-    out += std::to_string(f.rstick);
-    out += ",\"mode\":";
-    writeString(out, f.mode);
-    out += ",\"phase\":";
-    writeString(out, f.phase);
-    if (!f.threats.empty()) {
-        out += ",\"threats\":[";
-        for (size_t i = 0; i < f.threats.size(); ++i) {
-            if (i > 0) out += ',';
-            const auto& e = f.threats[i];
-            out += "{\"type\":";
-            writeString(out, e.type);
-            out += ",\"x\":";
-            out += std::to_string(e.x);
-            out += ",\"y\":";
-            out += std::to_string(e.y);
-            out += ",\"z\":";
-            out += std::to_string(e.z);
-            out += ",\"speed\":";
-            out += std::to_string(e.speed);
-            out += "}";
+    // Frames
+    out += ",\"frames\":[";
+    for (size_t i = 0; i < trace.frames.size(); ++i) {
+        if (i > 0) out += ',';
+        const auto& f = trace.frames[i];
+        out += "{\"t\":";
+        out += std::to_string(f.t);
+        out += ",\"x\":";
+        out += std::to_string(f.x);
+        out += ",\"y\":";
+        out += std::to_string(f.y);
+        out += ",\"z\":";
+        out += std::to_string(f.z);
+        out += ",\"psi\":";
+        out += std::to_string(f.psi);
+        out += ",\"theta\":";
+        out += std::to_string(f.theta);
+        out += ",\"phi\":";
+        out += std::to_string(f.phi);
+        out += ",\"vt\":";
+        out += std::to_string(f.vt);
+        out += ",\"vcas\":";
+        out += std::to_string(f.vcas);
+        out += ",\"nzcgs\":";
+        out += std::to_string(f.nzcgs);
+        out += ",\"throttle\":";
+        out += std::to_string(f.throttle);
+        out += ",\"pstick\":";
+        out += std::to_string(f.pstick);
+        out += ",\"rstick\":";
+        out += std::to_string(f.rstick);
+        out += ",\"mode\":";
+        detail::writeJsonString(out, f.mode);
+        out += ",\"phase\":";
+        detail::writeJsonString(out, f.phase);
+        if (!f.threats.empty()) {
+            out += ",\"threats\":[";
+            for (size_t j = 0; j < f.threats.size(); ++j) {
+                if (j > 0) out += ',';
+                const auto& e = f.threats[j];
+                out += "{\"type\":";
+                detail::writeJsonString(out, e.type);
+                out += ",\"x\":";
+                out += std::to_string(e.x);
+                out += ",\"y\":";
+                out += std::to_string(e.y);
+                out += ",\"z\":";
+                out += std::to_string(e.z);
+                out += ",\"speed\":";
+                out += std::to_string(e.speed);
+                out += '}';
+            }
+            out += ']';
         }
-        out += "]";
+        out += '}';
     }
-    out += "}";
+    out += ']';
+
+    // Waypoints (scenario-level navigation waypoints)
+    if (!trace.waypoints.empty()) {
+        out += ",\"waypoints\":[";
+        for (size_t i = 0; i < trace.waypoints.size(); ++i) {
+            if (i > 0) out += ',';
+            const auto& w = trace.waypoints[i];
+            out += "{\"x\":";
+            out += std::to_string(w.x);
+            out += ",\"y\":";
+            out += std::to_string(w.y);
+            out += ",\"z\":";
+            out += std::to_string(w.z);
+            out += ",\"name\":";
+            detail::writeJsonString(out, w.name);
+            out += '}';
+        }
+        out += ']';
+    }
+
+    // Scene lines (runway, taxiways, etc.)
+    if (!trace.sceneLines.empty()) {
+        out += ",\"sceneLines\":[";
+        for (size_t i = 0; i < trace.sceneLines.size(); ++i) {
+            if (i > 0) out += ',';
+            const auto& s = trace.sceneLines[i];
+            out += "{\"label\":";
+            detail::writeJsonString(out, s.label);
+            out += ",\"x1\":";
+            out += std::to_string(s.x1);
+            out += ",\"y1\":";
+            out += std::to_string(s.y1);
+            out += ",\"z1\":";
+            out += std::to_string(s.z1);
+            out += ",\"x2\":";
+            out += std::to_string(s.x2);
+            out += ",\"y2\":";
+            out += std::to_string(s.y2);
+            out += ",\"z2\":";
+            out += std::to_string(s.z2);
+            out += ",\"color\":";
+            detail::writeJsonString(out, s.color);
+            out += ",\"width\":";
+            out += std::to_string(s.width);
+            out += '}';
+        }
+        out += ']';
+    }
+
+    out += '}';
 }
 
 bool TraceRecorder::write(const std::string& path) const {
     std::string json;
-    json.reserve(trace_.frames.size() * 200);
-    json += "{\n";
-
-    // Metadata
-    json += "  \"aircraft\": ";
-    writeString(json, trace_.aircraft);
-    json += ",\n  \"scenario\": ";
-    writeString(json, trace_.scenario);
-    json += ",\n  \"duration_s\": ";
-    json += std::to_string(trace_.duration_s);
-
-    // Phases
-    json += ",\n  \"phases\": [\n";
-    for (size_t i = 0; i < trace_.phases.size(); ++i) {
-        if (i > 0) json += ",\n";
-        const auto& p = trace_.phases[i];
-        json += "    {\"name\":";
-        writeString(json, p.name);
-        json += ",\"start_s\":";
-        json += std::to_string(p.start_s);
-        json += ",\"end_s\":";
-        json += std::to_string(p.end_s);
-        json += ",\"passed\":";
-        json += p.passed ? "true" : "false";
-        json += ",\"skipped\":";
-        json += p.skipped ? "true" : "false";
-        json += "}";
-    }
-    json += "\n  ],\n";
-
-    // Frames
-    json += "  \"frames\": [\n";
-    for (size_t i = 0; i < trace_.frames.size(); ++i) {
-        if (i > 0) json += ",\n";
-        writeFrame(json, trace_.frames[i]);
-    }
-    json += "\n  ]\n";
-
-    json += "}\n";
-
+    traceToJson(trace_, json);
     std::ofstream f(path);
     if (!f) return false;
     f << json;
@@ -295,6 +363,10 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                         p = parseBool(p, pr.passed);
                     } else if (pk == "skipped") {
                         p = parseBool(p, pr.skipped);
+                    } else if (pk == "reinitializes") {
+                        p = parseBool(p, pr.reinitializes);
+                    } else if (pk == "criteria") {
+                        p = parseString(p, pr.criteria);
                     } else {
                         // skip unknown value
                         if (*p == '"') { std::string s; p = parseString(p, s); }
@@ -403,6 +475,87 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                 p = skipWs(p);
             }
             if (*p != ']') { error_msg = "Expected ']' after frames"; return false; }
+            ++p;
+        } else if (key == "waypoints") {
+            if (*p != '[') { error_msg = "Expected '[' for waypoints"; return false; }
+            ++p;
+            p = skipWs(p);
+            while (*p && *p != ']') {
+                Waypoint wp{};
+                if (*p != '{') { error_msg = "Expected '{' in waypoint"; return false; }
+                ++p;
+                while (*p && *p != '}') {
+                    p = skipWs(p);
+                    std::string wk;
+                    p = parseString(p, wk);
+                    if (!p) { error_msg = "Bad waypoint key"; return false; }
+                    p = skipWs(p);
+                    if (*p != ':') { error_msg = "Expected ':' in waypoint"; return false; }
+                    ++p;
+                    p = skipWs(p);
+                    if (wk == "x") p = parseNumber(p, wp.x);
+                    else if (wk == "y") p = parseNumber(p, wp.y);
+                    else if (wk == "z") p = parseNumber(p, wp.z);
+                    else if (wk == "name") p = parseString(p, wp.name);
+                    else {
+                        if (*p == '"') { std::string s; p = parseString(p, s); }
+                        else { double d; p = parseNumber(p, d); }
+                    }
+                    if (!p) { error_msg = "Bad waypoint value"; return false; }
+                    p = skipWs(p);
+                    if (*p == ',') ++p;
+                }
+                if (*p != '}') { error_msg = "Expected '}' in waypoint"; return false; }
+                ++p;
+                out.waypoints.push_back(wp);
+                p = skipWs(p);
+                if (*p == ',') ++p;
+                p = skipWs(p);
+            }
+            if (*p != ']') { error_msg = "Expected ']' after waypoints"; return false; }
+            ++p;
+        } else if (key == "sceneLines") {
+            if (*p != '[') { error_msg = "Expected '[' for sceneLines"; return false; }
+            ++p;
+            p = skipWs(p);
+            while (*p && *p != ']') {
+                SceneLine sl{};
+                if (*p != '{') { error_msg = "Expected '{' in sceneLine"; return false; }
+                ++p;
+                while (*p && *p != '}') {
+                    p = skipWs(p);
+                    std::string sk;
+                    p = parseString(p, sk);
+                    if (!p) { error_msg = "Bad sceneLine key"; return false; }
+                    p = skipWs(p);
+                    if (*p != ':') { error_msg = "Expected ':' in sceneLine"; return false; }
+                    ++p;
+                    p = skipWs(p);
+                    if (sk == "label") p = parseString(p, sl.label);
+                    else if (sk == "x1") p = parseNumber(p, sl.x1);
+                    else if (sk == "y1") p = parseNumber(p, sl.y1);
+                    else if (sk == "z1") p = parseNumber(p, sl.z1);
+                    else if (sk == "x2") p = parseNumber(p, sl.x2);
+                    else if (sk == "y2") p = parseNumber(p, sl.y2);
+                    else if (sk == "z2") p = parseNumber(p, sl.z2);
+                    else if (sk == "color") p = parseString(p, sl.color);
+                    else if (sk == "width") p = parseNumber(p, sl.width);
+                    else {
+                        if (*p == '"') { std::string s; p = parseString(p, s); }
+                        else { double d; p = parseNumber(p, d); }
+                    }
+                    if (!p) { error_msg = "Bad sceneLine value"; return false; }
+                    p = skipWs(p);
+                    if (*p == ',') ++p;
+                }
+                if (*p != '}') { error_msg = "Expected '}' in sceneLine"; return false; }
+                ++p;
+                out.sceneLines.push_back(sl);
+                p = skipWs(p);
+                if (*p == ',') ++p;
+                p = skipWs(p);
+            }
+            if (*p != ']') { error_msg = "Expected ']' after sceneLines"; return false; }
             ++p;
         } else {
             // skip unknown key's value

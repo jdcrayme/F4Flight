@@ -141,6 +141,11 @@ public:
         return true;
     }
 
+    std::string criteria() const override {
+        return "Enter GunsEngage mode; Min alt >= 100ft; (Heavy: fire waived); "
+               "Fighter: fireGun true in GunsEngage for >= 6 frames; No NaN";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered GunsEngage:        %s\n", enteredGunsEngage_ ? "[PASS]" : "[FAIL]");
