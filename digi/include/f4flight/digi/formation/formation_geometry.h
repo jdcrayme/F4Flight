@@ -24,6 +24,11 @@
 #include <array>
 #include <cstdint>
 
+// M_PI is not guaranteed to be defined in <cmath> (C++11), so define it if missing.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace f4flight {
 namespace digi {
 namespace formation {

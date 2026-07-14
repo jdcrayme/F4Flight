@@ -62,6 +62,8 @@ file(GLOB F4FLIGHT_FLIGHT_SCENARIO_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/flight/scenarios/*.cpp"
 )
 add_executable(f4flight_flight_scenarios ${F4FLIGHT_FLIGHT_SCENARIO_SOURCES})
+set_property(TARGET f4flight_flight_scenarios PROPERTY DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")  
+set_target_properties(f4flight_flight_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json") 
 target_link_libraries(f4flight_flight_scenarios PRIVATE f4flight_test_framework)
 if(MSVC)
     target_compile_options(f4flight_flight_scenarios PRIVATE /W4 /utf-8)
@@ -93,7 +95,11 @@ gtest_discover_tests(f4flight_digi_tests)
 file(GLOB F4FLIGHT_DIGI_SCENARIO_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/digi/scenarios/*.cpp"
 )
+
+
 add_executable(f4flight_digi_scenarios ${F4FLIGHT_DIGI_SCENARIO_SOURCES})
+set_property(TARGET f4flight_digi_scenarios PROPERTY DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")  
+set_target_properties(f4flight_digi_scenarios PROPERTIES VS_DEBUGGER_COMMAND_ARGUMENTS "tests/fixtures/aircraft/fighters/f16bk50.json") 
 target_link_libraries(f4flight_digi_scenarios PRIVATE f4flight_test_framework)
 if(MSVC)
     target_compile_options(f4flight_digi_scenarios PRIVATE /W4 /utf-8)
