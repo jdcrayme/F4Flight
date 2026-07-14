@@ -42,6 +42,7 @@ bool MissileDefeatCheck(DigiState& digi, const DigiEntity& self, double dt) {
     // Missile is dead → clear and exit
     if (missile->isDead) {
         digi.incomingMissile = nullptr;
+        digi.incomingMissileId = kInvalidEntityId;
         digi.incomingMissileRange = 500.0 * 6076.0;
         digi.missileDefeatTtgo = -1.0;
         return false;
@@ -55,15 +56,17 @@ bool MissileDefeatCheck(DigiState& digi, const DigiEntity& self, double dt) {
 
     // If missile range is increasing (missile is passing us) and we've held
     // the evade timer long enough, spoof the missile and exit.
-    // FreeFalcon mdefeat.cpp:111-144: evade hold = (6 - skill) seconds
+    // FF mdefeat.cpp:111-144: evade hold = (6 - skill) seconds.
+    // SkillParameters::evadeHoldSec centralizes this — keep it authoritative.
     if (digi.incomingMissileRange > 0.0 &&
         missileRange > digi.incomingMissileRange) {
         // Missile is moving away — start/continue evade timer
         digi.incomingMissileEvadeTimer += dt;
-        const double evadeHold = 6.0 - static_cast<int>(digi.skill.level);
+        const double evadeHold = digi.skill.evadeHoldSec;
         if (digi.incomingMissileEvadeTimer > evadeHold) {
             // Spoofed — forget about the missile
             digi.incomingMissile = nullptr;
+            digi.incomingMissileId = kInvalidEntityId;
             digi.incomingMissileRange = 500.0 * 6076.0;
             digi.missileDefeatTtgo = -1.0;
             digi.incomingMissileEvadeTimer = 0.0;
@@ -89,7 +92,10 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
     if (!missile || missile->isDead) return;
 
     // --- Initialize on new missile ---
-    // FreeFalcon mdefeat.cpp:446-452
+    // FreeFalcon mdefeat.cpp:446-452. The "new missile" check is just
+    // `missileDefeatTtgo < 0`. DigiBrain::resolveMode is responsible for
+    // resetting missileDefeatTtgo to -1 when the missile identity changes
+    // (see incomingMissileId tracking in DigiState).
     if (digi.missileDefeatTtgo < 0.0) {
         digi.missileDefeatTtgo = 1000.0;
         digi.missileFindDragPt = true;
@@ -121,10 +127,11 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
         //   closure = self_speed - missile_speed
         //   if (range > 2 NM or closure < 400) → Drag
         //   else → Beam
+        // FF mdefeat.cpp:497-502 computes closure as `self_kias - missile_kias`
+        // (a scalar speed difference, not the true closing rate). We preserve
+        // that semantics here. A true closing rate (rg.closure = -rg.rangedot)
+        // would be more correct, but would diverge from FF's behavior.
         const double closure = self.speed - missile->speed;
-
-        const RelativeGeometry rg = computeRelativeGeometry(self, *missile);
-        (void)rg;  // closure computed from speeds, matching FreeFalcon
 
         if (range > kDragRangeThreshold || closure < kDragClosureThreshold) {
             MissileDragManeuver(digi, self, as, fcs, fcsState, dt);

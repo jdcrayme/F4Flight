@@ -94,25 +94,64 @@ public:
                        const FlightControlSystem& fcs,
                        FcsState& fcsState, double maxGs);
 
-    // --- Combat primitives (Tier 0 — stubs for now) ---
-    // These are the "fly to a point in space" primitives that every combat
-    // maneuver calls. Implemented as stubs that delegate to the nav primitives
-    // for now; will be fleshed out in Tier 1+.
+    // --- Combat primitives ---
 
     // TrackPoint — fly toward a specific world point (x, y, alt).
-    // FreeFalcon mnvers.cpp:TrackPoint. Uses HeadingAndAltitudeHold internally.
+    // Navigation primitive: turns velocity vector to heading + holds altitude.
+    // FreeFalcon mnvers.cpp:105 (TrackPoint → AutoTrack in complex mode).
     static void TrackPoint(double targetX, double targetY, double targetAlt,
                            DigiState& digi, const AircraftState& state,
                            const FlightControlSystem& fcs,
                            FcsState& fcsState, double maxGs);
 
-    // AutoTrack — track a moving target point (velocity-aware).
-    // FreeFalcon mnvers.cpp:AutoTrack. Leads the target by its velocity.
-    static void AutoTrack(double targetX, double targetY, double targetAlt,
-                          double targetVx, double targetVy, double leadTime,
-                          DigiState& digi, const AircraftState& state,
-                          const FlightControlSystem& fcs,
-                          FcsState& fcsState, double maxGs);
+    // AutoTrack — the core offensive BFM primitive.
+    // Rolls the lift vector onto the target and pulls along the body z-axis.
+    // Reads trackX/Y/Z from DigiState (set by the caller before invoking).
+    // Port of FreeFalcon mnvers.cpp:211-298.
+    //
+    // Three branches based on off-boresight angle (ata):
+    //   ata < 5°:  fine track — ErrorCommand pitch, wings-level roll
+    //   ata < 10° (BVR only): flip-over branch (roll opposite + neg G)
+    //   large ata: roll lift vector onto target + AlphaCommand pull
+    static double AutoTrack(DigiState& digi, const AircraftState& state,
+                            FcsState& fcsState, double maxGs);
+
+    // GunsAutoTrack — gun-specific tracking primitive.
+    // SEPARATE from offensive AutoTrack. Adds lead for bullet TOF +
+    // gravity drop, biases rz by 2× for lead, uses GCommand (vs
+    // AutoTrack's AlphaCommand). Port of FreeFalcon gengage.cpp:362-433.
+    //
+    // Reads trackX/Y/Z from DigiState. The caller (CoarseGunsTrack) sets
+    // these to the lead-aim point (target position + velocity * TOF -
+    // gravity drop).
+    static double GunsAutoTrack(DigiState& digi, const AircraftState& state,
+                                FcsState& fcsState, double maxGs);
+
+    // TrackPointLanding — landing-specific primitive.
+    // Uses SimpleTrackAzimuth (proportional roll) + SimpleTrackElevation
+    // (proportional pitch, no integral, no +1G bias). Structurally incapable
+    // of the Phugoid oscillation that GammaHold produces on a moving target.
+    // Port of FreeFalcon mnvers.cpp:33-103.
+    //
+    // Reads trackX/Y/Z from DigiState. The caller sets trackX/Y to the
+    // runway threshold and trackZ to the glideslope altitude.
+    static void TrackPointLanding(double targetSpeedKts,
+                                   DigiState& digi, const AircraftState& state,
+                                   double dt);
+
+    // SimpleTrackElevation — pure proportional elevation-angle tracker.
+    // Port of FreeFalcon wingmnvers.cpp:333-397.
+    //   zft    : altitude error (target_alt - current_alt), positive = need to climb
+    //   scale  : horizontal distance (ft) — used as the proportional gain denominator
+    // Returns pitch command in [-0.5, +0.5].
+    static double SimpleTrackElevation(double zft, double scale,
+                                       const AircraftState& state);
+
+    // SimpleTrackAzimuth — proportional azimuth tracker.
+    // Port of FreeFalcon wingmnvers.cpp:253-323.
+    //   rx, ry : target position in body frame (ft)
+    // Returns roll command in [-1, +1].
+    static double SimpleTrackAzimuth(double rx, double ry);
 
     // VectorTrack — track a commanded velocity vector (heading + speed + alt).
     // FreeFalcon mnvers.cpp:VectorTrack. Used by formation following.

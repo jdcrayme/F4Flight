@@ -1,6 +1,8 @@
 # Build artifacts
 build/
 build-*/
+Build/
+Build-*/
 out/
 *.o
 *.obj

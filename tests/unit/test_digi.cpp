@@ -101,7 +101,7 @@ TEST(DigiModeTest, NameLookup) {
 }
 
 TEST(DigiModeTest, NumModes) {
-    EXPECT_EQ(kNumDigiModes, 7);
+    EXPECT_EQ(kNumDigiModes, 13);
 }
 
 // ===========================================================================
@@ -154,8 +154,12 @@ protected:
         state.kin.y = 0.0;
         state.kin.z = -10000.0;
         state.kin.zdot = 0.0;
+        state.kin.psi = 0.0;
+        state.kin.theta = 0.0;
+        state.kin.phi = 0.0;
         state.vcas = 350.0;
         state.kin.vt = 350.0 * KNOTS_TO_FTPSEC;
+        state.kin.dcm = Matrix3::identity();  // body-to-world (psi=theta=phi=0)
         digi.dt = 1.0 / 60.0;
         digi.maxGs = 9.0;
         digi.maxRoll = 45.0;
@@ -203,13 +207,19 @@ TEST_F(CombatPrimitivesTest, TrackPointEastTargetCommandsRightTurn) {
 }
 
 TEST_F(CombatPrimitivesTest, AutoTrackLeadsMovingTarget) {
-    // Target moving north at 500 ft/s, currently at origin
-    // Lead time 2s → predicted position is (0, 1000)
-    ManeuverPrimitives::AutoTrack(0.0, 0.0, 10000.0,
-                                   0.0, 500.0, 2.0,
-                                   digi, state, fcs, fcsState, 9.0);
-    // Should command heading toward (0, 1000) which is due north
-    // Same as TrackPoint(0, 1000, 10000) — heading error is 0
+    // AutoTrack now reads trackX/Y/Z from DigiState and uses the real
+    // lift-vector-on-target + pull control law (port of FF mnvers.cpp:211).
+    // Set a target directly ahead (along body x-axis): ata should be ~0,
+    // rStick should be near-zero (wings level).
+    digi.trackX = 6000.0;  // 6000 ft ahead (+x = nose direction)
+    digi.trackY = 0.0;
+    digi.trackZ = state.kin.z;  // same altitude → no elevation error
+
+    ManeuverPrimitives::AutoTrack(digi, state, fcsState, 9.0);
+
+    // Target is directly ahead at same altitude → ata < 5° (fine track
+    // branch). Wings-level damping should produce small rStick.
+    // (Not zero because the damping is proportional to current roll.)
     EXPECT_LT(std::fabs(digi.rStick), 0.5);
 }
 
@@ -444,5 +454,170 @@ TEST_F(DigiBrainTest, ForcedModeOverridesResolve) {
 
     brain.clearForcedMode();
     brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
+}
+
+// ===========================================================================
+// Refactored API tests (configure / setFrameInputs / commandXxx)
+//
+// These tests verify the NEW host-facing API introduced in the §3.1
+// refactor. They exercise the same internal behavior as the deprecated
+// shims but go through the clean API.
+// ===========================================================================
+
+TEST_F(DigiBrainTest, ConfigureSetsAllConfigFields) {
+    DigiConfig cfg;
+    cfg.skillLevel = SkillLevel::Ace;
+    cfg.cornerSpeedKts = 400.0;
+    cfg.maxGs = 7.5;
+    cfg.maxBankDeg = 50.0;
+    cfg.maxGammaDeg = 20.0;
+    cfg.turnLoadFactor = 1.8;
+
+    brain.configure(cfg);
+
+    EXPECT_EQ(brain.state().skill.level, SkillLevel::Ace);
+    EXPECT_NEAR(brain.state().cornerSpeed, 400.0, 1e-9);
+    EXPECT_NEAR(brain.state().maxGs, 7.5, 1e-9);
+    EXPECT_NEAR(brain.state().maxRoll, 50.0, 1e-9);
+    EXPECT_NEAR(brain.state().maxGammaDeg, 20.0, 1e-9);
+    EXPECT_NEAR(brain.state().turnLoadFactor, 1.8, 1e-9);
+}
+
+TEST_F(DigiBrainTest, ConfigReadsBackCurrentValues) {
+    // Use deprecated setters to set values, then read back via config().
+    brain.setSkill(SkillLevel::Rookie);
+    brain.setCornerSpeed(250.0);
+    brain.setMaxGs(6.0);
+    brain.setMaxBank(35.0);
+    brain.setMaxGamma(12.0);
+    brain.setTurnG(1.5);
+
+    DigiConfig cfg = brain.config();
+    EXPECT_EQ(cfg.skillLevel, SkillLevel::Rookie);
+    EXPECT_NEAR(cfg.cornerSpeedKts, 250.0, 1e-9);
+    EXPECT_NEAR(cfg.maxGs, 6.0, 1e-9);
+    EXPECT_NEAR(cfg.maxBankDeg, 35.0, 1e-9);
+    EXPECT_NEAR(cfg.maxGammaDeg, 12.0, 1e-9);
+    EXPECT_NEAR(cfg.turnLoadFactor, 1.5, 1e-9);
+}
+
+TEST_F(DigiBrainTest, SetFrameInputsStoresTruthAndSelfEntity) {
+    TruthState truth;
+    DigiEntity e;
+    e.x = 1000; e.y = 2000; e.z = -10000;
+    truth.add(50, e);
+
+    DigiEntity self;
+    self.x = 0; self.y = 0; self.z = -10000;
+    self.speed = 500;
+
+    FrameInputs fi;
+    fi.truth = &truth;
+    fi.selfEntity = &self;
+
+    brain.setFrameInputs(fi);
+    EXPECT_EQ(brain.frameInputs().truth, &truth);
+    EXPECT_EQ(brain.frameInputs().selfEntity, &self);
+}
+
+TEST_F(DigiBrainTest, SetFrameInputsAutoBuildsSelfEntityWhenNull) {
+    // If selfEntity is null in FrameInputs, compute() should auto-build
+    // from AircraftState and still function (no crash, valid output).
+    FrameInputs fi;  // selfEntity = nullptr
+    brain.setFrameInputs(fi);
+
+    PilotInput out = brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_FALSE(std::isnan(out.pstick));
+    EXPECT_FALSE(std::isnan(out.rstick));
+    EXPECT_FALSE(std::isnan(out.throttle));
+}
+
+TEST_F(DigiBrainTest, SetFrameInputsWithTruthRunsSensorFusion) {
+    // Provide a truth state with a target. SensorFusion should detect it
+    // and the brain should enter WVREngage.
+    DigiEntity target;
+    target.x = 3.0 * 6076.0; target.y = 0; target.z = -10000;
+    target.yaw = PI; target.speed = 500.0;
+
+    TruthState truth;
+    truth.add(100, target);
+
+    FrameInputs fi;
+    fi.truth = &truth;
+    brain.setFrameInputs(fi);
+
+    brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::WVREngage);
+    EXPECT_FALSE(brain.sensorPicture().contacts.empty());
+}
+
+TEST_F(DigiBrainTest, SetFrameInputsInjectedMissileEntersMissileDefeat) {
+    // Inject a missile directly via FrameInputs (testing path).
+    DigiEntity missile;
+    missile.x = 5.0 * 6076.0; missile.y = 0; missile.z = -10000;
+    missile.vx = -2000.0; missile.vy = 0; missile.vz = 0;
+    missile.yaw = PI;
+    missile.speed = 2000.0;
+    missile.seekerType = DigiEntity::SeekerType::Radar;
+
+    FrameInputs fi;
+    fi.injectedMissile = &missile;
+    brain.setFrameInputs(fi);
+
+    brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+}
+
+TEST_F(DigiBrainTest, CommandTakeoffSetsGroundOpsPhase) {
+    brain.commandTakeoff(RunwayId{1}, 0.0, 0.0, 0.0, 0.0);
+    EXPECT_EQ(brain.state().groundOps.phase, GroundOpsPhase::TakeoffRoll);
+    EXPECT_TRUE(brain.state().groundOps.hasTakeoffClearance);
+    brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::Takeoff);
+}
+
+TEST_F(DigiBrainTest, CommandLandingSetsGroundOpsPhase) {
+    brain.commandLanding(RunwayId{1}, 0.0, 0.0, 0.0, 0.0);
+    EXPECT_EQ(brain.state().groundOps.phase, GroundOpsPhase::Approach);
+    EXPECT_TRUE(brain.state().groundOps.hasLandingClearance);
+    brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::Landing);
+}
+
+TEST_F(DigiBrainTest, ForceModeAndClearForcedMode) {
+    brain.forceMode(DigiMode::GunsJink);
+    brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::GunsJink);
+
+    brain.clearForcedMode();
+    brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
+}
+
+TEST_F(DigiBrainTest, StateMutableAllowsWriteForTesting) {
+    // stateMutable() returns a non-const reference for testing.
+    brain.stateMutable().pStick = 0.42;
+    EXPECT_NEAR(brain.state().pStick, 0.42, 1e-9);
+}
+
+TEST_F(DigiBrainTest, ResetClearsFrameInputsAndAutoEntities) {
+    // Set up some state via the new API.
+    DigiEntity missile;
+    missile.x = 5000; missile.y = 0; missile.z = -10000;
+    missile.speed = 2000;
+    missile.seekerType = DigiEntity::SeekerType::Radar;
+
+    FrameInputs fi;
+    fi.injectedMissile = &missile;
+    brain.setFrameInputs(fi);
+    brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+
+    // Reset should clear everything.
+    brain.reset();
+    EXPECT_EQ(brain.frameInputs().truth, nullptr);
+    EXPECT_EQ(brain.frameInputs().injectedMissile, nullptr);
+    EXPECT_EQ(brain.state().incomingMissile, nullptr);
     EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
 }

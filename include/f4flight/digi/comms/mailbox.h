@@ -29,10 +29,12 @@ class Mailbox {
 public:
     static constexpr std::size_t kCapacity = 64;
 
-    // Push a message into the queue. Returns false if the mailbox is full
-    // (the oldest message is dropped to make room).
+    // Push a message into the queue. Returns false if the mailbox was full
+    // before the push (in which case the oldest message is dropped to make
+    // room and the new message is still appended). Returns true otherwise.
     bool push(const Message& msg) {
-        if (count_ >= kCapacity) {
+        const bool wasFull = (count_ >= kCapacity);
+        if (wasFull) {
             // Drop oldest
             head_ = (head_ + 1) % kCapacity;
             --count_;
@@ -40,7 +42,7 @@ public:
         buffer_[tail_] = msg;
         tail_ = (tail_ + 1) % kCapacity;
         ++count_;
-        return true;
+        return !wasFull;
     }
 
     // Peek at the next message without removing it.

@@ -49,7 +49,12 @@ set(F4FLIGHT_SOURCES
     src/digi/ground/ground_ops.cpp
     src/digi/defensive/missile_defeat.cpp
     src/digi/defensive/guns_jink.cpp
+    src/digi/defensive/collision_avoid.cpp
     src/digi/offensive/roll_and_pull.cpp
+    src/digi/offensive/guns_engage.cpp
+    src/digi/offensive/missile_engage.cpp
+    src/digi/offensive/bvr_engage.cpp
+    src/digi/offensive/merge.cpp
     src/digi/atc/atc_controller.cpp
     src/digi/sensors/sensor_fusion.cpp
     src/digi/sensors/radar_sensor.cpp
@@ -89,7 +94,16 @@ set(F4FLIGHT_HEADERS
     include/f4flight/digi/ground/ground_ops.h
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h
+    include/f4flight/digi/defensive/collision_avoid.h
     include/f4flight/digi/offensive/roll_and_pull.h
+    include/f4flight/digi/offensive/guns_engage.h
+    include/f4flight/digi/offensive/missile_engage.h
+    include/f4flight/digi/offensive/bvr_engage.h
+    include/f4flight/digi/offensive/merge.h
+    include/f4flight/digi/weapons/weapon_types.h
+    include/f4flight/digi/weapons/weapon_spec.h
+    include/f4flight/digi/weapons/sms.h
+    include/f4flight/digi/weapons/fire_control.h
     include/f4flight/digi/comms/message.h
     include/f4flight/digi/comms/mailbox.h
     include/f4flight/digi/comms/message_bus.h
@@ -221,6 +235,7 @@ if(F4FLIGHT_BUILD_TESTS)
         tests/maneuver/scenarios/scenario_digi_wvr.cpp
         tests/maneuver/scenarios/scenario_digi_groundops.cpp
         tests/maneuver/scenarios/scenario_digi_sensors.cpp
+        tests/maneuver/scenarios/scenario_digi_guns.cpp
     )
 
     add_executable(maneuver_test ${F4FLIGHT_MANEUVER_TEST_SOURCES})
@@ -254,6 +269,7 @@ if(F4FLIGHT_BUILD_TESTS)
         digi_wvr
         digi_groundops
         digi_sensors
+        digi_guns
     )
     foreach(fixture ${F4FLIGHT_FIXTURES})
         get_filename_component(ac_name "${fixture}" NAME_WE)

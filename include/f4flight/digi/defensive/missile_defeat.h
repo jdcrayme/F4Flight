@@ -45,7 +45,10 @@ constexpr double kMaxThreatTime = 100.0;  // seconds — cap on threat time
 constexpr double kBeamTrackDist = 0.5 * 6076.0;  // ft — 0.5 NM beam trackpoint
 constexpr double kDragTrackDist = 20.0 * 6076.0; // ft — 20 NM drag trackpoint
 constexpr double kDragRangeThreshold = 2.0 * 6076.0;  // ft — 2 NM
-constexpr double kDragClosureThreshold = 400.0;  // ft/s (was kts in FF; we use ft/s)
+// FF mdefeat.cpp:502 uses 400 *kts* for the closure threshold. F4Flight
+// works in ft/s throughout, so we convert at the definition site to keep
+// the magic number comparable to the FF source.
+constexpr double kDragClosureThreshold = 400.0 * KNOTS_TO_FTPSEC;  // ≈ 675.13 ft/s
 
 // MissileDefeatCheck — determine if missile defeat mode should be active.
 //

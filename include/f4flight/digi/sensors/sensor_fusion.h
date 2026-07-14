@@ -28,6 +28,7 @@
 #include "f4flight/digi/sensors/sensor.h"
 #include "f4flight/digi/digi_entity.h"
 #include "f4flight/digi/digi_skill.h"
+#include "f4flight/digi/comms/message.h"  // for EntityId, kInvalidEntityId
 
 #include <vector>
 #include <memory>
@@ -69,6 +70,12 @@ public:
 private:
     std::vector<std::unique_ptr<Sensor>> sensors_;
     SensorPicture picture_;
+
+    // Sticky-track ID for the incoming missile. Prevents thrash between
+    // two similar-range missiles. Stored here (not in SensorPicture) because
+    // picture_.incomingMissile is a pointer that gets invalidated every
+    // frame by ageAndPurge.
+    EntityId stickyMissileId_{kInvalidEntityId};
 
     // Merge a new contact into the picture (combines with existing if same ID)
     void mergeContact(const SensorContact& contact);

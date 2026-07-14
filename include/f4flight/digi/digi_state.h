@@ -73,6 +73,13 @@ struct DigiState {
     // only reads it.
     const DigiEntity* incomingMissile{nullptr};
 
+    // Identity of the missile currently being defeated. When the brain
+    // detects a different missile (host swap or SensorFusion swap), the
+    // per-missile state (drag trackpoint, ttgo, evade timer) is re-initialized.
+    // Set by DigiBrain::resolveMode from SensorContact::entityId, or by the
+    // host when injecting via setIncomingMissile.
+    EntityId incomingMissileId{kInvalidEntityId};
+
     // Missile defeat internal state (managed by MissileDefeat)
     double missileDefeatTtgo{-1.0};      // time-to-go (seconds), -1 = not initialized
     bool   missileFindDragPt{true};      // need to compute new drag trackpoint
@@ -89,6 +96,40 @@ struct DigiState {
     int    jinkTime{-1};       // -1 = not jinking, 0 = rolling to target bank, >0 = pulling
     double newRoll{0.0};       // target roll angle (rad)
     double jinkTimer{0.0};     // seconds in pull phase
+
+    // --- Track point (used by AutoTrack, TrackPointLanding) ---
+    // FreeFalcon stores trackX/Y/Z on the DigitalBrain and smooths it
+    // (0.1*new + 0.9*old) in PullToCollisionPoint. We store it here so
+    // AutoTrack and TrackPointLanding can read it without passing it
+    // through every call.
+    double trackX{0.0};
+    double trackY{0.0};
+    double trackZ{0.0};
+
+    // --- Weapon / fire control state (Tier 2 — offensive) ---
+    // Port of FreeFalcon DigitalBrain weapon engage fields (digi.h:827-836).
+    //
+    // Fire flags: cleared at the top of each compute() frame, set by the
+    // offensive mode handlers (GunsEngage, MissileEngage). The host reads
+    // PilotInput.fireGun / releaseConsent to actually fire.
+    bool   gunFireFlag{false};       // fire the internal gun this frame
+    bool   mslFireFlag{false};       // release a missile this frame
+    int    fireStation{0};           // which hardpoint to release from
+
+    // Missile engage state
+    double missileShotTimer{0.0};    // seconds since last missile fired
+    bool   inShootShoot{false};      // currently in shoot-shoot doctrine
+
+    // Guns engage state (port of FF digi.h:829-836)
+    bool   waitingForShot{false};    // in the fine-track firing phase
+    double pastPstick{0.0};          // G held when entering fine track
+    double pastAta{0.0};             // previous frame's pipper ATA (rad)
+    double pastPipperAta{0.0};       // previous frame's pipper ATA (rad)
+    double ataDot{0.0};              // rate of change of ATA (rad/s)
+
+    // Max A/A weapon range (set by host from SMS, used by mode checks).
+    // 0 = no weapons loaded (brain uses default BVR gate of 35 NM)
+    double maxAAWpnRange{0.0};
 
     // --- Ground ops state (Phase 1-2) ---
     GroundOpsState groundOps;
@@ -109,6 +150,7 @@ struct DigiState {
         // Note: threat pointers (incomingMissile, gunsThreat) are NOT cleared
         // by reset() — the host manages these. reset() only clears internal
         // brain state.
+        incomingMissileId = kInvalidEntityId;
         missileDefeatTtgo = -1.0;
         missileFindDragPt = true;
         missileShouldDrag = false;
@@ -118,6 +160,18 @@ struct DigiState {
         jinkTime = -1;
         newRoll = 0.0;
         jinkTimer = 0.0;
+        trackX = trackY = trackZ = 0.0;
+        // Weapon / fire control
+        gunFireFlag = false;
+        mslFireFlag = false;
+        fireStation = 0;
+        missileShotTimer = 0.0;
+        inShootShoot = false;
+        waitingForShot = false;
+        pastPstick = 0.0;
+        pastAta = 0.0;
+        pastPipperAta = 0.0;
+        ataDot = 0.0;
         groundOps.reset();
         mailbox.clear();
     }

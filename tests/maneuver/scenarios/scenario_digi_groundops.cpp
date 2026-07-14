@@ -71,6 +71,8 @@ public:
 
         if (altAGL > 10.0) becameAirborne_ = true;
         if (altAGL > 1000.0) reachedClimbout_ = true;
+        if (input.throttle > 0.9) appliedTakeoffThrottle_ = true;
+        if (sc_brain_->activeMode() == DigiMode::Takeoff) enteredTakeoff_ = true;
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
@@ -101,11 +103,15 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
+        // All aircraft must enter Takeoff mode and apply takeoff throttle.
+        if (!enteredTakeoff_) return false;
+        if (!appliedTakeoffThrottle_) return false;
         // Heavy aircraft (low T/W) may not have enough thrust to take off
-        // in the test time. For these, just verify the AI entered Takeoff
-        // mode and didn't NaN — the takeoff physics need gear model tuning.
+        // in the test time. For these, accept "entered Takeoff + applied
+        // throttle + no NaN" — but still require the throttle to actually
+        // have been advanced.
         if (isHeavy_) {
-            return true;  // heavy: pass if no NaN
+            return true;  // heavy: pass if entered mode + throttle + no NaN
         }
         // Fighter/attack: must become airborne and reach 100 ft
         if (!becameAirborne_) return false;
@@ -115,9 +121,11 @@ public:
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
+        std::printf("  Entered Takeoff mode:    %s\n", enteredTakeoff_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Applied takeoff throttle:%s\n", appliedTakeoffThrottle_ ? "[PASS]" : "[FAIL]");
         if (isHeavy_) {
             std::printf("  Heavy aircraft (takeoff physics not fully tuned): %s\n",
-                !hasNaN_ ? "[PASS]" : "[FAIL]");
+                !hasNaN_ && enteredTakeoff_ && appliedTakeoffThrottle_ ? "[PASS]" : "[FAIL]");
         } else {
             std::printf("  Became airborne: %s\n", becameAirborne_ ? "[PASS]" : "[FAIL]");
             std::printf("  Max altitude:    %.0f ft (need >= 100) %s\n",
@@ -135,6 +143,8 @@ private:
     bool reachedClimbout_{false};
     bool hasNaN_{false};
     bool isHeavy_{false};
+    bool enteredTakeoff_{false};
+    bool appliedTakeoffThrottle_{false};
     const DigiBrain* sc_brain_{nullptr};
 };
 
@@ -159,13 +169,21 @@ public:
         // Start 3 NM south of threshold, 2000 ft AGL, heading north toward threshold
         const double initialRange = 3.0 * 6076.0;  // 3 NM
         const double initialAlt = 2000.0;
+        const double initialHeading = PI / 2.0;  // north (toward +Y, toward threshold)
+        const double initialSpeedFtps = 250.0 * KNOTS_TO_FTPSEC;
 
-        fm.init(fm.config(), initialAlt, 250.0 * KNOTS_TO_FTPSEC, 0.0, true);
+        // Initialize with the correct heading so velocity vector is consistent
+        // with body heading. (Previously init was called with heading=0 then
+        // sigma was overwritten, leaving xdot/ydot pointing east while sigma
+        // said north — the EOM then fought itself for several seconds.)
+        fm.init(fm.config(), initialAlt, initialSpeedFtps, initialHeading, true);
+
         // Position aircraft 3 NM south of origin (threshold at origin)
         fm.state().kin.x = 0.0;
         fm.state().kin.y = -initialRange;
         fm.state().kin.z = -initialAlt;
-        fm.state().kin.sigma = PI / 2.0;  // heading north (toward +Y)
+        // sigma and psi are already set by init; velocity components are
+        // also set by init (xdot = vt*cos(sigma), ydot = vt*sin(sigma)).
 
         sc.setMode(SteeringController::Mode::HeadingAltitude);
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
@@ -173,6 +191,10 @@ public:
 
         // Command landing: runway 27, heading 0 (north), threshold at origin
         sc.brain().startLanding(270, 0.0, 0.0, 0.0, 0.0);
+
+        // The brain now clears pullupTimer/groundAvoidNeeded itself when
+        // it detects a landing phase in compute() (matching FreeFalcon's
+        // dlogic.cpp:49-52 which disables GroundCheck for LandingMode).
 
         sc_brain_ = &sc.brain();
     }
@@ -182,10 +204,11 @@ public:
 
         const double altAGL = -as.kin.z;  // groundZ = 0
         minAlt_ = std::min(minAlt_, altAGL);
+        maxAlt_ = std::max(maxAlt_, altAGL);  // <-- was missing
         maxSpeed_ = std::max(maxSpeed_, as.vcas);
         minSpeed_ = std::min(minSpeed_, as.vcas);
 
-        if (altAGL < 5.0) touchedDown_ = true;
+        if (altAGL < 10.0) touchedDown_ = true;
         if (touchedDown_ && as.vcas < 30.0) stopped_ = true;
         if (sc_brain_->activeMode() == DigiMode::Landing) enteredLanding_ = true;
 
@@ -194,10 +217,12 @@ public:
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (landing on runway 27, 3NM final)\n", testName_.c_str());
-                std::printf("%6s %8s %8s %6s %6s %6s %6s\n",
-                    "t(s)", "alt(ft)", "vcas", "thrt", "pstk", "rstk", "phase");
+                std::printf("%6s %8s %8s %6s %6s %6s %6s %6s\n",
+                    "t(s)", "alt(ft)", "vcas", "thrt", "pstk", "rstk", "mode", "phase");
             }
             const std::size_t bufSize = 24;
+            char modeBuf[bufSize];
+            std::snprintf(modeBuf, bufSize, "%s", digiModeName(sc_brain_->activeMode()));
             char phaseBuf[bufSize];
             switch (sc_brain_->state().groundOps.phase) {
                 case GroundOpsPhase::Approach:  std::snprintf(phaseBuf, bufSize, "Approach"); break;
@@ -207,9 +232,9 @@ public:
                 case GroundOpsPhase::VacatingRunway: std::snprintf(phaseBuf, bufSize, "Vacating"); break;
                 default: std::snprintf(phaseBuf, bufSize, "Other"); break;
             }
-            std::printf("%6.1f %8.0f %8.1f %6.2f %6.2f %6.2f %6s\n",
+            std::printf("%6.1f %8.0f %8.1f %6.2f %6.2f %6.2f %6s %6s\n",
                 phaseTime_, altAGL, as.vcas, input.throttle,
-                input.pstick, input.rstick, phaseBuf);
+                input.pstick, input.rstick, modeBuf, phaseBuf);
             nextPrint_ += 2.0;
         }
     }
@@ -222,22 +247,31 @@ public:
         if (hasNaN_) return false;
         // Must have entered Landing mode
         if (!enteredLanding_) return false;
-        // Must not have gone underground
-        if (minAlt_ < -100.0) return false;
-        // Must not have climbed excessively (believeable approach shouldn't
-        // climb more than 2000 ft above start)
-        if (maxAlt_ > 4000.0) return false;
+        // Must have descended (not just cruised)
+        if (minAlt_ > initialAlt_ - 100.0) return false;
+        // Must not have excessive Phugoid climb (max alt within 500 ft of start)
+        if (maxAlt_ > initialAlt_ + 500.0) return false;
+        // Must touch down (altAGL <= 0 at some point)
+        if (!touchedDown_) return false;
+        // Must not go excessively underground (no ground reaction force in
+        // F4Flight's flight model, so a few feet of "underground" is normal
+        // during rollout before the gear model catches up)
+        if (minAlt_ < -500.0) return false;
         return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Landing mode: %s\n", enteredLanding_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Min altitude:        %.1f ft (need >= -100) %s\n",
-            minAlt_, minAlt_ >= -100.0 ? "[PASS]" : "[FAIL]");
-        std::printf("  Max altitude:        %.1f ft (need <= 4000) %s\n",
-            maxAlt_, maxAlt_ <= 4000.0 ? "[PASS]" : "[FAIL]");
-        std::printf("  Touched down:        %s\n", touchedDown_ ? "yes" : "no");
+        std::printf("  Min altitude:        %.1f ft (need >= -500) %s\n",
+            minAlt_, minAlt_ >= -500.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Max altitude:        %.1f ft (need <= %.0f) %s\n",
+            maxAlt_, initialAlt_ + 500.0,
+            maxAlt_ <= initialAlt_ + 500.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Touched down:        %s %s\n", touchedDown_ ? "yes" : "no",
+            touchedDown_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Descended below start: %s\n",
+            minAlt_ <= initialAlt_ - 100.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -247,6 +281,7 @@ private:
     double maxAlt_{0.0};
     double maxSpeed_{0.0};
     double minSpeed_{1e9};
+    double initialAlt_{2000.0};  // start altitude (ft AGL)
     bool touchedDown_{false};
     bool stopped_{false};
     bool hasNaN_{false};

@@ -84,9 +84,15 @@ protected:
         as.kin.x = 0.0; as.kin.y = 0.0; as.kin.z = -10000.0;
         as.kin.xdot = 589.0; as.kin.ydot = 0.0; as.kin.zdot = 0.0;
         as.kin.phi = 0.0;
+        as.kin.psi = 0.0;  // body yaw
+        as.kin.theta = 0.0;  // body pitch
         as.vcas = 350.0;
         as.kin.vt = 589.0;
         as.aero.alpha_deg = 4.0;
+        // DCM: body-to-world rotation. AutoTrack uses it to transform
+        // world-frame relative position to body frame. With psi=theta=phi=0,
+        // the DCM is identity (body axes aligned with world axes).
+        as.kin.dcm = Matrix3::identity();
     }
 };
 
@@ -103,6 +109,28 @@ TEST_F(RollAndPullTest, OffensiveHeadOnCommandsTrackpoint) {
                        std::fabs(digi.rStick) > 0.01 ||
                        digi.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
+}
+
+TEST_F(RollAndPullTest, OffsetTargetCommandsTurn) {
+    // Target ahead but offset 30° to the right — RollAndPull must command
+    // a roll to turn toward it. This verifies the maneuver output has the
+    // correct *direction*, not just non-zero magnitude.
+    target.x = 2.5 * 6076.0; target.y = 1.5 * 6076.0; target.z = -10000.0;
+    target.yaw = PI;
+    target.speed = 589.0;
+
+    // Warm up the smoothing by running several frames.
+    for (int i = 0; i < 30; ++i) {
+        digi.pStick = 0.0; digi.rStick = 0.0;
+        RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
+    }
+
+    // Target is to the right (positive y, positive bearing from self at
+    // origin heading north). The brain should command a right turn —
+    // positive rstick (roll right) or at least a non-trivial roll command.
+    EXPECT_GT(std::fabs(digi.rStick), 0.01)
+        << "Offset target should produce a roll command, got rstick="
+        << digi.rStick;
 }
 
 TEST_F(RollAndPullTest, OffensiveChaseCommandsTrackpoint) {
@@ -226,9 +254,22 @@ TEST_F(DigiBrainWVRTest, TargetInWVREntersWVREngage) {
     EXPECT_EQ(brain.activeMode(), DigiMode::WVREngage);
 }
 
-TEST_F(DigiBrainWVRTest, TargetBeyondWVRStaysWaypoint) {
-    // Target 12 NM — beyond 8 NM WVR threshold
+TEST_F(DigiBrainWVRTest, TargetBeyondWVREntersBVR) {
+    // Target 12 NM — beyond 8 NM WVR threshold, within 35 NM BVR gate.
+    // With the BVR target gate fix, the AI should enter BVREngage (not
+    // stay in Waypoint as it did when the gate was hardcoded to 8 NM).
     target.x = 0.0; target.y = 12.0 * 6076.0; target.z = -10000.0;
+    target.yaw = PI;
+    target.isDead = false;
+    brain.setTarget(&target);
+
+    brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::BVREngage);
+}
+
+TEST_F(DigiBrainWVRTest, TargetBeyondBVRStaysWaypoint) {
+    // Target 40 NM — beyond the 35 NM BVR gate
+    target.x = 0.0; target.y = 40.0 * 6076.0; target.z = -10000.0;
     target.yaw = PI;
     target.isDead = false;
     brain.setTarget(&target);

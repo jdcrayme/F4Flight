@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace f4flight {
 namespace digi {
@@ -23,6 +24,17 @@ SensorFusion::SensorFusion() {
 
 void SensorFusion::update(const DigiEntity& self, const TruthState& truth,
                            const SkillParameters& skill, double dt) {
+    // Save the sticky missile ID before ageAndPurge invalidates the pointer.
+    if (picture_.incomingMissile) {
+        stickyMissileId_ = picture_.incomingMissile->entityId;
+    }
+
+    // Clear all pre-computed pointers — ageAndPurge will invalidate them.
+    picture_.highestThreat = nullptr;
+    picture_.bestTarget = nullptr;
+    picture_.incomingMissile = nullptr;
+    picture_.gunsThreat = nullptr;
+
     // Age existing contacts and remove expired ones
     ageAndPurge(dt, 5.0);
 
@@ -84,16 +96,35 @@ void SensorFusion::mergeContact(const SensorContact& contact) {
 }
 
 void SensorFusion::computeThreatScores(const DigiEntity& self) {
-    // Reset pre-computed pointers
-    picture_.highestThreat = nullptr;
-    picture_.bestTarget = nullptr;
-    picture_.incomingMissile = nullptr;
-    picture_.gunsThreat = nullptr;
+    // Pre-computed pointers were cleared at the top of update(), so we
+    // only need to reset the spike flag here.
     picture_.spiked = false;
     picture_.spikeHeading = 0.0;
 
     double maxThreatScore = 0.0;
     double bestTargetScore = 0.0;
+
+    // Find the range of the previously-tracked (sticky) missile, if any,
+    // so we can decide whether to keep tracking it or swap to a closer one.
+    double stickyMissileRange = std::numeric_limits<double>::infinity();
+    bool stickyMissileStillPresent = false;
+    if (stickyMissileId_ != kInvalidEntityId) {
+        for (const auto& c : picture_.contacts) {
+            if (c.entityId == stickyMissileId_) {
+                const RelativeGeometry rg = computeRelativeGeometry(self,
+                    DigiEntity{c.x, c.y, c.z, c.vx, c.vy, c.vz,
+                               c.yaw, c.pitch, c.roll, c.speed});
+                stickyMissileRange = rg.range;
+                stickyMissileStillPresent = true;
+                break;
+            }
+        }
+    }
+    if (!stickyMissileStillPresent) {
+        stickyMissileId_ = kInvalidEntityId;
+    }
+
+    double newMissileRange = std::numeric_limits<double>::infinity();
 
     for (auto& c : picture_.contacts) {
         const RelativeGeometry rg = computeRelativeGeometry(self,
@@ -137,17 +168,32 @@ void SensorFusion::computeThreatScores(const DigiEntity& self) {
             picture_.highestThreat = &c;
         }
 
-        // Track incoming missile
+        // Track incoming missile. Sticky-track by entityId: keep the
+        // current missile unless a different missile is dramatically closer
+        // (< 0.5× range). This prevents two missiles at similar ranges from
+        // thrashing pic.incomingMissile every frame, which would defeat the
+        // brain's per-missile state initialization (Bug D/H).
         if (c.isMissile && rg.range < 30.0 * 6076.0) {
-            if (!picture_.incomingMissile ||
-                rg.range < computeRelativeGeometry(self,
-                    DigiEntity{picture_.incomingMissile->x,
-                               picture_.incomingMissile->y,
-                               picture_.incomingMissile->z,
-                               picture_.incomingMissile->vx,
-                               picture_.incomingMissile->vy,
-                               picture_.incomingMissile->vz}).range) {
+            const bool isStickyMissile =
+                (stickyMissileId_ != kInvalidEntityId) &&
+                (c.entityId == stickyMissileId_);
+            if (isStickyMissile) {
+                // Keep the sticky missile.
                 picture_.incomingMissile = &c;
+            } else if (!picture_.incomingMissile) {
+                // No current missile — pick this one if it's the closest so far.
+                if (rg.range < newMissileRange) {
+                    newMissileRange = rg.range;
+                    picture_.incomingMissile = &c;
+                }
+            } else {
+                // We have a missile but it's not this one. Swap only if this
+                // one is dramatically closer (e.g. < 0.5× range) — prevents
+                // oscillation between two similar-range missiles.
+                if (rg.range < 0.5 * stickyMissileRange && rg.range < newMissileRange) {
+                    newMissileRange = rg.range;
+                    picture_.incomingMissile = &c;
+                }
             }
         }
 
@@ -159,9 +205,16 @@ void SensorFusion::computeThreatScores(const DigiEntity& self) {
             }
         }
 
-        // Track best target (aircraft, not missile, in WVR range)
-        if (!c.isMissile && c.type == ContactType::Fighter &&
-            rg.range < 8.0 * 6076.0) {
+        // Track best target. We consider any airborne hostile (Fighter,
+        // Bomber, Helicopter) plus SAM/AAA for AG missions — not just
+        // Fighters. Transports/Tankers/AWACS are excluded unless they are
+        // the only thing detected (rare; the brain can still target them
+        // via host injection).
+        const bool isAirTarget =
+            c.type == ContactType::Fighter ||
+            c.type == ContactType::Bomber ||
+            c.type == ContactType::Helicopter;
+        if (!c.isMissile && isAirTarget && rg.range < 8.0 * 6076.0) {
             // Best target: highest confidence, closest range
             double targetScore = c.confidence * 100.0 - rg.range / 1000.0;
             if (targetScore > bestTargetScore) {
@@ -176,6 +229,13 @@ void SensorFusion::computeThreatScores(const DigiEntity& self) {
             picture_.spiked = true;
             picture_.spikeHeading = std::atan2(c.y - self.y, c.x - self.x);
         }
+    }
+
+    // Update sticky ID for next frame.
+    if (picture_.incomingMissile) {
+        stickyMissileId_ = picture_.incomingMissile->entityId;
+    } else {
+        stickyMissileId_ = kInvalidEntityId;
     }
 }
 

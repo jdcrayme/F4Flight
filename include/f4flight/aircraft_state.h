@@ -37,6 +37,13 @@ struct PilotInput {
     bool   parkingBrake{false};
     bool   noseSteerOn{true};
     bool   refueling{false};
+
+    // --- Weapon fire commands (set by digi AI, read by host) ---
+    // Port of FreeFalcon BaseBrain::GunFireFlag / MslFireFlag
+    // (simbrain.h:17-21). Cleared at the top of each compute() frame.
+    bool   fireGun{false};         // fire the internal gun
+    bool   releaseConsent{false};  // release weapon (missile/bomb)
+    int    weaponStation{0};       // which hardpoint to release from (0 = auto)
 };
 
 // Position + orientation in world (NED, Z-down) frame.

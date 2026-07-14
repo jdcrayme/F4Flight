@@ -92,8 +92,9 @@ public:
     void setManualInput(const PilotInput& in) { manual_ = in; }
 
     // --- Threat/target setters (Tier 1-2) ---
-    // These delegate to the underlying DigiBrain. The host sets these each
-    // frame from its own entity model. Pass nullptr to clear.
+    // These delegate to the underlying DigiBrain's deprecated shims, which
+    // forward to setFrameInputs(). New code should use brain().setFrameInputs()
+    // directly.
     void setIncomingMissile(const digi::DigiEntity* m) { brain_.setIncomingMissile(m); }
     void setGunsThreat(const digi::DigiEntity* t) { brain_.setGunsThreat(t); }
     void setTarget(const digi::DigiEntity* t) { brain_.setTarget(t); }
@@ -104,7 +105,7 @@ public:
     std::size_t currentWaypoint() const { return brain_.currentWaypoint(); }
     bool allWaypointsCaptured() const { return brain_.allWaypointsCaptured(); }
     const DigiState& digiState() const { return brain_.state(); }
-    DigiState&       digiState()       { return brain_.state(); }  // for tests / hosts
+    DigiState&       digiState()       { return brain_.stateMutable(); }  // for tests / hosts
 
     // Main compute — produces PilotInput from the current state + mode.
     PilotInput compute(const AircraftState& state, double dt, double groundZ,

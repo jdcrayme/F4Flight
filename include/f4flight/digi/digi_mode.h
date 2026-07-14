@@ -32,21 +32,27 @@ enum class DigiMode : int {
     GroundAvoid     = 0,   // terrain avoidance (PullUp)
     MissileDefeat   = 1,   // defensive maneuvering vs incoming missile
     GunsJink        = 2,   // defensive jink vs guns fire
-    Landing         = 3,   // landing approach + rollout
-    Takeoff         = 4,   // takeoff roll + climbout
-    WVREngage       = 5,   // within-visual-range dogfight
-    Waypoint        = 6,   // navigation / waypoint following
+    CollisionAvoid  = 3,   // air-air collision avoidance
+    Landing         = 4,   // landing approach + rollout
+    Takeoff         = 5,   // takeoff roll + climbout
+    MissileEngage   = 6,   // offensive missile firing (A/A)
+    GunsEngage      = 7,   // offensive gun tracking + firing
+    Merge           = 8,   // first-pass merge geometry maneuver
+    Accel           = 9,   // regain corner speed after merge
+    WVREngage       = 10,  // within-visual-range dogfight (RollAndPull)
+    BVREngage       = 11,  // beyond-visual-range engagement
+    Waypoint        = 12,  // navigation / waypoint following
 
     // --- Not yet ported (will be added as capabilities land) ---
-    // CollisionAvoid, MergeMode, RoopMode, OverBMode,
-    // BVREngage, LoiterMode, FollowOrdersMode, RTBMode, WingyMode,
+    // RoopMode, OverBMode,
+    // LoiterMode, FollowOrdersMode, RTBMode, WingyMode,
     // BugoutMode, GroundMnvrMode
 
     NoMode          = 99,  // no active mode
 };
 
 // Number of active modes (for array sizing in the dispatcher).
-constexpr int kNumDigiModes = 7;
+constexpr int kNumDigiModes = 13;
 
 // Return the human-readable name of a mode (for debugging / test output).
 inline const char* digiModeName(DigiMode m) {
@@ -54,9 +60,15 @@ inline const char* digiModeName(DigiMode m) {
         case DigiMode::GroundAvoid:   return "GroundAvoid";
         case DigiMode::MissileDefeat: return "MissileDefeat";
         case DigiMode::GunsJink:      return "GunsJink";
+        case DigiMode::CollisionAvoid:return "CollisionAvoid";
         case DigiMode::Landing:       return "Landing";
         case DigiMode::Takeoff:       return "Takeoff";
+        case DigiMode::MissileEngage: return "MissileEngage";
+        case DigiMode::GunsEngage:    return "GunsEngage";
+        case DigiMode::Merge:         return "Merge";
+        case DigiMode::Accel:         return "Accel";
         case DigiMode::WVREngage:     return "WVREngage";
+        case DigiMode::BVREngage:     return "BVREngage";
         case DigiMode::Waypoint:      return "Waypoint";
         case DigiMode::NoMode:        return "NoMode";
     }

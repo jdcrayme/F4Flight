@@ -15,7 +15,7 @@
 //   - MissileDefeat: IMPLEMENTED (missile_defeat.cpp)
 //   - GunsJink:     IMPLEMENTED (guns_jink.cpp)
 //   - Waypoint:     IMPLEMENTED (delegates to ManeuverPrimitives)
-//   - WVREngage:    STUB (no offensive targets yet — returns level flight)
+//   - WVREngage:    IMPLEMENTED (roll_and_pull.cpp)
 
 #include "f4flight/digi/digi_brain.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
@@ -23,7 +23,14 @@
 #include "f4flight/digi/ground/ground_ops.h"
 #include "f4flight/digi/defensive/missile_defeat.h"
 #include "f4flight/digi/defensive/guns_jink.h"
+#include "f4flight/digi/defensive/collision_avoid.h"
 #include "f4flight/digi/offensive/roll_and_pull.h"
+#include "f4flight/digi/offensive/guns_engage.h"
+#include "f4flight/digi/offensive/missile_engage.h"
+#include "f4flight/digi/offensive/bvr_engage.h"
+#include "f4flight/digi/offensive/merge.h"
+#include "f4flight/digi/weapons/weapon_spec.h"
+#include "f4flight/digi/weapons/sms.h"
 #include "f4flight/digi/comms/message_bus.h"
 #include "f4flight/digi/atc/atc_messages.h"
 #include "f4flight/core/constants.h"
@@ -35,11 +42,71 @@
 namespace f4flight {
 namespace digi {
 
+// ===========================================================================
+// Helper: resolve the effective self entity pointer for this frame.
+//
+// If the host set frameInputs_.selfEntity, use it. Otherwise auto-build
+// from AircraftState. Returns a pointer (may point to selfEntityAuto_).
+// ===========================================================================
+namespace {
+
+/// Resolve the effective injected-missile pointer, considering both
+/// frameInputs_.injectedMissile (host injection) and state_.incomingMissile
+/// (which may have been cleared by MissileDefeatCheck last frame).
+/// The injected missile has priority — the host manages its lifetime.
+const DigiEntity* resolveInjectedMissile(const FrameInputs& fi,
+                                          const DigiState& s) {
+    if (fi.injectedMissile) return fi.injectedMissile;
+    // If state_.incomingMissile points to something that is NOT our
+    // auto-entity, it was host-injected in a prior frame via the
+    // deprecated shim. Respect it.
+    if (s.incomingMissile) return s.incomingMissile;
+    return nullptr;
+}
+
+const DigiEntity* resolveInjectedGunsThreat(const FrameInputs& fi,
+                                             const DigiState& s) {
+    if (fi.injectedGunsThreat) return fi.injectedGunsThreat;
+    if (s.gunsThreat) return s.gunsThreat;
+    return nullptr;
+}
+
+} // anonymous namespace
+
+// ===========================================================================
+// Constructor
+// ===========================================================================
 DigiBrain::DigiBrain() {
     state_.reset();
     state_.skill = makeSkillParams(SkillLevel::Veteran);
 }
 
+// ===========================================================================
+// Configuration
+// ===========================================================================
+void DigiBrain::configure(const DigiConfig& cfg) {
+    state_.skill          = makeSkillParams(cfg.skillLevel);
+    state_.cornerSpeed    = cfg.cornerSpeedKts;
+    state_.maxGs          = cfg.maxGs;
+    state_.maxRoll        = cfg.maxBankDeg;
+    state_.maxGammaDeg    = cfg.maxGammaDeg;
+    state_.turnLoadFactor = cfg.turnLoadFactor;
+}
+
+DigiConfig DigiBrain::config() const {
+    DigiConfig cfg;
+    cfg.skillLevel     = state_.skill.level;
+    cfg.cornerSpeedKts = state_.cornerSpeed;
+    cfg.maxGs          = state_.maxGs;
+    cfg.maxBankDeg     = state_.maxRoll;
+    cfg.maxGammaDeg    = state_.maxGammaDeg;
+    cfg.turnLoadFactor = state_.turnLoadFactor;
+    return cfg;
+}
+
+// ===========================================================================
+// buildSelfEntity
+// ===========================================================================
 DigiEntity DigiBrain::buildSelfEntity(const AircraftState& as) {
     DigiEntity e;
     e.x = as.kin.x;
@@ -55,33 +122,122 @@ DigiEntity DigiBrain::buildSelfEntity(const AircraftState& as) {
     return e;
 }
 
+// ===========================================================================
+// Commands (asynchronous)
+// ===========================================================================
+void DigiBrain::commandTakeoff(RunwayId rwy, double rwyHeading,
+                                double rwyThresholdX, double rwyThresholdY,
+                                double rwyAlt) {
+    auto& go = state_.groundOps;
+    go.assignedRunway = rwy;
+    go.runwayHeading = rwyHeading;
+    go.runwayThresholdX = rwyThresholdX;
+    go.runwayThresholdY = rwyThresholdY;
+    go.runwayAltitude = rwyAlt;
+    go.phase = GroundOpsPhase::TakeoffRoll;
+    go.gearRetracted = false;
+    go.hasTakeoffClearance = true;  // simplified: auto-clear (ATC can deny via message)
+}
+
+void DigiBrain::commandLanding(RunwayId rwy, double rwyHeading,
+                                double rwyThresholdX, double rwyThresholdY,
+                                double rwyAlt) {
+    auto& go = state_.groundOps;
+    go.assignedRunway = rwy;
+    go.runwayHeading = rwyHeading;
+    go.runwayThresholdX = rwyThresholdX;
+    go.runwayThresholdY = rwyThresholdY;
+    go.runwayAltitude = rwyAlt;
+    go.phase = GroundOpsPhase::Approach;
+    go.gearDeployed = false;
+    go.hasLandingClearance = true;
+}
+
+// ===========================================================================
+// compute — main per-frame entry point
+// ===========================================================================
 PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ,
                                const FlightControlSystem& fcs, FcsState& fcsState) {
     PilotInput out;
     state_.dt = dt;
     simTime_ += dt;
 
-    // Auto-sync self entity from AircraftState every frame.
-    if (!selfEntityExplicit_) {
+    // --- Clear fire flags at frame start (FF digimain.cpp:599) ---
+    state_.gunFireFlag = false;
+    state_.mslFireFlag = false;
+
+    // --- Resolve self entity for this frame ---
+    // Use host-injected selfEntity if provided; otherwise auto-build from
+    // AircraftState. selfEntityAuto_ is a member so its address is stable
+    // across the frame.
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) {
         selfEntityAuto_ = buildSelfEntity(as);
-        selfEntity_ = &selfEntityAuto_;
+        selfEntity = &selfEntityAuto_;
     }
 
-    // Run sensor fusion if truth state is provided.
+    // --- Apply injected threats/target from frameInputs_ ---
+    // Host-injected values (via setFrameInputs) take priority over
+    // SensorPicture and over any stale state_ pointers from last frame.
+    if (frameInputs_.injectedMissile) {
+        state_.incomingMissile = frameInputs_.injectedMissile;
+        // Reset per-missile state if the injected missile changed.
+        // (The deprecated setIncomingMissile shim already does this; for
+        //  the new setFrameInputs path, we do it here on first sight.)
+        if (state_.missileDefeatTtgo < 0.0) {
+            // Already in "new missile" state — nothing to do.
+        }
+    } else if (frameInputs_.injectedGunsThreat) {
+        // Only clear missile if no injected missile AND no sensor fusion
+        // (sensor fusion path handles its own missile tracking below).
+        // Don't clear here — sensor fusion may still be tracking.
+    }
+
+    if (frameInputs_.injectedGunsThreat) {
+        state_.gunsThreat = frameInputs_.injectedGunsThreat;
+    }
+
+    // --- Run sensor fusion if truth state is provided ---
     // This builds a SensorPicture the brain uses for autonomous detection.
-    if (truth_ && selfEntity_) {
-        sensorFusion_.update(*selfEntity_, *truth_, state_.skill, dt);
+    // If injected threats are also set, resolveMode() gives them priority.
+    const TruthState* truth = frameInputs_.truth;
+    if (truth && selfEntity) {
+        sensorFusion_.update(*selfEntity, *truth, state_.skill, dt);
     }
 
     // Process incoming messages (ATC clearances, flight commands)
     ProcessATCMessages(state_, state_.mailbox);
 
-    // --- 1. Ground avoidance (always runs, pre-empts everything) ---
-    const bool pullingUp = RunGroundAvoid(state_, as, groundZ,
-                                          state_.cornerSpeed, dt,
-                                          fcsState, state_.maxGs);
+    // --- 1. Ground avoidance ---
+    // FreeFalcon explicitly disables GroundCheck during LandingMode
+    // (dlogic.cpp:49-52: "if (curMode != LandingMode) GroundCheck(); else
+    // groundAvoidNeeded = FALSE;"). Landing owns its own terrain logic
+    // (glideslope, flare, rollout) and operates below the 500 ft
+    // kMinClearance threshold, so GroundCheck would pre-empt the controlled
+    // descent with a PullUp every time the aircraft descends through 500 ft
+    // on final approach.
+    //
+    // We check state_.groundOps.phase (set by commandLanding) rather than
+    // activeMode_ (which hasn't been resolved yet this frame).
+    const bool isLanding = (state_.groundOps.phase == GroundOpsPhase::Approach ||
+                            state_.groundOps.phase == GroundOpsPhase::Flare ||
+                            state_.groundOps.phase == GroundOpsPhase::Touchdown ||
+                            state_.groundOps.phase == GroundOpsPhase::Rollout ||
+                            state_.groundOps.phase == GroundOpsPhase::VacatingRunway);
+
+    bool pullingUp = false;
+    if (isLanding) {
+        // Landing owns terrain logic — suppress ground avoid.
+        state_.groundAvoidNeeded = false;
+        state_.pullupTimer = 0.0;
+    } else {
+        pullingUp = RunGroundAvoid(state_, as, groundZ,
+                                   state_.cornerSpeed, dt,
+                                   fcsState, state_.maxGs);
+    }
 
     // --- 2. Resolve mode ---
+    // Pass the resolved selfEntity so resolveMode doesn't need to re-resolve.
     resolveMode(as, groundZ, dt);
 
     // --- 3. Actions ---
@@ -96,6 +252,9 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             case DigiMode::GunsJink:
                 runGunsJink(as, dt, fcs, fcsState);
                 break;
+            case DigiMode::CollisionAvoid:
+                runCollisionAvoid(as, dt, fcs, fcsState);
+                break;
             case DigiMode::WVREngage:
                 runWVREngage(as, dt, fcs, fcsState);
                 break;
@@ -107,21 +266,43 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 break;
             case DigiMode::GroundAvoid:
                 break;
+            case DigiMode::MissileEngage:
+                runMissileEngage(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::GunsEngage:
+                runGunsEngage(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::Merge:
+                runMerge(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::Accel:
+                runAccel(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::BVREngage:
+                runBVREngage(as, dt, fcs, fcsState);
+                break;
             case DigiMode::NoMode:
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
         }
     }
 
-    // --- 4. Clamp outputs ---
+    // --- 4. Clamp outputs + map fire flags ---
     out.pstick = limit(state_.pStick, -1.0, 1.0);
     out.rstick = limit(state_.rStick, -1.0, 1.0);
     out.ypedal = limit(state_.yPedal, -1.0, 1.0);
     out.throttle = limit(state_.throttle, 0.0, 1.5);
     out.refueling = false;
+    // Map digi fire flags to PilotInput (host reads these to fire weapons)
+    out.fireGun        = state_.gunFireFlag;
+    out.releaseConsent = state_.mslFireFlag;
+    out.weaponStation  = state_.fireStation;
     return out;
 }
 
+// ===========================================================================
+// resolveMode — priority-stack mode arbitration
+// ===========================================================================
 void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
                              double dt) {
     // If a mode is forced (testing), use it.
@@ -138,71 +319,156 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     //   5. Waypoint       — default navigation
     // GroundAvoid is handled separately in compute() (always pre-empts).
 
-    // --- Threat detection ---
-    // Use injected threats (backward compat) OR SensorPicture (autonomous).
-    // If truth_ is provided, SensorFusion has already built the picture.
+    // --- Resolve self entity ---
+    // (Same logic as compute() — kept inline to avoid passing it through.)
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) {
+        selfEntity = &selfEntityAuto_;  // built in compute() this frame
+    }
+
     const SensorPicture& pic = sensorFusion_.picture();
+    const bool sensorFusionActive = (frameInputs_.truth != nullptr);
 
-    // Check for incoming missile
-    // Priority: injected > SensorPicture
-    const DigiEntity* missile = state_.incomingMissile;
-    if (!missile && pic.incomingMissile) {
-        // Build a DigiEntity from the SensorPicture contact
-        missileEntityAuto_ = DigiEntity{};
-        missileEntityAuto_->x = pic.incomingMissile->x;
-        missileEntityAuto_->y = pic.incomingMissile->y;
-        missileEntityAuto_->z = pic.incomingMissile->z;
-        missileEntityAuto_->vx = pic.incomingMissile->vx;
-        missileEntityAuto_->vy = pic.incomingMissile->vy;
-        missileEntityAuto_->vz = pic.incomingMissile->vz;
-        missileEntityAuto_->yaw = pic.incomingMissile->yaw;
-        missileEntityAuto_->speed = pic.incomingMissile->speed;
-        missileEntityAuto_->seekerType = DigiEntity::SeekerType::Radar;
-        missileEntityAuto_->isDead = false;
-        missile = &(*missileEntityAuto_);
+    // ===================================================================
+    // --- Incoming missile ---
+    // ===================================================================
+    // Resolution order:
+    //   a. If the host injected a missile (frameInputs_.injectedMissile),
+    //      use it directly. The host manages its lifetime.
+    //   b. Otherwise, if SensorFusion is active, auto-track the missile
+    //      from pic.incomingMissile (sticky-track by entityId).
+    //   c. Otherwise, fall back to whatever state_.incomingMissile points
+    //      to (set by deprecated shim or prior frame).
+    //
+    // We COMMIT the pointer to state_.incomingMissile so that
+    // runMissileDefeat sees it, and MissileDefeatCheck's clearing
+    // side-effect persists.
+
+    // Step a: host-injected missile
+    if (frameInputs_.injectedMissile) {
+        state_.incomingMissile = frameInputs_.injectedMissile;
+        // Clear auto-track so we don't fight the injection.
+        missileEntityAuto_.reset();
+        // Don't update incomingMissileId for injected missiles — the host
+        // manages identity. (If the host wants per-missile state reset,
+        // they should call reset() or use the deprecated shim which does it.)
+    }
+    // Step b: auto-track from SensorFusion
+    else {
+        const bool autoTracking =
+            missileEntityAuto_.has_value() &&
+            state_.incomingMissile == &(*missileEntityAuto_);
+
+        // Clear auto-tracked missile if SensorFusion no longer sees one.
+        if (sensorFusionActive && autoTracking && !pic.incomingMissile) {
+            state_.incomingMissile = nullptr;
+            state_.incomingMissileId = kInvalidEntityId;
+            missileEntityAuto_.reset();
+        }
+        // SensorFusion sees a missile we're not tracking (or a different one).
+        else if (sensorFusionActive && pic.incomingMissile &&
+                 (!autoTracking ||
+                  pic.incomingMissile->entityId != state_.incomingMissileId)) {
+            missileEntityAuto_ = DigiEntity{};
+            missileEntityAuto_->x  = pic.incomingMissile->x;
+            missileEntityAuto_->y  = pic.incomingMissile->y;
+            missileEntityAuto_->z  = pic.incomingMissile->z;
+            missileEntityAuto_->vx = pic.incomingMissile->vx;
+            missileEntityAuto_->vy = pic.incomingMissile->vy;
+            missileEntityAuto_->vz = pic.incomingMissile->vz;
+            missileEntityAuto_->yaw       = pic.incomingMissile->yaw;
+            missileEntityAuto_->speed     = pic.incomingMissile->speed;
+            missileEntityAuto_->seekerType = DigiEntity::SeekerType::Radar;
+            missileEntityAuto_->isDead    = false;
+            state_.incomingMissile = &(*missileEntityAuto_);
+
+            // Reset per-missile state on identity change.
+            const EntityId newId = pic.incomingMissile->entityId;
+            if (newId != state_.incomingMissileId) {
+                state_.incomingMissileId = newId;
+                state_.missileDefeatTtgo = -1.0;
+                state_.incomingMissileEvadeTimer = 0.0;
+            }
+        }
+        // Same missile — refresh position/velocity.
+        else if (sensorFusionActive && autoTracking && pic.incomingMissile &&
+                 pic.incomingMissile->entityId == state_.incomingMissileId) {
+            missileEntityAuto_->x  = pic.incomingMissile->x;
+            missileEntityAuto_->y  = pic.incomingMissile->y;
+            missileEntityAuto_->z  = pic.incomingMissile->z;
+            missileEntityAuto_->vx = pic.incomingMissile->vx;
+            missileEntityAuto_->vy = pic.incomingMissile->vy;
+            missileEntityAuto_->vz = pic.incomingMissile->vz;
+            missileEntityAuto_->yaw       = pic.incomingMissile->yaw;
+            missileEntityAuto_->speed     = pic.incomingMissile->speed;
+        }
     }
 
-    if (selfEntity_ && missile) {
-        // Temporarily set for MissileDefeatCheck
-        const DigiEntity* savedMissile = state_.incomingMissile;
-        state_.incomingMissile = missile;
-        if (MissileDefeatCheck(state_, *selfEntity_, dt)) {
+    if (selfEntity && state_.incomingMissile) {
+        if (MissileDefeatCheck(state_, *selfEntity, dt)) {
             activeMode_ = DigiMode::MissileDefeat;
-            state_.incomingMissile = savedMissile;
             return;
         }
-        state_.incomingMissile = savedMissile;
     }
 
-    // Check for guns threat
-    const DigiEntity* gunsThreat = state_.gunsThreat;
-    if (!gunsThreat && pic.gunsThreat) {
-        gunsEntityAuto_ = DigiEntity{};
-        gunsEntityAuto_->x = pic.gunsThreat->x;
-        gunsEntityAuto_->y = pic.gunsThreat->y;
-        gunsEntityAuto_->z = pic.gunsThreat->z;
-        gunsEntityAuto_->vx = pic.gunsThreat->vx;
-        gunsEntityAuto_->vy = pic.gunsThreat->vy;
-        gunsEntityAuto_->vz = pic.gunsThreat->vz;
-        gunsEntityAuto_->yaw = pic.gunsThreat->yaw;
-        gunsEntityAuto_->speed = pic.gunsThreat->speed;
-        gunsEntityAuto_->isFiring = true;
-        gunsEntityAuto_->isDead = false;
-        gunsThreat = &(*gunsEntityAuto_);
+    // ===================================================================
+    // --- Guns threat ---
+    // ===================================================================
+    if (frameInputs_.injectedGunsThreat) {
+        state_.gunsThreat = frameInputs_.injectedGunsThreat;
+        gunsEntityAuto_.reset();
+    } else {
+        // Clear auto-tracked guns threat if SensorFusion no longer sees one.
+        if (sensorFusionActive && gunsEntityAuto_.has_value() &&
+            state_.gunsThreat == &(*gunsEntityAuto_) &&
+            !pic.gunsThreat) {
+            state_.gunsThreat = nullptr;
+            gunsEntityAuto_.reset();
+        }
+
+        if (!state_.gunsThreat && pic.gunsThreat) {
+            gunsEntityAuto_ = DigiEntity{};
+            gunsEntityAuto_->x  = pic.gunsThreat->x;
+            gunsEntityAuto_->y  = pic.gunsThreat->y;
+            gunsEntityAuto_->z  = pic.gunsThreat->z;
+            gunsEntityAuto_->vx = pic.gunsThreat->vx;
+            gunsEntityAuto_->vy = pic.gunsThreat->vy;
+            gunsEntityAuto_->vz = pic.gunsThreat->vz;
+            gunsEntityAuto_->yaw    = pic.gunsThreat->yaw;
+            gunsEntityAuto_->speed  = pic.gunsThreat->speed;
+            gunsEntityAuto_->isFiring = true;
+            gunsEntityAuto_->isDead   = false;
+            state_.gunsThreat = &(*gunsEntityAuto_);
+        }
     }
 
-    if (selfEntity_ && gunsThreat) {
-        const DigiEntity* savedGuns = state_.gunsThreat;
-        state_.gunsThreat = gunsThreat;
-        if (GunsJinkCheck(state_, *selfEntity_)) {
+    if (selfEntity && state_.gunsThreat) {
+        if (GunsJinkCheck(state_, *selfEntity)) {
             activeMode_ = DigiMode::GunsJink;
-            state_.gunsThreat = savedGuns;
             return;
         }
-        state_.gunsThreat = savedGuns;
     }
 
-    // Check for active ground ops (takeoff/landing)
+    // ===================================================================
+    // --- Collision avoidance ---
+    // ===================================================================
+    // FF dlogic.cpp:CollisionCheck runs in RunDecisionRoutines after
+    // SeparateCheck + AirbaseCheck, before the offensive checks. It
+    // extrapolates the current target's velocity vector and enters
+    // CollisionAvoid mode if a mid-air is predicted.
+    // We check the resolved WVR target (injected or auto-tracked).
+    const DigiEntity* collTarget = frameInputs_.injectedTarget;
+    if (!collTarget) collTarget = wvrTarget_;
+    if (selfEntity && collTarget && !collTarget->isDead) {
+        if (CollisionCheck(state_, *selfEntity, *collTarget)) {
+            activeMode_ = DigiMode::CollisionAvoid;
+            return;
+        }
+    }
+
+    // ===================================================================
+    // --- Ground ops (takeoff/landing) ---
+    // ===================================================================
     const auto gp = state_.groundOps.phase;
     if (gp == GroundOpsPhase::TakeoffRoll || gp == GroundOpsPhase::Rotation ||
         gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp) {
@@ -216,11 +482,20 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         return;
     }
 
-    // Check for WVR target (Tier 2 — offensive)
+    // ===================================================================
+    // --- WVR target (offensive) ---
+    // ===================================================================
     // Priority: injected target > SensorPicture bestTarget
-    const DigiEntity* tgt = target_;
-    // If injected target is dead, don't use it
+    const DigiEntity* tgt = frameInputs_.injectedTarget;
     if (tgt && tgt->isDead) tgt = nullptr;
+
+    // Clear auto-tracked target if SensorFusion no longer sees one.
+    if (sensorFusionActive && targetEntityAuto_.has_value() &&
+        tgt == &(*targetEntityAuto_) &&
+        !pic.bestTarget) {
+        tgt = nullptr;
+        targetEntityAuto_.reset();
+    }
 
     if (!tgt && pic.bestTarget) {
         targetEntityAuto_ = DigiEntity{};
@@ -238,14 +513,72 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         tgt = &(*targetEntityAuto_);
     }
 
-    if (selfEntity_ && tgt && !tgt->isDead) {
-        const double dx = tgt->x - selfEntity_->x;
-        const double dy = tgt->y - selfEntity_->y;
-        const double dz = tgt->z - selfEntity_->z;
+    if (selfEntity && tgt && !tgt->isDead) {
+        const double dx = tgt->x - selfEntity->x;
+        const double dy = tgt->y - selfEntity->y;
+        const double dz = tgt->z - selfEntity->z;
         const double range = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (range < 8.0 * 6076.0) {
-            // Set the target for runWVREngage (only if not already set by host)
-            if (!target_ || target_->isDead) target_ = tgt;
+
+        // --- Resolve max A/A weapon range ---
+        // FF mengage.cpp:318: maxAAWpnRange starts at 6000 (gun) or 0, then
+        // is extended by each missile's RMax. We default to the gun range
+        // (6000 ft) if the host hasn't set up an SMS; if missiles are
+        // available, use the AIM-120 RMax (35 NM) as the BVR gate.
+        // TODO: read from SMS when host provides one
+        const double maxAAWpnRangeFt = state_.maxAAWpnRange > 0
+            ? state_.maxAAWpnRange
+            : 35.0 * 6076.0;  // default: AIM-120 RMax (35 NM)
+
+        if (range < maxAAWpnRangeFt) {
+            const RelativeGeometry rg = computeRelativeGeometry(*selfEntity, *tgt);
+
+            // --- BVR engagement (beyond 8 NM) ---
+            // FF bvrengage.cpp:46-216: enter BvrEngage when target is beyond
+            // 8 NM and within engageRange. Higher priority than MissileEngage
+            // in FF's mode stack (BVREngage=16, MissileEngage=11), but we
+            // check BVR first here because BVR is the superset — it includes
+            // missile firing via FireControl. When within 8 NM (RAP distance),
+            // BVR defers to MissileEngage/RollAndPull internally.
+            if (range > 8.0 * 6076.0) {
+                wvrTarget_ = tgt;
+                activeMode_ = DigiMode::BVREngage;
+                return;
+            }
+
+            // --- MissileEngage check (within 8 NM, beyond gun range) ---
+            // Only enter MissileEngage if we have an SMS with actual missiles.
+            if (sms_ && sms_->hasWeaponClass(WeaponClass::AimWpn)) {
+                if (MissileEngageCheck(state_, *selfEntity, *tgt, *sms_, true) &&
+                    range > 3500.0) {
+                    wvrTarget_ = tgt;
+                    activeMode_ = DigiMode::MissileEngage;
+                    return;
+                }
+            }
+
+            // --- Merge check (very close, nose-to-nose) ---
+            // FF merge.cpp:9-52: enter Merge when range ≤ ~1000 ft, ata < 45°
+            if (MergeCheck(state_, *selfEntity, *tgt)) {
+                wvrTarget_ = tgt;
+                activeMode_ = DigiMode::Merge;
+                return;
+            }
+
+            // --- Accel check (too slow in combat) ---
+            // AccelCheck needs AircraftState for vcas, but resolveMode
+            // doesn't receive it. Accel is handled inside the per-mode
+            // runners (Merge, WVREngage) instead.
+
+            // --- GunsEngage check (close range) ---
+            WeaponSpec gun = gunSpec();  // default: M61, 510 rounds
+            if (GunsEngageCheck(state_, *selfEntity, *tgt, gun, true)) {
+                wvrTarget_ = tgt;
+                activeMode_ = DigiMode::GunsEngage;
+                return;
+            }
+
+            // --- WVREngage (default offensive mode within 8 NM) ---
+            wvrTarget_ = tgt;
             activeMode_ = DigiMode::WVREngage;
             return;
         }
@@ -255,6 +588,9 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     activeMode_ = DigiMode::Waypoint;
 }
 
+// ===========================================================================
+// Per-mode runners
+// ===========================================================================
 void DigiBrain::runWaypoint(const AircraftState& as, double dt,
                              const FlightControlSystem& fcs, FcsState& fcsState) {
     if (curWp_ >= wps_.size()) {
@@ -297,57 +633,124 @@ void DigiBrain::runGroundAvoid(const AircraftState& as, double dt,
 
 void DigiBrain::runMissileDefeat(const AircraftState& as, double dt,
                                   const FlightControlSystem& fcs, FcsState& fcsState) {
-    if (!selfEntity_ || !state_.incomingMissile) {
-        // No threat — fall back to waypoint
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    if (!selfEntity || !state_.incomingMissile) {
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
-    MissileDefeat(state_, *selfEntity_, as, fcs, fcsState, dt);
+    MissileDefeat(state_, *selfEntity, as, fcs, fcsState, dt);
 }
 
 void DigiBrain::runGunsJink(const AircraftState& as, double dt,
                               const FlightControlSystem& fcs, FcsState& fcsState) {
-    if (!selfEntity_ || !state_.gunsThreat) {
-        // No threat — fall back to waypoint
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    if (!selfEntity || !state_.gunsThreat) {
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
-    GunsJink(state_, *selfEntity_, as, fcs, fcsState, dt);
+    GunsJink(state_, *selfEntity, as, fcs, fcsState, dt);
+}
+
+void DigiBrain::runCollisionAvoid(const AircraftState& as, double dt,
+                                   const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    if (!selfEntity) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+    CollisionAvoid(state_, *selfEntity, as, fcs, fcsState);
 }
 
 void DigiBrain::runWVREngage(const AircraftState& as, double dt,
                               const FlightControlSystem& fcs, FcsState& fcsState) {
-    if (!selfEntity_ || !target_ || target_->isDead) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    const DigiEntity* tgt = wvrTarget_;
+    if (!selfEntity || !tgt || tgt->isDead) {
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
-    RollAndPull(state_, *selfEntity_, *target_, as, fcs, fcsState, dt);
+    RollAndPull(state_, *selfEntity, *tgt, as, fcs, fcsState, dt);
 }
 
-void DigiBrain::startTakeoff(RunwayId rwy, double rwyHeading,
-                               double rwyThresholdX, double rwyThresholdY, double rwyAlt) {
-    auto& go = state_.groundOps;
-    go.assignedRunway = rwy;
-    go.runwayHeading = rwyHeading;
-    go.runwayThresholdX = rwyThresholdX;
-    go.runwayThresholdY = rwyThresholdY;
-    go.runwayAltitude = rwyAlt;
-    go.phase = GroundOpsPhase::TakeoffRoll;
-    go.gearRetracted = false;
-    go.hasTakeoffClearance = true;  // simplified: auto-clear (ATC can deny via message)
+void DigiBrain::runGunsEngage(const AircraftState& as, double dt,
+                               const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    const DigiEntity* tgt = wvrTarget_;
+    if (!selfEntity || !tgt || tgt->isDead) {
+        // No target — fall back to waypoint
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+    // Resolve the gun spec. If the host provided an SMS, use it;
+    // otherwise default to the standard M61 gun.
+    WeaponSpec gun = gunSpec();  // default: M61, 510 rounds
+
+    GunsEngage(state_, *selfEntity, *tgt, as, gun, fcs, fcsState, dt);
 }
 
-void DigiBrain::startLanding(RunwayId rwy, double rwyHeading,
-                               double rwyThresholdX, double rwyThresholdY, double rwyAlt) {
-    auto& go = state_.groundOps;
-    go.assignedRunway = rwy;
-    go.runwayHeading = rwyHeading;
-    go.runwayThresholdX = rwyThresholdX;
-    go.runwayThresholdY = rwyThresholdY;
-    go.runwayAltitude = rwyAlt;
-    go.phase = GroundOpsPhase::Approach;
-    go.gearDeployed = false;
-    go.hasLandingClearance = true;
+void DigiBrain::runMissileEngage(const AircraftState& as, double dt,
+                                  const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    const DigiEntity* tgt = wvrTarget_;
+    if (!selfEntity || !tgt || tgt->isDead) {
+        // No target — fall back to waypoint
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    // If no SMS provided, fall back to WVR BFM (can't fire missiles
+    // without knowing what's loaded)
+    if (!sms_) {
+        RollAndPull(state_, *selfEntity, *tgt, as, fcs, fcsState, dt);
+        return;
+    }
+
+    MissileEngage(state_, *selfEntity, *tgt, as, *sms_, fcs, fcsState, dt);
+}
+
+void DigiBrain::runBVREngage(const AircraftState& as, double dt,
+                              const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    const DigiEntity* tgt = wvrTarget_;
+    if (!selfEntity || !tgt || tgt->isDead) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+    // Resolve max A/A weapon range
+    double maxAAWpnRangeFt = state_.maxAAWpnRange;
+    if (maxAAWpnRangeFt <= 0.0) maxAAWpnRangeFt = 35.0 * 6076.0;
+
+    BvrEngage(state_, *selfEntity, *tgt, as, fcs, fcsState, dt);
+}
+
+void DigiBrain::runMerge(const AircraftState& as, double dt,
+                          const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    const DigiEntity* tgt = wvrTarget_;
+    if (!selfEntity || !tgt || tgt->isDead) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+    MergeManeuver(state_, *selfEntity, *tgt, as, fcs, fcsState, dt);
+}
+
+void DigiBrain::runAccel(const AircraftState& as, double dt,
+                          const FlightControlSystem& fcs, FcsState& fcsState) {
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) selfEntity = &selfEntityAuto_;
+    if (!selfEntity) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+    AccelManeuver(state_, *selfEntity, as, fcs, fcsState, dt);
 }
 
 void DigiBrain::runTakeoff(const AircraftState& as, double dt,

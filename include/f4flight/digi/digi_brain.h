@@ -30,6 +30,26 @@
 // preserves the existing test API. New code should use DigiBrain directly.
 //
 // Port of FreeFalcon digimain.cpp:566 (DigitalBrain::FrameExec).
+//
+// ============================================================================
+// Host-facing API (refactored 2026-07-14)
+// ============================================================================
+//
+// The API is split into four clear categories:
+//
+//   1. configure(DigiConfig)     — set once at init (skill, G-limits, etc.)
+//   2. setWaypoints / setHeading — navigation setup (rarely changes)
+//   3. setFrameInputs(FrameInputs) — per-frame world state (truth, threats)
+//   4. commandXxx(...)           — asynchronous commands (takeoff, landing)
+//
+// Output: compute() returns PilotInput each frame.
+// State:  state() returns const DigiState& (read-only).
+//         stateMutable() returns DigiState& (TESTING ONLY).
+//
+// Old set* methods are retained as [[deprecated]] shims so existing code
+// keeps compiling. They delegate to the new internal storage. Migrate
+// callers at your convenience; the shims will be removed in a future
+// release.
 
 #pragma once
 
@@ -41,6 +61,7 @@
 #include "f4flight/digi/comms/message_bus.h"
 #include "f4flight/digi/atc/atc_messages.h"
 #include "f4flight/digi/sensors/sensor_fusion.h"
+#include "f4flight/digi/weapons/sms.h"
 #include "f4flight/aircraft_state.h"
 #include "f4flight/fcs.h"
 #include "f4flight/core/types.h"
@@ -51,127 +72,334 @@
 namespace f4flight {
 namespace digi {
 
+// ===========================================================================
+// DigiConfig — configuration set once at init (persists across frames).
+//
+// Use DigiBrain::configure(DigiConfig) to apply. Fields map 1:1 to DigiState
+// fields that are "configuration" (not per-frame inputs).
+// ===========================================================================
+struct DigiConfig {
+    SkillLevel skillLevel    {SkillLevel::Veteran};
+    double     cornerSpeedKts{330.0};   // digi.cornerSpeed
+    double     maxGs         {9.0};      // digi.maxGs
+    double     maxBankDeg    {30.0};     // digi.maxRoll
+    double     maxGammaDeg   {60.0};     // digi.maxGammaDeg
+    double     turnLoadFactor{2.0};      // digi.turnLoadFactor
+};
+
+// ===========================================================================
+// FrameInputs — per-frame world state the host provides before compute().
+//
+// Production code: populate `truth` and let SensorFusion detect threats
+// and targets autonomously.
+//
+// Testing code: populate `injectedMissile` / `injectedGunsThreat` /
+// `injectedTarget` to bypass SensorFusion and directly set the threat/
+// target the brain will react to. These are read with priority over
+// SensorPicture in resolveMode().
+// ===========================================================================
+struct FrameInputs {
+    // SensorFusion input (production path). Nullptr = no sensor fusion.
+    const TruthState* truth              {nullptr};
+
+    // Own aircraft entity. If null, the brain auto-builds from AircraftState
+    // in compute(). Set this if the host has a richer entity model.
+    const DigiEntity* selfEntity         {nullptr};
+
+    // Offensive target (bandit). Nullptr = no injected target; brain uses
+    // SensorPicture.bestTarget if truth is provided.
+    const DigiEntity* injectedTarget     {nullptr};
+
+    // --- Testing-only injection (bypasses SensorFusion) ---
+    // Use these for unit tests that need deterministic threat geometry.
+    // Production code should populate `truth` instead.
+    const DigiEntity* injectedMissile    {nullptr};
+    const DigiEntity* injectedGunsThreat {nullptr};
+};
+
+// ===========================================================================
 // DigiBrain — the AI pilot.
 //
 // Owns DigiState, dispatches to per-mode maneuver functions, produces
 // PilotInput. The flight model calls compute() each frame with the current
 // AircraftState; the brain returns the PilotInput for that frame.
+// ===========================================================================
 class DigiBrain {
 public:
     DigiBrain();
 
-    // --- Configuration ---
-    void setSkill(SkillLevel level) {
-        state_.skill = makeSkillParams(level);
+    // =======================================================================
+    // 1. Configuration (set once at init, persists)
+    // =======================================================================
+
+    /// Apply configuration. Updates the underlying DigiState fields
+    /// (skill, cornerSpeed, maxGs, maxRoll, maxGammaDeg, turnLoadFactor).
+    void configure(const DigiConfig& cfg);
+
+    /// Read the current configuration (reconstructed from DigiState).
+    DigiConfig config() const;
+
+    // =======================================================================
+    // 2. Navigation setup (rarely changes)
+    // =======================================================================
+
+    void setWaypoints(std::vector<Vec3> wps) {
+        wps_ = std::move(wps);
+        curWp_ = 0;
     }
+    void setCaptureRadius(double r_ft) { captureRadius_ = r_ft; }
 
-    void setCornerSpeed(double kts) { state_.cornerSpeed = kts; }
-    void setMaxGs(double g)         { state_.maxGs = g; }
-    void setMaxBank(double deg)     { state_.maxRoll = deg; }
-    void setMaxGamma(double deg)    { state_.maxGammaDeg = deg; }
-    void setTurnG(double lf)        { state_.turnLoadFactor = lf; }
+    /// Set the held heading (radians). Read by Waypoint mode when no
+    /// waypoints remain, and by HeadingAltitude mode.
+    void setHeading(double rad) { state_.holdPsi = rad; }
 
-    // --- Waypoint / navigation ---
-    void setWaypoints(std::vector<Vec3> wps) { wps_ = std::move(wps); curWp_ = 0; }
-    void setCaptureRadius(double r_ft)       { captureRadius_ = r_ft; }
-    void setHeading(double rad)              { state_.holdPsi = rad; }
-    void setAltitude(double ft)              { state_.holdAlt = ft; }
+    /// Set the held altitude (ft, positive up). Read by Waypoint mode.
+    void setAltitude(double ft) { state_.holdAlt = ft; }
 
-    // --- Threat entity setters (Tier 1) — DEPRECATED ---
-    // These are retained for backward compatibility but should not be used
-    // when SensorFusion is enabled. The brain will auto-detect threats via
-    // the SensorPicture. If both are set, the injected pointers take priority
-    // (for testing).
-    void setIncomingMissile(const DigiEntity* m) { state_.incomingMissile = m; }
-    void setGunsThreat(const DigiEntity* t)      { state_.gunsThreat = t; }
+    // =======================================================================
+    // 3. Per-frame inputs (host provides each frame before compute())
+    // =======================================================================
 
-    // --- Target entity setter (Tier 2 — offensive) ---
-    // The host sets this each frame to the current target (bandit).
-    // Pass nullptr to clear (brain falls back to navigation or auto-targeting).
-    void setTarget(const DigiEntity* t) { target_ = t; }
+    /// Set the per-frame world inputs (truth, self entity, threats, target).
+    /// Call this every frame before compute(). Values persist until the next
+    /// call (so you can skip a frame and the brain reuses the last inputs).
+    void setFrameInputs(const FrameInputs& inputs) { frameInputs_ = inputs; }
 
-    // --- Sensor system (Phase 3) ---
-    // Provide the truth state each frame. The brain runs SensorFusion to
-    // build a SensorPicture, then uses it for autonomous threat/target
-    // detection. If no truth is provided, the brain falls back to injected
-    // threats (backward compatibility).
-    void setTruth(const TruthState* truth) { truth_ = truth; }
+    /// Read back the current frame inputs.
+    const FrameInputs& frameInputs() const { return frameInputs_; }
 
-    // Access the sensor fusion (for configuration / testing)
-    SensorFusion& sensorFusion() { return sensorFusion_; }
-    const SensorFusion& sensorFusion() const { return sensorFusion_; }
+    // =======================================================================
+    // 4. Commands (asynchronous; take effect on next compute())
+    // =======================================================================
 
-    // Get the current sensor picture (read-only)
-    const SensorPicture& sensorPicture() const { return sensorFusion_.picture(); }
+    /// Command the brain to initiate a takeoff sequence. The brain will
+    /// request clearance from ATC (via message bus) and execute the takeoff
+    /// when cleared.
+    void commandTakeoff(RunwayId rwy, double rwyHeading,
+                        double rwyThresholdX, double rwyThresholdY,
+                        double rwyAlt);
 
-    // --- Ground ops setters (Phase 1-2) ---
-    // Set the aircraft's entity ID (for ATC addressing) and register its
-    // mailbox on the message bus.
+    /// Command the brain to initiate a landing sequence.
+    void commandLanding(RunwayId rwy, double rwyHeading,
+                        double rwyThresholdX, double rwyThresholdY,
+                        double rwyAlt);
+
+    /// Clear the offensive target (brain falls back to auto-targeting or
+    /// waypoint navigation).
+    void clearTarget() { frameInputs_.injectedTarget = nullptr; }
+
+    // =======================================================================
+    // 5. Mode override (testing / scripting only)
+    // =======================================================================
+
+    void forceMode(DigiMode m) { forcedMode_ = m; }
+    void clearForcedMode()     { forcedMode_ = DigiMode::NoMode; }
+
+    // =======================================================================
+    // 6. Communication (set once at init)
+    // =======================================================================
+
     void setSelfId(EntityId id) { state_.selfId = id; }
     void setMessageBus(MessageBus* bus) { bus_ = bus; }
     Mailbox& mailbox() { return state_.mailbox; }
 
-    // --- Ground ops control ---
-    // Command the brain to initiate a takeoff sequence. The brain will
-    // request clearance from ATC (via message bus) and execute the takeoff
-    // when cleared.
-    void startTakeoff(RunwayId rwy, double rwyHeading,
-                       double rwyThresholdX, double rwyThresholdY, double rwyAlt);
+    // =======================================================================
+    // 6b. Weapon system (set once at init)
+    // =======================================================================
 
-    // Command the brain to initiate a landing sequence.
-    void startLanding(RunwayId rwy, double rwyHeading,
-                       double rwyThresholdX, double rwyThresholdY, double rwyAlt);
+    /// Provide the StoresManagementSystem. The brain reads it to select
+    /// weapons and check firing envelopes. If not set, the brain defaults
+    /// to a gun-only loadout (for GunsEngage).
+    void setSMS(const StoresManagementSystem* sms) { sms_ = sms; }
+    const StoresManagementSystem* sms() const { return sms_; }
 
-    // --- Own entity (for defensive maneuvers) ---
-    // The host may set this each frame from its own entity model.
-    // If NOT set (nullptr), the brain will auto-sync from AircraftState in
-    // compute() every frame. This makes the brain self-contained for testing.
-    void setSelfEntity(const DigiEntity* s) { selfEntity_ = s; selfEntityExplicit_ = (s != nullptr); }
-    void clearSelfEntity() { selfEntity_ = nullptr; selfEntityExplicit_ = false; }
+    // =======================================================================
+    // 7. Sensor system
+    // =======================================================================
 
-    // Build a DigiEntity from the current AircraftState. Called automatically
-    // in compute() if no selfEntity_ is set by the host. Also exposed publicly
-    // so hosts can use it to populate their own DigiEntity if desired.
-    static DigiEntity buildSelfEntity(const AircraftState& as);
+    SensorFusion&       sensorFusion()       { return sensorFusion_; }
+    const SensorFusion& sensorFusion() const { return sensorFusion_; }
+    const SensorPicture& sensorPicture() const { return sensorFusion_.picture(); }
 
-    // --- Mode override (for testing / scripting) ---
-    void setForcedMode(DigiMode m) { forcedMode_ = m; }
-    void clearForcedMode()         { forcedMode_ = DigiMode::NoMode; }
+    // =======================================================================
+    // 8. Output
+    // =======================================================================
 
-    // --- Accessors ---
-    DigiMode activeMode() const { return activeMode_; }
-    const DigiState& state() const { return state_; }
-    DigiState&       state()       { return state_; }
-    std::size_t currentWaypoint() const { return curWp_; }
-    bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
-
-    // --- Main compute ---
+    /// Compute the PilotInput for this frame.
+    /// Reads from frameInputs_ (set via setFrameInputs) and the AircraftState.
     PilotInput compute(const AircraftState& as, double dt, double groundZ,
                        const FlightControlSystem& fcs, FcsState& fcsState);
 
-    // Reset all state (call between independent test phases).
+    // =======================================================================
+    // 9. Read-only state access (const only)
+    // =======================================================================
+
+    DigiMode activeMode() const { return activeMode_; }
+    const DigiState& state() const { return state_; }
+    std::size_t currentWaypoint() const { return curWp_; }
+    bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
+
+    /// TESTING ONLY — mutable state access. Production code should never
+    /// write to DigiState directly; use configure() / setFrameInputs() /
+    /// commandXxx() instead.
+    DigiState& stateMutable() { return state_; }
+
+    // =======================================================================
+    // 10. Static helpers
+    // =======================================================================
+
+    /// Build a DigiEntity from the current AircraftState. Called automatically
+    /// in compute() if frameInputs_.selfEntity is null. Also exposed publicly
+    /// so hosts can use it to populate their own DigiEntity if desired.
+    static DigiEntity buildSelfEntity(const AircraftState& as);
+
+    // =======================================================================
+    // 11. Reset
+    // =======================================================================
+
+    /// Reset all internal state (call between independent test phases).
+    /// Clears frame inputs, auto-tracked entities, and threat pointers.
     void reset() noexcept {
         state_.reset();
+        // DigiState::reset() intentionally doesn't clear threat pointers
+        // (host-managed), but the brain's frameInputs_ injection path means
+        // we need to clear them here so a stale injected threat doesn't
+        // persist across reset().
+        state_.incomingMissile = nullptr;
+        state_.gunsThreat = nullptr;
         curWp_ = 0;
         activeMode_ = DigiMode::Waypoint;
         forcedMode_ = DigiMode::NoMode;
+        frameInputs_ = FrameInputs{};
+        missileEntityAuto_.reset();
+        gunsEntityAuto_.reset();
+        targetEntityAuto_.reset();
+        selfEntityExplicit_ = false;
+        wvrTarget_ = nullptr;
     }
 
+    // =======================================================================
+    // DEPRECATED backward-compat shims
+    // -------------------------------
+    // Kept so existing code (tests, SteeringController, host programs)
+    // continues to compile. Each shim delegates to the new internal
+    // storage (frameInputs_ / state_). Migrate callers to the new API
+    // above; these will be removed in a future release.
+    // =======================================================================
+
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setSkill(SkillLevel level) {
+        state_.skill = makeSkillParams(level);
+    }
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setCornerSpeed(double kts) { state_.cornerSpeed = kts; }
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setMaxGs(double g) { state_.maxGs = g; }
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setMaxBank(double deg) { state_.maxRoll = deg; }
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setMaxGamma(double deg) { state_.maxGammaDeg = deg; }
+    /// @deprecated Use configure(DigiConfig) instead.
+    [[deprecated("Use configure(DigiConfig)")]]
+    void setTurnG(double lf) { state_.turnLoadFactor = lf; }
+
+    /// @deprecated Use setFrameInputs(FrameInputs) instead.
+    [[deprecated("Use setFrameInputs(FrameInputs)")]]
+    void setTruth(const TruthState* truth) { frameInputs_.truth = truth; }
+
+    /// @deprecated Use setFrameInputs(FrameInputs) instead.
+    [[deprecated("Use setFrameInputs(FrameInputs)")]]
+    void setSelfEntity(const DigiEntity* s) {
+        frameInputs_.selfEntity = s;
+        selfEntityExplicit_ = (s != nullptr);
+    }
+    /// @deprecated Use setFrameInputs(FrameInputs) with selfEntity=nullptr.
+    [[deprecated("Use setFrameInputs(FrameInputs) with selfEntity=nullptr")]]
+    void clearSelfEntity() {
+        frameInputs_.selfEntity = nullptr;
+        selfEntityExplicit_ = false;
+    }
+
+    /// @deprecated Use setFrameInputs(FrameInputs) with injectedMissile.
+    [[deprecated("Use setFrameInputs(FrameInputs).injectedMissile")]]
+    void setIncomingMissile(const DigiEntity* m) {
+        frameInputs_.injectedMissile = m;
+        // Also commit to state_ so runMissileDefeat sees it immediately.
+        state_.incomingMissile = m;
+        if (m) {
+            // Reset per-missile state on injection.
+            state_.missileDefeatTtgo = -1.0;
+            state_.incomingMissileEvadeTimer = 0.0;
+        }
+    }
+    /// @deprecated Use setFrameInputs(FrameInputs) with injectedGunsThreat.
+    [[deprecated("Use setFrameInputs(FrameInputs).injectedGunsThreat")]]
+    void setGunsThreat(const DigiEntity* t) {
+        frameInputs_.injectedGunsThreat = t;
+        state_.gunsThreat = t;
+    }
+
+    /// @deprecated Use setFrameInputs(FrameInputs) with injectedTarget.
+    [[deprecated("Use setFrameInputs(FrameInputs).injectedTarget")]]
+    void setTarget(const DigiEntity* t) {
+        frameInputs_.injectedTarget = t;
+    }
+
+    /// @deprecated Use commandTakeoff(...) instead.
+    [[deprecated("Use commandTakeoff(...)")]]
+    void startTakeoff(RunwayId rwy, double rwyHeading,
+                      double rwyThresholdX, double rwyThresholdY,
+                      double rwyAlt) {
+        commandTakeoff(rwy, rwyHeading, rwyThresholdX, rwyThresholdY, rwyAlt);
+    }
+    /// @deprecated Use commandLanding(...) instead.
+    [[deprecated("Use commandLanding(...)")]]
+    void startLanding(RunwayId rwy, double rwyHeading,
+                      double rwyThresholdX, double rwyThresholdY,
+                      double rwyAlt) {
+        commandLanding(rwy, rwyHeading, rwyThresholdX, rwyThresholdY, rwyAlt);
+    }
+
+    /// @deprecated Use forceMode(...) instead.
+    [[deprecated("Use forceMode(...)")]]
+    void setForcedMode(DigiMode m) { forcedMode_ = m; }
+
+    /// @deprecated Use stateMutable() for write access or state() for read.
+    [[deprecated("Use state() (const) or stateMutable() (testing)")]]
+    DigiState& state() { return state_; }
+
 private:
+    // --- Internal state ---
     DigiState state_;
     std::vector<Vec3> wps_;
     std::size_t curWp_{0};
     double captureRadius_{5000.0};  // ft
-    const DigiEntity* selfEntity_{nullptr};
-    DigiEntity selfEntityAuto_;  // auto-synced from AircraftState when selfEntity_ is null
-    bool selfEntityExplicit_{false};  // true if host called setSelfEntity()
-    const DigiEntity* target_{nullptr};  // offensive target (Tier 2)
-    MessageBus* bus_{nullptr};  // message bus for ATC/flight comms
-    double simTime_{0.0};  // current sim time (seconds)
+
+    // Per-frame inputs (set via setFrameInputs, or via deprecated shims)
+    FrameInputs frameInputs_;
+
+    // Legacy self-entity tracking (used by deprecated setSelfEntity shim)
+    bool selfEntityExplicit_{false};
+
+    // Auto-built self entity (when frameInputs_.selfEntity is null)
+    DigiEntity selfEntityAuto_;
+
+    // Resolved WVR target for the current frame (set by resolveMode, read
+    // by runWVREngage). Points to either frameInputs_.injectedTarget or
+    // targetEntityAuto_.
+    const DigiEntity* wvrTarget_{nullptr};
+
+    MessageBus* bus_{nullptr};       // message bus for ATC/flight comms
+    const StoresManagementSystem* sms_{nullptr};  // weapon stores (optional)
+    double simTime_{0.0};            // current sim time (seconds)
 
     // Sensor system (Phase 3)
     SensorFusion sensorFusion_;
-    const TruthState* truth_{nullptr};
 
     // Auto-built entities from SensorPicture (for threat/target detection)
     std::optional<DigiEntity> missileEntityAuto_;
@@ -190,8 +418,20 @@ private:
                           const FlightControlSystem& fcs, FcsState& fcsState);
     void runGunsJink(const AircraftState& as, double dt,
                      const FlightControlSystem& fcs, FcsState& fcsState);
+    void runCollisionAvoid(const AircraftState& as, double dt,
+                           const FlightControlSystem& fcs, FcsState& fcsState);
     void runWVREngage(const AircraftState& as, double dt,
                       const FlightControlSystem& fcs, FcsState& fcsState);
+    void runGunsEngage(const AircraftState& as, double dt,
+                       const FlightControlSystem& fcs, FcsState& fcsState);
+    void runMissileEngage(const AircraftState& as, double dt,
+                          const FlightControlSystem& fcs, FcsState& fcsState);
+    void runBVREngage(const AircraftState& as, double dt,
+                      const FlightControlSystem& fcs, FcsState& fcsState);
+    void runMerge(const AircraftState& as, double dt,
+                  const FlightControlSystem& fcs, FcsState& fcsState);
+    void runAccel(const AircraftState& as, double dt,
+                  const FlightControlSystem& fcs, FcsState& fcsState);
     void runTakeoff(const AircraftState& as, double dt,
                     FcsState& fcsState, double groundZ);
     void runLanding(const AircraftState& as, double dt,

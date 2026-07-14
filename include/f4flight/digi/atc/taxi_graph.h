@@ -63,13 +63,20 @@ struct TaxiEdge {
 
 class TaxiGraph {
 public:
-    void addNode(const TaxiNode& node) {
-        if (node.id >= 0) {
-            if (static_cast<int>(nodes_.size()) <= node.id) {
-                nodes_.resize(node.id + 1);
-            }
-            nodes_[node.id] = node;
+    // Add a node to the graph. Nodes are indexed by their `id` field.
+    // If a node with the same id already exists, this overwrites it and
+    // returns false (caller can detect the duplicate). Returns true on a
+    // fresh insertion. Negative ids are rejected (returns false).
+    bool addNode(const TaxiNode& node) {
+        if (node.id < 0) return false;
+        const bool isDuplicate =
+            (static_cast<int>(nodes_.size()) > node.id) &&
+            (nodes_[node.id].id == node.id);  // sentinel check (default-constructed placeholders have id == 0)
+        if (static_cast<int>(nodes_.size()) <= node.id) {
+            nodes_.resize(node.id + 1);
         }
+        nodes_[node.id] = node;
+        return !isDuplicate;
     }
 
     void addEdge(TaxiNodeId a, TaxiNodeId b) {

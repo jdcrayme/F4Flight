@@ -124,19 +124,20 @@ TEST(MailboxTest, Clear) {
 
 TEST(MailboxTest, FullDropsOldest) {
     Mailbox mb;
-    // Fill to capacity
+    // Fill to capacity — each push should return true (not full yet).
     for (std::size_t i = 0; i < Mailbox::kCapacity; ++i) {
         Message m;
         m.payload.value = static_cast<int>(i);
-        mb.push(m);
+        EXPECT_TRUE(mb.push(m)) << "push " << i << " should return true (not full yet)";
     }
     EXPECT_EQ(mb.size(), Mailbox::kCapacity);
     EXPECT_TRUE(mb.full());
 
-    // Push one more — oldest should be dropped
+    // Push one more — oldest should be dropped, push should return false
+    // (mailbox was full before the push).
     Message m;
     m.payload.value = 999;
-    mb.push(m);
+    EXPECT_FALSE(mb.push(m)) << "push to full mailbox should return false";
     EXPECT_EQ(mb.size(), Mailbox::kCapacity);
 
     // First popped should be value=1 (0 was dropped)
@@ -384,21 +385,21 @@ TEST(TaxiGraphTest, AddNodesAndEdges) {
     parking.id = 0;
     parking.position = {0.0, 0.0, 0.0};
     parking.type = TaxiNodeType::ParkingSpot;
-    g.addNode(parking);
+    EXPECT_TRUE(g.addNode(parking));  // fresh insertion
 
     TaxiNode holdShort;
     holdShort.id = 1;
     holdShort.position = {1000.0, 0.0, 0.0};
     holdShort.type = TaxiNodeType::HoldShort;
     holdShort.runway = 270;
-    g.addNode(holdShort);
+    EXPECT_TRUE(g.addNode(holdShort));
 
     TaxiNode threshold;
     threshold.id = 2;
     threshold.position = {1100.0, 0.0, 0.0};
     threshold.type = TaxiNodeType::RunwayThreshold;
     threshold.runway = 270;
-    g.addNode(threshold);
+    EXPECT_TRUE(g.addNode(threshold));
 
     g.addEdge(0, 1);  // parking → hold short
     g.addEdge(1, 2);  // hold short → threshold
@@ -406,6 +407,37 @@ TEST(TaxiGraphTest, AddNodesAndEdges) {
     EXPECT_EQ(g.nodeCount(), 3u);
     EXPECT_EQ(g.findRunwayThreshold(270), 2);
     EXPECT_EQ(g.findHoldShort(270), 1);
+}
+
+TEST(TaxiGraphTest, AddNodeReturnsFalseOnDuplicate) {
+    // Bug L: addNode should return false when overwriting an existing id,
+    // so callers can detect duplicates instead of silently losing data.
+    TaxiGraph g;
+
+    TaxiNode n0;
+    n0.id = 5;
+    n0.position = {100.0, 200.0, 0.0};
+    n0.type = TaxiNodeType::ParkingSpot;
+    EXPECT_TRUE(g.addNode(n0));
+
+    // Same id, different position — should overwrite but return false.
+    TaxiNode n0_dup;
+    n0_dup.id = 5;
+    n0_dup.position = {999.0, 999.0, 0.0};
+    n0_dup.type = TaxiNodeType::ParkingSpot;
+    EXPECT_FALSE(g.addNode(n0_dup));
+
+    // Verify the position was overwritten (current behavior preserved).
+    EXPECT_NEAR(g.node(5).position.x, 999.0, 1e-9);
+}
+
+TEST(TaxiGraphTest, AddNodeRejectsNegativeId) {
+    TaxiGraph g;
+    TaxiNode bad;
+    bad.id = -1;
+    bad.position = {0.0, 0.0, 0.0};
+    bad.type = TaxiNodeType::ParkingSpot;
+    EXPECT_FALSE(g.addNode(bad));
 }
 
 TEST(TaxiGraphTest, FindPath) {

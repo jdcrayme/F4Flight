@@ -560,3 +560,173 @@ TEST_F(DigiBrainSensorTest, SensorPictureAvailableAfterCompute) {
     EXPECT_FALSE(pic.contacts.empty());
     EXPECT_NE(pic.bestTarget, nullptr);
 }
+
+// ===========================================================================
+// Strengthened tests — verify the brain actually commands a maneuver,
+// not just enters a mode. These guard against Bug A regressions where
+// resolveMode enters MissileDefeat but runMissileDefeat falls back to
+// waypoint navigation because state_.incomingMissile is null.
+// ===========================================================================
+
+TEST_F(DigiBrainSensorTest, AutonomousMissileDefeatCommandsNonzeroStick) {
+    // Set up an incoming radar missile 5 NM ahead, closing.
+    DigiEntity missile;
+    missile.x = 5.0 * 6076.0; missile.y = 0; missile.z = -10000;
+    missile.vx = -2000.0; missile.vy = 0; missile.vz = 0;
+    missile.yaw = PI;  // heading west, toward us
+    missile.speed = 2000.0;
+    missile.seekerType = DigiEntity::SeekerType::Radar;
+    missile.isDead = false;
+
+    truth.clear();
+    truth.add(200, missile);
+
+    // Run a few frames so SensorFusion builds the picture and the brain
+    // commits to MissileDefeat mode.
+    PilotInput last{};
+    for (int i = 0; i < 10; ++i) {
+        last = brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+
+    // The brain must command a real maneuver — not just sit in level flight.
+    // MissileDefeat picks either Beam (perpendicular turn) or Drag (turn cold)
+    // based on closure. Both produce non-zero roll commands.
+    const bool hasRealCommand =
+        std::fabs(last.pstick) > 0.05 ||
+        std::fabs(last.rstick) > 0.05;
+    EXPECT_TRUE(hasRealCommand)
+        << "MissileDefeat produced trivial output (pstick=" << last.pstick
+        << ", rstick=" << last.rstick << ") — defensive maneuver never ran";
+}
+
+TEST_F(DigiBrainSensorTest, AutonomousMissileDefeatTurnsBeamToMissile) {
+    // Missile directly ahead (north). Beam maneuver should turn us east or
+    // west (perpendicular). Drag should turn us south (cold, away). Either
+    // way, the resulting heading should NOT be north (the direction to the
+    // missile).
+    DigiEntity missile;
+    missile.x = 5.0 * 6076.0; missile.y = 0; missile.z = -10000;
+    missile.vx = -2000.0; missile.vy = 0; missile.vz = 0;
+    missile.yaw = PI;  // missile heading west (toward us, since we're at origin)
+    missile.speed = 2000.0;
+    missile.seekerType = DigiEntity::SeekerType::Radar;
+
+    truth.clear();
+    truth.add(200, missile);
+
+    // Run 60 frames (1 second) — long enough for the brain to start a turn.
+    for (int i = 0; i < 60; ++i) {
+        brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+
+    // The brain should be commanding a turn. rstick is the roll command;
+    // a non-zero value means we're rolling away from level flight.
+    const double rstick = brain.state().rStick;
+    EXPECT_GT(std::fabs(rstick), 0.05)
+        << "MissileDefeat did not command a turn (rstick=" << rstick << ")";
+}
+
+TEST_F(DigiBrainSensorTest, AutonomousWVREngageCommandsNonzeroStick) {
+    // Set up a fighter 3 NM ahead but offset 1 NM east (forces a turn).
+    // Co-altitude, target heading south (toward us).
+    DigiEntity target;
+    target.x = 3.0 * 6076.0; target.y = 1.0 * 6076.0; target.z = -10000;
+    target.vx = -400.0; target.vy = 0; target.vz = 0;
+    target.yaw = PI;
+    target.speed = 500.0;
+
+    truth.clear();
+    truth.add(100, target);
+
+    PilotInput last{};
+    for (int i = 0; i < 10; ++i) {
+        last = brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+
+    EXPECT_EQ(brain.activeMode(), DigiMode::WVREngage);
+
+    // RollAndPull must command a real maneuver — the target is offset east,
+    // so the brain must roll/turn to track it.
+    const bool hasRealCommand =
+        std::fabs(last.pstick) > 0.05 ||
+        std::fabs(last.rstick) > 0.05;
+    EXPECT_TRUE(hasRealCommand)
+        << "WVREngage produced trivial output (pstick=" << last.pstick
+        << ", rstick=" << last.rstick << ")";
+}
+
+TEST_F(DigiBrainSensorTest, AutonomousThreatRecoveryWhenMissileLeavesTruth) {
+    // Phase 1: missile present — brain enters MissileDefeat.
+    DigiEntity missile;
+    missile.x = 5.0 * 6076.0; missile.y = 0; missile.z = -10000;
+    missile.vx = -2000.0; missile.vy = 0; missile.vz = 0;
+    missile.yaw = PI;
+    missile.speed = 2000.0;
+    missile.seekerType = DigiEntity::SeekerType::Radar;
+
+    truth.clear();
+    truth.add(200, missile);
+
+    for (int i = 0; i < 10; ++i) {
+        brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+
+    // Phase 2: missile removed from truth. After SensorFusion's 5-second
+    // ageAndPurge timeout, the brain must exit MissileDefeat and return to
+    // Waypoint (no target in truth).
+    truth.clear();
+    for (int i = 0; i < 400; ++i) {  // ~6.7s — past the 5s purge
+        brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+    EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint)
+        << "Brain stayed in MissileDefeat after missile left SensorPicture";
+}
+
+TEST_F(DigiBrainSensorTest, MissileSwapReinitializesDefeatState) {
+    // Missile A appears, brain initializes defeat state.
+    DigiEntity missileA;
+    missileA.x = 5.0 * 6076.0; missileA.y = 0; missileA.z = -10000;
+    missileA.vx = -2000.0; missileA.vy = 0; missileA.vz = 0;
+    missileA.yaw = PI;
+    missileA.speed = 2000.0;
+    missileA.seekerType = DigiEntity::SeekerType::Radar;
+
+    truth.clear();
+    truth.add(200, missileA);
+
+    for (int i = 0; i < 30; ++i) {  // 0.5s
+        brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+    EXPECT_EQ(brain.state().incomingMissileId, 200u);
+
+    // Now swap to missile B (different entityId). Wait long enough for
+    // SensorFusion's 5-second contact memory to age out missile A — only
+    // then will the brain see missile B as the incoming missile.
+    DigiEntity missileB;
+    missileB.x = 4.0 * 6076.0; missileB.y = 1000.0; missileB.z = -10000;
+    missileB.vx = -2000.0; missileB.vy = 0; missileB.vz = 0;
+    missileB.yaw = PI;
+    missileB.speed = 2000.0;
+    missileB.seekerType = DigiEntity::SeekerType::Radar;
+
+    truth.clear();
+    truth.add(201, missileB);
+
+    // Run ~7 seconds — past the 5s ageAndPurge timeout.
+    for (int i = 0; i < 420; ++i) {
+        brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    }
+
+    // Brain should now be tracking missile B (id=201). The per-missile
+    // state (missileDefeatTtgo) should have been reset when the ID changed,
+    // triggering MissileDefeat's "new missile" init branch.
+    EXPECT_EQ(brain.state().incomingMissileId, 201u)
+        << "Brain did not update incomingMissileId on missile swap";
+    EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
+}

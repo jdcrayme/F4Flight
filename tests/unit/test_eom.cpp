@@ -110,6 +110,8 @@ TEST_F(EomTest, GravityPullsDown) {
 
     // With no lift (NZ=0), gravity should eventually pull the aircraft down.
     // z is DOWN in our NED frame, so "descending" means z INCREASES.
+    // Start at 10000 ft so the ground clamp (groundZ=0) doesn't interfere.
+    s.kin.z = -10000.0;
     const double z0 = s.kin.z;
     for (int i = 0; i < 50; ++i) {
         eom_.update(0.05, input, s);

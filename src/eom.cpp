@@ -208,6 +208,23 @@ void EquationsOfMotion::integratePosition(double dt, double cosgam, double singa
     k.x += xdot * dt;
     k.y += ydot * dt;
     k.z += zdot * dt;
+
+    // Ground clamp: prevent the aircraft from going underground.
+    // FreeFalcon has a full gear model with strut compression + ground
+    // reaction forces. F4Flight's gear model tracks strut compression
+    // but does NOT generate a ground reaction force — without this clamp,
+    // the aircraft passes through z=0 and keeps going.
+    // Only clamp when the aircraft is actually descending (zdot > 0 in NED
+    // = moving toward ground). This prevents the clamp from firing on
+    // aircraft that start on the ground at z=0.
+    const double groundZ = state.gear.groundZ_ft;
+    if (k.z > groundZ && k.zdot > 0.0) {
+        k.z = groundZ;
+        k.zdot = 0.0;  // kill descent rate (don't bounce)
+        k.singam = 0.0;  // level the flight path
+        k.cosgam = 1.0;
+        k.gmma = 0.0;
+    }
 }
 
 // ---------------------------------------------------------------------------

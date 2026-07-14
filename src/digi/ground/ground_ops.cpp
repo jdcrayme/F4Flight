@@ -187,29 +187,39 @@ void RunLanding(DigiState& digi, const AircraftState& as,
                 go.gearDeployed = true;
             }
 
-            // Fly toward runway threshold, descending on 3° glideslope
+            // Fly toward runway threshold, descending on 3° glideslope.
+            //
+            // FreeFalcon uses TrackPointLanding (mnvers.cpp:33) which calls
+            // SimpleTrackElevation + SimpleTrackAzimuth — pure proportional
+            // trackers with no integral, no +1G bias, no gamma feedback.
+            // This is structurally incapable of the Phugoid oscillation
+            // that GammaHold produces on a moving glideslope target.
+            //
+            // F4Flight previously used HeadingAndAltitudeHold + GammaHold,
+            // which caused a Phugoid (descend → overshoot → climb → repeat).
+            // Now we use the same TrackPointLanding primitive as FreeFalcon.
             const double dx = go.runwayThresholdX - as.kin.x;
             const double dy = go.runwayThresholdY - as.kin.y;
             const double distToThreshold = std::sqrt(dx * dx + dy * dy);
 
-            // Desired altitude for 3° glideslope
+            // Desired altitude for 3° glideslope (NED: negative up)
             const double desAltAGL = distToThreshold * std::tan(kApproachGlideslope * DTR);
-            const double desAlt = groundZ + desAltAGL;
+            const double desAltZ = -(groundZ + desAltAGL);  // NED z
 
             // Approach speed
             const double approachSpeed = kApproachSpeedFraction *
                 (as.aero.stallSpeed > 0 ? as.aero.stallSpeed : 130.0);
 
-            // Steer toward threshold
-            const double desHeading = std::atan2(dy, dx);
-            ManeuverPrimitives::HeadingAndAltitudeHold(
-                desHeading, desAlt, digi, as,
-                FlightControlSystem{}, fcsState, digi.maxGs);
-            ManeuverPrimitives::MachHold(approachSpeed, as.vcas, true,
-                                          digi, as, 100.0, 300.0, dt, 100.0);
+            // Set trackpoint for TrackPointLanding
+            digi.trackX = go.runwayThresholdX;
+            digi.trackY = go.runwayThresholdY;
+            digi.trackZ = desAltZ;
 
-            // Check for flare altitude
-            if (altAGL < kFlareAltFt && distToThreshold < 1000.0) {
+            ManeuverPrimitives::TrackPointLanding(approachSpeed, digi, as, dt);
+
+            // Check for flare altitude (FF triggers on altitude alone,
+            // not distance — landme.cpp:1036)
+            if (altAGL < kFlareAltFt) {
                 go.phase = GroundOpsPhase::Flare;
                 go.flareStartAlt = altAGL;
             }
@@ -217,14 +227,23 @@ void RunLanding(DigiState& digi, const AircraftState& as,
         }
 
         case GroundOpsPhase::Flare: {
-            // Level off — reduce descent rate
-            // Target: 1G, wings level, idle throttle
+            // FF flare: tiny constant pitch-down + idle throttle
+            // (landme.cpp:1123: pStick = -0.01685393258427)
+            // The previous code called SetPstick(1.0, GCommand) which
+            // produces ZERO pstick due to the sqrt mapping in SetPstick
+            // (stickCmd = clamp(1.0, ±maxGs) = 1.0 → sqrt((1-1)/...) = 0).
             digi.throttle = 0.0;
-            ManeuverPrimitives::SetPstick(1.0, digi.maxGs, CommandType::GCommand, digi, as);
+            digi.pStick = -0.02;  // tiny pitch-down to settle onto runway
             fcsState.maxRoll = 0.0;
+            // Wings level
+            const double rollDeg = as.kin.phi * RTD;
+            digi.rStick = -rollDeg * 2.0 * DTR;
+            digi.rStick = std::max(-1.0, std::min(1.0, digi.rStick));
 
-            // Check for touchdown
-            if (altAGL < 2.0) {
+            // Check for touchdown — the ground clamp in eom.cpp holds
+            // the aircraft at ~5 ft AGL (strut compression), so use 10 ft
+            // as the touchdown threshold.
+            if (altAGL < 10.0) {
                 go.phase = GroundOpsPhase::Touchdown;
                 go.touchdownSpeed = as.vcas;
             }
@@ -234,7 +253,7 @@ void RunLanding(DigiState& digi, const AircraftState& as,
         case GroundOpsPhase::Touchdown: {
             // Main gear on ground — hold attitude, start deceleration
             digi.throttle = 0.0;
-            ManeuverPrimitives::SetPstick(0.0, 5.0, CommandType::GCommand, digi, as);
+            digi.pStick = 0.0;  // level attitude
             fcsState.maxRoll = 0.0;
 
             // Transition to rollout
@@ -249,7 +268,10 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             const double headingErr = headingError(go.runwayHeading, as.kin.sigma);
             ManeuverPrimitives::SetRstick(headingErr * RTD * 3.0, digi,
                                            FlightControlSystem{}, fcsState);
-            ManeuverPrimitives::SetPstick(-1.0, 5.0, CommandType::GCommand, digi, as);
+            // Hold attitude level — do NOT push negative G (the aircraft
+            // is on the ground; pushing negative G drives it underground
+            // because the F4Flight flight model has no ground reaction force).
+            digi.pStick = 0.0;
             fcsState.maxRoll = 0.0;
 
             // Check if stopped or slow enough to vacate
