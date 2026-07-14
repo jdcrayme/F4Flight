@@ -24,9 +24,12 @@ namespace digi {
 // DigiMode — priority-ordered modes. Lower value = higher priority.
 // The mode stack is evaluated top-to-bottom; the first active mode wins.
 //
-// This is a SUBSET of FreeFalcon's 25-mode enum. Modes not yet ported are
-// listed in the comment for reference but not in the enum — this prevents
-// accidental dispatch to an unimplemented mode.
+// Round-2 structural fix (Rec 6): added the 9 missing DigiMode values.
+// They now have dispatch targets (the 4 new maneuver primitives from
+// Rec 10, plus existing primitives). The dispatch is stubbed — each new
+// mode falls through to Waypoint until its behavior is ported. This
+// lets the brain's resolveMode() recognize the modes (so future porting
+// work can incrementally wire them up) without producing dead code.
 enum class DigiMode : int {
     // --- Active (ported or stubbed) ---
     GroundAvoid     = 0,   // terrain avoidance (PullUp)
@@ -43,16 +46,27 @@ enum class DigiMode : int {
     BVREngage       = 11,  // beyond-visual-range engagement
     Waypoint        = 12,  // navigation / waypoint following
 
-    // --- Not yet ported (will be added as capabilities land) ---
-    // RoopMode, OverBMode,
-    // LoiterMode, FollowOrdersMode, RTBMode, WingyMode,
-    // BugoutMode, GroundMnvrMode
+    // --- Round-2 structural additions (Rec 6): the 9 missing modes.
+    // Dispatch stubs exist in DigiBrain::compute() — each falls through
+    // to Waypoint navigation until its behavior is ported. This lets
+    // resolveMode() recognize the modes (so future porting work can
+    // incrementally wire them up) without producing dead code.
+    Refueling       = 13,  // air refueling (needs refuel.cpp port + tanker entity)
+    Separate        = 14,  // disengage from fight (needs separate.cpp)
+    Roop            = 15,  // roll out of plane (RoopMode — uses RollOutOfPlane)
+    OverB           = 16,  // over-bank for separation (uses OverBank)
+    Loiter          = 17,  // holding pattern (uses ManeuverPrimitives::Loiter)
+    FollowOrders    = 18,  // wingman following orders (needs wingman system)
+    RTB             = 19,  // return to base (needs AirbaseCheck + bingo fuel)
+    Wingy           = 20,  // wingman formation flying (needs formdata.cpp)
+    Bugout          = 21,  // bug out from fight (uses WvrBugOut)
+    GroundMnvr      = 22,  // A/G attack (needs gndattck.cpp port)
 
     NoMode          = 99,  // no active mode
 };
 
 // Number of active modes (for array sizing in the dispatcher).
-constexpr int kNumDigiModes = 13;
+constexpr int kNumDigiModes = 23;
 
 // Return the human-readable name of a mode (for debugging / test output).
 inline const char* digiModeName(DigiMode m) {
@@ -70,6 +84,17 @@ inline const char* digiModeName(DigiMode m) {
         case DigiMode::WVREngage:     return "WVREngage";
         case DigiMode::BVREngage:     return "BVREngage";
         case DigiMode::Waypoint:      return "Waypoint";
+        // Round-2 additions
+        case DigiMode::Refueling:     return "Refueling";
+        case DigiMode::Separate:      return "Separate";
+        case DigiMode::Roop:          return "Roop";
+        case DigiMode::OverB:         return "OverB";
+        case DigiMode::Loiter:        return "Loiter";
+        case DigiMode::FollowOrders:  return "FollowOrders";
+        case DigiMode::RTB:           return "RTB";
+        case DigiMode::Wingy:         return "Wingy";
+        case DigiMode::Bugout:        return "Bugout";
+        case DigiMode::GroundMnvr:    return "GroundMnvr";
         case DigiMode::NoMode:        return "NoMode";
     }
     return "Unknown";

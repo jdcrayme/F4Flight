@@ -24,12 +24,17 @@ namespace f4flight {
 
 // Pilot / AI input. All values in [-1, +1] except throttle which is in
 // [0, 1.5] where 1.0 = MIL and 1.5 = full AB.
+//
+// Round-2 structural fix (Rec 7): changed speedBrake / gearHandle defaults
+// to match the "uncommanded = no drag / gear down" convention. Previously
+// speedBrake defaulted to 0.0 (half extended) which bled speed in any test
+// that constructed PilotInput and didn't explicitly set speedBrake.
 struct PilotInput {
     double pstick{0.0};     // pitch stick, -1 (full forward / nose down) .. +1 (full back / nose up)
     double rstick{0.0};     // roll stick,  -1 (full left) .. +1 (full right)
     double ypedal{0.0};     // rudder pedal, -1 (full left) .. +1 (full right)
     double throttle{0.0};   // 0..1.5 (1.0 = MIL, 1.5 = full AB)
-    double speedBrake{0.0}; // -1 (retract) .. +1 (extend)
+    double speedBrake{-1.0}; // -1 (retract) .. +1 (extend) — default retracted (no drag)
     double gearHandle{1.0}; // -1 (up) .. +1 (down) -- default down
     double hookHandle{0.0}; // -1 (up) .. +1 (down)
 

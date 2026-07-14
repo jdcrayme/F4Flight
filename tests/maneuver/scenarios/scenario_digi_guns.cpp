@@ -62,7 +62,10 @@ public:
         truth_.clear();
         truth_.add(100, target_);
 
-        sc.brain().setTruth(&truth_);
+        // Provide truth state via the new FrameInputs API.
+        f4flight::digi::FrameInputs fi = sc.brain().frameInputs();
+        fi.truth = &truth_;
+        sc.brain().setFrameInputs(fi);
         sc_brain_ = &sc.brain();
     }
 
@@ -75,11 +78,19 @@ public:
         truth_.add(100, target_);
 
         // Track state
-        if (sc_brain_->activeMode() == DigiMode::GunsEngage) {
+        const DigiMode mode = sc_brain_->activeMode();
+        if (mode == DigiMode::GunsEngage) {
             enteredGunsEngage_ = true;
-        }
-        if (input.fireGun) {
-            firedGun_ = true;
+            // Track fire ONLY while in GunsEngage mode. The old test set
+            // firedGun_ from input.fireGun in ANY mode — a transient fire
+            // flag from WVREngage (or a stale flag from a prior phase)
+            // would pass the test.
+            if (input.fireGun) {
+                firedGunInGunsEngage_ = true;
+                fireFrames_++;
+            }
+        } else if (input.fireGun) {
+            firedGunOutsideGunsEngage_ = true;  // diagnostic only
         }
 
         minAlt_ = std::min(minAlt_, -as.kin.z);
@@ -93,7 +104,7 @@ public:
             }
             const std::size_t bufSize = 24;
             char modeBuf[bufSize];
-            std::snprintf(modeBuf, bufSize, "%s", digiModeName(sc_brain_->activeMode()));
+            std::snprintf(modeBuf, bufSize, "%s", digiModeName(mode));
             const double range = std::fabs(target_.x - as.kin.x);
             std::printf("%6.1f %8.0f %6.2f %6.2f %8.0f %6s %6s %6.0f\n",
                 phaseTime_, -as.kin.z, as.loads.nzcgs, input.pstick,
@@ -104,33 +115,47 @@ public:
     }
 
     bool IsFinished() const override {
-        return phaseTime_ >= maxTime_ || hasNaN_ || firedGun_;
+        // Do NOT exit early on first fire — the old test ended the phase
+        // the instant firedGun_ became true, which meant it never verified
+        // SUSTAINED fire or fire-while-in-GunsEngage. Run the full duration.
+        return phaseTime_ >= maxTime_ || hasNaN_;
     }
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // Must have entered GunsEngage mode
+        // 1. Must have entered GunsEngage mode.
         if (!enteredGunsEngage_) return false;
-        // Must not have crashed
+        // 2. Must not have crashed.
         if (minAlt_ < 100.0) return false;
-        // Heavy aircraft (B-52, C-130, etc.) can't pull enough G to track
-        // a gun target — accept "entered GunsEngage + didn't crash" for them.
+        // 3. Heavy aircraft (B-52, C-130, etc.) can't pull enough G to track
+        //    a gun target — accept "entered GunsEngage + didn't crash".
         if (isHeavy_) return true;
-        // Fighter/attack: must have fired the gun
-        if (!firedGun_) return false;
+        // 4. Fighter/attack: must have fired the gun WHILE IN GunsEngage
+        //    mode. The old test accepted fire in any mode (including
+        //    transient fire flags from WVREngage before transitioning to
+        //    GunsEngage).
+        if (!firedGunInGunsEngage_) return false;
+        // 5. Must have fired for at least 6 frames (0.1 s at 60 Hz) —
+        //    proves the fire was sustained, not a single-frame glitch.
+        if (fireFrames_ < 6) return false;
         return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
-        std::printf("  Entered GunsEngage: %s\n", enteredGunsEngage_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Entered GunsEngage:        %s\n", enteredGunsEngage_ ? "[PASS]" : "[FAIL]");
         if (isHeavy_) {
-            std::printf("  Fired gun:          %s (heavy: waived)\n",
-                firedGun_ ? "[PASS]" : "[WAIVED]");
+            std::printf("  Fired gun (in GunsEngage): %s (heavy: waived)\n",
+                firedGunInGunsEngage_ ? "[PASS]" : "[WAIVED]");
         } else {
-            std::printf("  Fired gun:          %s\n", firedGun_ ? "[PASS]" : "[FAIL]");
+            std::printf("  Fired gun (in GunsEngage): %s (%d frames, need >= 6) %s\n",
+                firedGunInGunsEngage_ ? "yes" : "no", fireFrames_,
+                (firedGunInGunsEngage_ && fireFrames_ >= 6) ? "[PASS]" : "[FAIL]");
         }
-        std::printf("  Min altitude:       %.0f ft (need >= 100) %s\n",
+        if (firedGunOutsideGunsEngage_) {
+            std::printf("  (note: fire flag seen outside GunsEngage mode)\n");
+        }
+        std::printf("  Min altitude:              %.0f ft (need >= 100) %s\n",
             minAlt_, minAlt_ >= 100.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
@@ -143,8 +168,10 @@ private:
     double minAlt_{1e9};
     bool hasNaN_{false};
     bool enteredGunsEngage_{false};
-    bool firedGun_{false};
+    bool firedGunInGunsEngage_{false};
+    bool firedGunOutsideGunsEngage_{false};
     bool isHeavy_{false};
+    int  fireFrames_{0};
     const DigiBrain* sc_brain_{nullptr};
 };
 

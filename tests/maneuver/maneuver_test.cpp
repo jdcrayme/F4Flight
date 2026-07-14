@@ -116,6 +116,15 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         // integral, causing the throttle to drop to ~0 at the start of the
         // next phase — which in the flightplan scenario leads to a
         // deceleration → stall → NaN cascade within 10 seconds.
+        //
+        // We DO clear the brain's frame inputs between phases. Without this,
+        // an injected threat/target pointer from phase N persists into
+        // phase N+1 (the brain commits it to state_ and never clears it on
+        // its own). When phase N's local DigiEntity goes out of scope, the
+        // pointer dangles — a use-after-free that produces plausible-looking
+        // but garbage commands. Clearing frame inputs (not PIDs) breaks the
+        // chain without disturbing control state.
+        sc.brain().setFrameInputs({});
         test->Init(sc, fm);
 
         while (!test->IsFinished()) {

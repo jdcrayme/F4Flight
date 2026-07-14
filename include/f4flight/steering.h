@@ -84,20 +84,66 @@ public:
     void setAltitude(double alt_ft) { brain_.setAltitude(alt_ft); }
     void setWaypoints(std::vector<Vec3> wps) { brain_.setWaypoints(std::move(wps)); }
     void setCaptureRadius(double r_ft) { brain_.setCaptureRadius(r_ft); }
-    void setMaxGs(double g) { brain_.setMaxGs(g); }
-    void setMaxBank(double bank_deg) { brain_.setMaxBank(bank_deg); }
-    void setCornerSpeed(double kts) { brain_.setCornerSpeed(kts); }
-    void setMaxGamma(double gamma_deg) { brain_.setMaxGamma(gamma_deg); }
-    void setTurnG(double load_factor) { brain_.setTurnG(load_factor); }
+
+    // Configuration setters — read-modify-write through DigiConfig so we
+    // don't touch the deprecated DigiBrain shims. Each call is O(1) and
+    // doesn't disturb fields not named in the method.
+    void setMaxGs(double g) {
+        digi::DigiConfig cfg = brain_.config();
+        cfg.maxGs = g;
+        brain_.configure(cfg);
+    }
+    void setMaxBank(double bank_deg) {
+        digi::DigiConfig cfg = brain_.config();
+        cfg.maxBankDeg = bank_deg;
+        brain_.configure(cfg);
+    }
+    void setCornerSpeed(double kts) {
+        digi::DigiConfig cfg = brain_.config();
+        cfg.cornerSpeedKts = kts;
+        brain_.configure(cfg);
+    }
+    void setMaxGamma(double gamma_deg) {
+        digi::DigiConfig cfg = brain_.config();
+        cfg.maxGammaDeg = gamma_deg;
+        brain_.configure(cfg);
+    }
+    void setTurnG(double load_factor) {
+        digi::DigiConfig cfg = brain_.config();
+        cfg.turnLoadFactor = load_factor;
+        brain_.configure(cfg);
+    }
     void setManualInput(const PilotInput& in) { manual_ = in; }
 
     // --- Threat/target setters (Tier 1-2) ---
-    // These delegate to the underlying DigiBrain's deprecated shims, which
-    // forward to setFrameInputs(). New code should use brain().setFrameInputs()
-    // directly.
-    void setIncomingMissile(const digi::DigiEntity* m) { brain_.setIncomingMissile(m); }
-    void setGunsThreat(const digi::DigiEntity* t) { brain_.setGunsThreat(t); }
-    void setTarget(const digi::DigiEntity* t) { brain_.setTarget(t); }
+    // Each call rebuilds the FrameInputs from the previous frame inputs so
+    // only the named field changes. This avoids the deprecated setX shims.
+    void setIncomingMissile(const digi::DigiEntity* m) {
+        digi::FrameInputs fi = brain_.frameInputs();
+        fi.injectedMissile = m;
+        brain_.setFrameInputs(fi);
+        // Mirror the deprecated shim's commit side-effect so
+        // runMissileDefeat sees the threat on the same frame (the new
+        // setFrameInputs path delays commit until compute()).
+        if (m) {
+            brain_.stateMutable().incomingMissile = m;
+            brain_.stateMutable().missileDefeatTtgo = -1.0;
+            brain_.stateMutable().incomingMissileEvadeTimer = 0.0;
+        } else {
+            brain_.stateMutable().incomingMissile = nullptr;
+        }
+    }
+    void setGunsThreat(const digi::DigiEntity* t) {
+        digi::FrameInputs fi = brain_.frameInputs();
+        fi.injectedGunsThreat = t;
+        brain_.setFrameInputs(fi);
+        brain_.stateMutable().gunsThreat = t;
+    }
+    void setTarget(const digi::DigiEntity* t) {
+        digi::FrameInputs fi = brain_.frameInputs();
+        fi.injectedTarget = t;
+        brain_.setFrameInputs(fi);
+    }
 
     // Accessors
     double heading() const { return brain_.state().holdPsi; }

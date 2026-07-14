@@ -96,12 +96,25 @@ public:
         if (maxRollRate_ < peakThr) return false;
         if (rstick_ > 0.5 && maxPosRollRate_ < dirThr) return false;
         if (rstick_ < -0.5 && maxNegRollRate_ > -dirThr) return false;
+        // Steady-state check: avg roll rate must be at least 40% of peak.
+        // The old test only checked peak — a single-frame spike would pass.
+        // rollRateSum_ / rollRateCount_ is the avg of |rate| over frames 2+.
+        const double avgRoll = (rollRateCount_ > 0) ? (rollRateSum_ / rollRateCount_) : 0.0;
+        if (avgRoll < 0.4 * peakThr) return false;
+        // Max bank: with full stick for the full duration, the aircraft
+        // should reach a significant bank. The old test tracked maxBank_
+        // but never asserted it. At 60+ deg/s for 8 s, the aircraft should
+        // easily exceed 60° (or hit the FCS bank limiter).
+        const double bankThr = isHeavy_ ? 30.0 : 60.0;
+        if (maxBank_ < bankThr) return false;
         return true;
     }
 
     void Finish() const override {
         const double peakThr = isHeavy_ ? 12.0 : 60.0;
         const double dirThr  = isHeavy_ ?  6.0 : 30.0;
+        const double bankThr = isHeavy_ ? 30.0 : 60.0;
+        const double avgRoll = (rollRateCount_ > 0) ? (rollRateSum_ / rollRateCount_) : 0.0;
         std::printf("  --- Summary ---\n");
         std::printf("  Max roll rate: %.1f deg/s (need >= %.0f) %s\n",
             maxRollRate_, peakThr, (maxRollRate_ >= peakThr) ? "[PASS]" : "[FAIL]");
@@ -109,10 +122,10 @@ public:
             maxPosRollRate_, maxNegRollRate_, rstick_, dirThr,
             ((rstick_ > 0.5 && maxPosRollRate_ >= dirThr) ||
              (rstick_ < -0.5 && maxNegRollRate_ <= -dirThr)) ? "[PASS]" : "[FAIL]");
-        double avgRR = rollRateCount_ > 0 ? rollRateSum_ / rollRateCount_ : 0.0;
-        std::printf("  Avg roll rate: %.1f deg/s (steady-state, frames 2-%.0f)\n",
-            avgRR, maxTime_);
-        std::printf("  Max bank:      %.1f deg\n", maxBank_);
+        std::printf("  Avg roll rate:  %.1f deg/s (need >= %.1f = 40%% peak) %s\n",
+            avgRoll, 0.4 * peakThr, avgRoll >= 0.4 * peakThr ? "[PASS]" : "[FAIL]");
+        std::printf("  Max bank:       %.1f deg (need >= %.0f) %s\n",
+            maxBank_, bankThr, maxBank_ >= bankThr ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 

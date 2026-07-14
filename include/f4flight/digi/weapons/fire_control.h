@@ -217,6 +217,13 @@ public:
                            double shootShootPct,  // [0,1] from SkillParameters
                            double timeSinceLastShot,  // seconds
                            double missileTof) {        // seconds
+        // The doctrine delay does not currently depend on seeker type — both
+        // SARH and ARH missiles use the same shoot-shoot / shoot-look timing
+        // (FreeFalcon dlogic.cpp:892-933 keys the doctrine on team stance
+        // and shot count, not seeker). The parameter is kept in the signature
+        // for the future BVR-port work that will differentiate by seeker.
+        (void)seeker;
+
         // Roll the dice on shoot-shoot
         const bool shootShoot = (shootShootPct >= 0.5);
 

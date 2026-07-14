@@ -216,7 +216,13 @@ if(F4FLIGHT_BUILD_TESTS)
     if(MSVC)
         target_compile_options(f4flight_tests PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8)
     else()
-        target_compile_options(f4flight_tests PRIVATE -Wall -Wextra -Wpedantic)
+        # -Wno-deprecated-declarations: the unit tests intentionally exercise
+        # the [[deprecated]] DigiBrain shims (setXxx, startXxx) to verify
+        # backward compatibility. The shims are documented as "retained for
+        # backward compat" — suppressing the deprecation warning here keeps
+        # the test build clean while still catching real regressions.
+        target_compile_options(f4flight_tests PRIVATE -Wall -Wextra -Wpedantic
+            -Wno-deprecated-declarations)
     endif()
 
     include(GoogleTest)

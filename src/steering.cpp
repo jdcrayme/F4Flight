@@ -67,14 +67,16 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
     // call to ManeuverPrimitives::Loiter. This preserves the old behavior
     // where Loiter is a 30° bank orbit, not waypoint following.
     if (mode_ == Mode::Loiter) {
-        digi::ManeuverPrimitives::Loiter(brain_.state(), state, fcs, fcsState,
-                                          brain_.state().maxGs);
-        digi::ManeuverPrimitives::MachHold(brain_.state().cornerSpeed, state.vcas, true,
-                                            brain_.state(), state, 200.0, 800.0, dt, 700.0);
-        out.pstick = limit(brain_.state().pStick, -1.0, 1.0);
-        out.rstick = limit(brain_.state().rStick, -1.0, 1.0);
-        out.ypedal = limit(brain_.state().yPedal, -1.0, 1.0);
-        out.throttle = limit(brain_.state().throttle, 0.0, 1.5);
+        // Loiter/MachHold take DigiState& (they write pStick/rStick/throttle).
+        // Use stateMutable() to avoid the [[deprecated]] non-const state() shim.
+        digi::DigiState& s = brain_.stateMutable();
+        digi::ManeuverPrimitives::Loiter(s, state, fcs, fcsState, s.maxGs);
+        digi::ManeuverPrimitives::MachHold(s.cornerSpeed, state.vcas, true,
+                                            s, state, 200.0, 800.0, dt, 700.0);
+        out.pstick = limit(s.pStick, -1.0, 1.0);
+        out.rstick = limit(s.rStick, -1.0, 1.0);
+        out.ypedal = limit(s.yPedal, -1.0, 1.0);
+        out.throttle = limit(s.throttle, 0.0, 1.5);
         out.refueling = false;
     }
 

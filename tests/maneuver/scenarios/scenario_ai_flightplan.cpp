@@ -92,7 +92,10 @@ public:
     }
 
     bool IsPassed() const override {
-        const bool wpOk = waypointsVisited_ >= (wps_.size() >= 1 ? wps_.size() - 1 : 0);
+        // 1. Must visit all waypoints (was size-1, which accepted visiting
+        //    only 3 of 4 corners — the 4th is "back to start").
+        const bool wpOk = waypointsVisited_ >= wps_.size();
+        // 2. Altitude band must stay within 500 ft of target.
         const bool altOk = std::fabs(maxAlt_ - alt_) < 500.0 &&
                            std::fabs(minAlt_ - alt_) < 500.0;
         return wpOk && altOk;
@@ -102,7 +105,7 @@ public:
         std::printf("  --- Summary ---\n");
         std::printf("  Waypoints captured: %zu / %zu  %s\n",
             waypointsVisited_, wps_.size(),
-            waypointsVisited_ >= wps_.size() - 1 ? "[PASS]" : "[FAIL]");
+            waypointsVisited_ >= wps_.size() ? "[PASS]" : "[FAIL]");
         std::printf("  Altitude band: %.0f..%.0f ft (target %.0f, dev +%.0f/-%.0f)  %s\n",
             minAlt_, maxAlt_, alt_,
             std::fabs(maxAlt_ - alt_), std::fabs(minAlt_ - alt_),

@@ -21,12 +21,13 @@ namespace manuver_test {
 class EnginePhase : public ManeuverTest {
 public:
     EnginePhase(const char* name, double throttle, double duration,
-                double alt, double speed, bool heavy)
+                double alt, double speed, bool heavy, bool hasAB)
         : ManeuverTest(name, duration)
         , throttle_(throttle)
         , alt_(alt)
         , speed_(speed)
         , isHeavy_(heavy)
+        , hasAB_(hasAB)
     {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
@@ -98,39 +99,56 @@ public:
     bool IsPassed() const override {
         if (hasNaN_) return false;
         const bool isIdle = (throttle_ < 0.1);
+        const bool isAB   = (throttle_ > 1.1);
         if (isIdle) {
-            // Idle thrust SHOULD be near zero for turboprops (C-130 T56 at
-            // flight idle) and low for turbofans. The previous test rejected
-            // zero thrust at idle, which incorrectly failed the C-130 (whose
-            // idle thrust table is 0.0). Accept any thrust below 1.0 ft/s^2
-            // at idle (fighters produce ~0.5-2.0 ft/s^2 idle, heavies ~0.0).
+            // Idle: thrust must be low AND rpm must drop to near idle (0.7).
+            // The old test only checked thrust <= 1.0 — an engine stuck at
+            // MIL rpm with low thrust would pass.
             if (maxThrust_ > 1.0) return false;
+            if (maxRpm_ > 0.80) return false;  // idle rpm is ~0.7, allow spool drift
         } else {
             // Non-idle thrust threshold scales with aircraft class.
-            //   Fighter: T/W ~ 0.6-1.2 → thrust accel >= 5.0 ft/s^2 at MIL
-            //   Heavy  : T/W ~ 0.2-0.3 → thrust accel >= 1.0 ft/s^2 at MIL
-            // (C-130 at 15000 ft / 350 kts: ~3.2 ft/s^2; B-52H similar.)
+            //   Fighter: T/W ~ 0.6-1.2 → thrust accel >= 5.0 ft/s² at MIL
+            //   Heavy  : T/W ~ 0.2-0.3 → thrust accel >= 1.0 ft/s² at MIL
             // Also: aircraft without afterburner (C-130, B-52H, A-10) will
             // produce the same thrust at throttle=1.5 as at 1.0 — that's
             // correct, not a failure.
             const double thrustMin = isHeavy_ ? 1.0 : 5.0;
             if (maxThrust_ < thrustMin) return false;
+            // RPM must reach near 1.0 at MIL/AB. The old test accepted 0.9
+            // (10% shortfall). Tighten to 0.95.
+            if (maxRpm_ < 0.95) return false;
+            // AB-specific: afterburner must actually light. The old test
+            // tracked abLitEver_ but never asserted it — an AB phase passed
+            // identically to a MIL phase. Aircraft without AB (C-130, B-52H,
+            // A-10, G-4 Super Galeb) don't light AB; use the config's
+            // hasAB flag to waive for them.
+            if (isAB && hasAB_ && !abLitEver_) return false;
         }
         if (minRpm_ < 0.0 || maxRpm_ > 1.6) return false;
-        if (!isIdle && maxRpm_ < 0.9) return false;
         return true;
     }
 
     void Finish() const override {
+        const bool isIdle = (throttle_ < 0.1);
+        const bool isAB   = (throttle_ > 1.1);
         std::printf("  --- Summary ---\n");
-        std::printf("  Throttle:   %.2f\n", throttle_);
+        std::printf("  Throttle:   %.2f%s\n", throttle_,
+            isAB ? " [AB]" : (isIdle ? " [IDLE]" : ""));
         std::printf("  RPM range:  %.3f to %.3f\n", minRpm_, maxRpm_);
-        std::printf("  Thrust:     %.1f to %.1f ft/s^2 (%.0f to %.0f lbf)\n",
-            minThrust_, maxThrust_,
-            minThrust_ * 841.0, maxThrust_ * 841.0);
-        std::printf("  AB lit:     %s", abLitEver_ ? "yes" : "no");
-        if (abLightTime_ >= 0.0) std::printf(" (first at T+%.1f)", abLightTime_);
-        std::printf("\n");
+        std::printf("  Thrust:     %.1f to %.1f ft/s^2\n", minThrust_, maxThrust_);
+        if (isAB) {
+            if (!hasAB_) {
+                std::printf("  AB lit:     (waived — aircraft has no AB fitted)\n");
+            } else {
+                std::printf("  AB lit:     %s %s\n", abLitEver_ ? "yes" : "no",
+                    abLitEver_ ? "[PASS]" : "[FAIL]");
+            }
+        } else if (isIdle) {
+            std::printf("  Idle rpm:   %s (max rpm %.3f <= 0.80)\n",
+                maxRpm_ <= 0.80 ? "[PASS]" : "[FAIL]", maxRpm_);
+        }
+        if (abLightTime_ >= 0.0) std::printf("  AB first lit at T+%.1f\n", abLightTime_);
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -139,6 +157,7 @@ private:
     double alt_;
     double speed_;
     bool   isHeavy_;
+    bool   hasAB_;
 
     double minRpm_{std::numeric_limits<double>::max()};
     double maxRpm_{std::numeric_limits<double>::lowest()};
@@ -169,11 +188,12 @@ public:
         fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
-        tests.push_back(std::make_unique<EnginePhase>("Idle", 0.0, 10.0, alt, speed, heavy));
-        tests.push_back(std::make_unique<EnginePhase>("MIL", 1.0, 10.0, alt, speed, heavy));
-        tests.push_back(std::make_unique<EnginePhase>("Afterburner", 1.5, 10.0, alt, speed, heavy));
-        tests.push_back(std::make_unique<EnginePhase>("Back to MIL", 1.0, 10.0, alt, speed, heavy));
-        tests.push_back(std::make_unique<EnginePhase>("Back to Idle", 0.0, 10.0, alt, speed, heavy));
+        const bool hasAB = ctx.cfg.engine.hasAB();
+        tests.push_back(std::make_unique<EnginePhase>("Idle", 0.0, 10.0, alt, speed, heavy, hasAB));
+        tests.push_back(std::make_unique<EnginePhase>("MIL", 1.0, 10.0, alt, speed, heavy, hasAB));
+        tests.push_back(std::make_unique<EnginePhase>("Afterburner", 1.5, 10.0, alt, speed, heavy, hasAB));
+        tests.push_back(std::make_unique<EnginePhase>("Back to MIL", 1.0, 10.0, alt, speed, heavy, hasAB));
+        tests.push_back(std::make_unique<EnginePhase>("Back to Idle", 0.0, 10.0, alt, speed, heavy, hasAB));
         return tests;
     }
 };

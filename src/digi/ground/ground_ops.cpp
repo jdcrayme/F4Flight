@@ -9,6 +9,7 @@
 #include "f4flight/digi/ground/ground_ops.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/atc/atc_messages.h"
+#include "f4flight/digi/atc/taxi_graph.h"  // Round-2 fix: RunTaxi uses TaxiGraph
 #include "f4flight/core/constants.h"
 #include "f4flight/core/math.h"
 #include "f4flight/steering.h"  // for headingError
@@ -69,9 +70,50 @@ void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
 
 void RunTaxi(DigiState& digi, const AircraftState& as,
              FcsState& fcsState, double dt) {
+    auto& go = digi.groundOps;
+
+    // Round-2 structural fix (Rec 4 / Bug K): RunTaxi was previously dead
+    // code — it always steered toward (runwayThresholdX, runwayThresholdY)
+    // regardless of any taxi graph. Now if a TaxiGraph is set, we follow
+    // the BFS path node-by-node. If no graph is set, fall back to the old
+    // direct-to-threshold behavior (so existing hosts that don't supply a
+    // graph keep working).
+
+    double targetX = go.runwayThresholdX;
+    double targetY = go.runwayThresholdY;
+
+    if (go.taxiGraph != nullptr && go.targetTaxiNode >= 0) {
+        // Re-compute path if target changed or we have no path yet.
+        if (go.taxiPath.empty() ||
+            (go.taxiPathIdx == 0 && go.currentTaxiNode != go.targetTaxiNode &&
+             (!go.taxiPath.empty() && go.taxiPath.back() != go.targetTaxiNode))) {
+            // BFS from currentTaxiNode to targetTaxiNode.
+            // (Casts int → TaxiNodeId; both are int.)
+            go.taxiPath = go.taxiGraph->findPath(go.currentTaxiNode,
+                                                  go.targetTaxiNode);
+            go.taxiPathIdx = (go.taxiPath.size() > 1) ? 1 : 0;
+        }
+
+        // If we have a path, steer toward the next node in it.
+        if (!go.taxiPath.empty() && go.taxiPathIdx < go.taxiPath.size()) {
+            const auto& node = go.taxiGraph->node(go.taxiPath[go.taxiPathIdx]);
+            targetX = node.position.x;
+            targetY = node.position.y;
+
+            // Check if we've reached this node; if so, advance the path.
+            const double dxN = targetX - as.kin.x;
+            const double dyN = targetY - as.kin.y;
+            const double distN = std::sqrt(dxN * dxN + dyN * dyN);
+            if (distN < 50.0 && go.taxiPathIdx + 1 < go.taxiPath.size()) {
+                ++go.taxiPathIdx;
+                go.currentTaxiNode = go.taxiPath[go.taxiPathIdx];
+            }
+        }
+    }
+
     // Simple taxi: steer toward target point at taxi speed
-    const double dx = digi.groundOps.runwayThresholdX - as.kin.x;
-    const double dy = digi.groundOps.runwayThresholdY - as.kin.y;
+    const double dx = targetX - as.kin.x;
+    const double dy = targetY - as.kin.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
 
     if (dist < 50.0) {
@@ -79,8 +121,10 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
         digi.throttle = 0.0;
         digi.pStick = 0.0;
         digi.rStick = 0.0;
+        digi.wheelBrakes = true;  // hold position with brakes
         return;
     }
+    digi.wheelBrakes = false;
 
     // Steer toward target
     const double desHeading = std::atan2(dy, dx);
@@ -101,6 +145,7 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
 
 void RunTakeoff(DigiState& digi, const AircraftState& as,
                 FcsState& fcsState, double dt, double simTime, double groundZ) {
+    (void)dt;  // takeoff uses discrete phase transitions, not dt
     auto& go = digi.groundOps;
 
     switch (go.phase) {
@@ -262,8 +307,15 @@ void RunLanding(DigiState& digi, const AircraftState& as,
         }
 
         case GroundOpsPhase::Rollout: {
-            // Decelerate — brakes + idle
+            // Decelerate — brakes + idle.
+            // Round-2 structural fix (Rec 7): now that PilotInput.wheelBrakes
+            // is plumbed through FlightModel::updateGear → calcMuFric, the
+            // rollout can actually decelerate. Previously the brain set
+            // throttle=0 but the aircraft kept rolling (no friction increase).
             digi.throttle = 0.0;
+            digi.wheelBrakes = (as.vcas > 5.0);  // release brakes below 5 kts (stop)
+            // Extend speed brakes for extra drag during rollout.
+            digi.speedBrakeCmd = (as.vcas > 30.0) ? 1.0 : 0.0;
             // Keep straight on runway heading
             const double headingErr = headingError(go.runwayHeading, as.kin.sigma);
             ManeuverPrimitives::SetRstick(headingErr * RTD * 3.0, digi,

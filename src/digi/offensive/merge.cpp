@@ -18,6 +18,7 @@ namespace digi {
 // ===========================================================================
 bool MergeCheck(const DigiState& digi, const DigiEntity& self,
                 const DigiEntity& target) {
+    (void)digi;  // mode-entry test uses only self/target geometry
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
     // Must be above 3000 ft AGL

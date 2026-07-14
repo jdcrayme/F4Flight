@@ -43,37 +43,6 @@ namespace f4flight {
 namespace digi {
 
 // ===========================================================================
-// Helper: resolve the effective self entity pointer for this frame.
-//
-// If the host set frameInputs_.selfEntity, use it. Otherwise auto-build
-// from AircraftState. Returns a pointer (may point to selfEntityAuto_).
-// ===========================================================================
-namespace {
-
-/// Resolve the effective injected-missile pointer, considering both
-/// frameInputs_.injectedMissile (host injection) and state_.incomingMissile
-/// (which may have been cleared by MissileDefeatCheck last frame).
-/// The injected missile has priority — the host manages its lifetime.
-const DigiEntity* resolveInjectedMissile(const FrameInputs& fi,
-                                          const DigiState& s) {
-    if (fi.injectedMissile) return fi.injectedMissile;
-    // If state_.incomingMissile points to something that is NOT our
-    // auto-entity, it was host-injected in a prior frame via the
-    // deprecated shim. Respect it.
-    if (s.incomingMissile) return s.incomingMissile;
-    return nullptr;
-}
-
-const DigiEntity* resolveInjectedGunsThreat(const FrameInputs& fi,
-                                             const DigiState& s) {
-    if (fi.injectedGunsThreat) return fi.injectedGunsThreat;
-    if (s.gunsThreat) return s.gunsThreat;
-    return nullptr;
-}
-
-} // anonymous namespace
-
-// ===========================================================================
 // Constructor
 // ===========================================================================
 DigiBrain::DigiBrain() {
@@ -284,6 +253,67 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             case DigiMode::NoMode:
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
+
+            // -----------------------------------------------------------------
+            // Round-2 structural additions (Rec 6): dispatch stubs for the 9
+            // new DigiMode values. Each falls through to Waypoint navigation
+            // until its behavior is ported. This means the brain can RESOLVE
+            // to these modes (so future porting work can incrementally wire
+            // them up) without producing dead code or surprise behavior.
+            //
+            // The 4 modes with primitive targets (Roop, OverB, Loiter, Bugout)
+            // DO call their primitive — so the primitive is exercised even
+            // before the full mode logic lands.
+            // -----------------------------------------------------------------
+            case DigiMode::Roop: {
+                // selfEntity is already resolved at the top of compute()
+                // (frameInputs_.selfEntity or &selfEntityAuto_). Reuse it.
+                if (selfEntity && wvrTarget_) {
+                    const bool stillActive = ManeuverPrimitives::RollOutOfPlane(
+                        state_, *selfEntity, as, fcs, fcsState, dt,
+                        /*firstFrame=*/false);
+                    if (!stillActive) {
+                        // Maneuver timer expired — fall back to waypoint nav
+                        runWaypoint(as, dt, fcs, fcsState);
+                    }
+                } else {
+                    runWaypoint(as, dt, fcs, fcsState);
+                }
+                break;
+            }
+            case DigiMode::OverB: {
+                if (selfEntity && wvrTarget_) {
+                    ManeuverPrimitives::OverBank(state_, *selfEntity, *wvrTarget_,
+                                                  fcs, fcsState,
+                                                  30.0 * DTR, /*firstFrame=*/false);
+                } else {
+                    runWaypoint(as, dt, fcs, fcsState);
+                }
+                break;
+            }
+            case DigiMode::Loiter:
+                // Loiter already exists as a ManeuverPrimitives method — use it.
+                ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.maxGs);
+                ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
+                                              state_, as, 200.0, 800.0, dt, 700.0);
+                break;
+            case DigiMode::Bugout:
+            case DigiMode::Separate:
+                // Both modes disengage — use WvrBugOut (hold heading + alt,
+                // accelerate to 2x corner speed). The full separate.cpp port
+                // will add RangeAtTailChase geometry + bugoutTimer.
+                ManeuverPrimitives::WvrBugOut(state_, as, fcs, fcsState, dt);
+                break;
+            case DigiMode::Refueling:
+            case DigiMode::FollowOrders:
+            case DigiMode::RTB:
+            case DigiMode::Wingy:
+            case DigiMode::GroundMnvr:
+                // Not yet ported — fall through to Waypoint navigation.
+                // (Each of these needs a substantial port: refuel.cpp,
+                // wingman system, AirbaseCheck, formdata.cpp, gndattck.cpp.)
+                runWaypoint(as, dt, fcs, fcsState);
+                break;
         }
     }
 
@@ -292,6 +322,16 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     out.rstick = limit(state_.rStick, -1.0, 1.0);
     out.ypedal = limit(state_.yPedal, -1.0, 1.0);
     out.throttle = limit(state_.throttle, 0.0, 1.5);
+    // Round-2 structural fix (Rec 7): map digi brake / speed-brake / gear
+    // commands to PilotInput. Previously the brain wrote only pStick/
+    // rStick/yPedal/throttle — PilotInput.wheelBrakes / speedBrake /
+    // gearHandle were dead fields. Now RunLanding::Rollout can actually
+    // command wheel brakes, and a future A/G dive-bomb mode can command
+    // speed brakes.
+    out.wheelBrakes  = state_.wheelBrakes;
+    out.parkingBrake = state_.parkingBrake;
+    out.speedBrake   = state_.speedBrakeCmd;
+    out.gearHandle   = state_.gearHandleCmd;
     out.refueling = false;
     // Map digi fire flags to PilotInput (host reads these to fire weapons)
     out.fireGun        = state_.gunFireFlag;
@@ -530,8 +570,6 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
             : 35.0 * 6076.0;  // default: AIM-120 RMax (35 NM)
 
         if (range < maxAAWpnRangeFt) {
-            const RelativeGeometry rg = computeRelativeGeometry(*selfEntity, *tgt);
-
             // --- BVR engagement (beyond 8 NM) ---
             // FF bvrengage.cpp:46-216: enter BvrEngage when target is beyond
             // 8 NM and within engageRange. Higher priority than MissileEngage

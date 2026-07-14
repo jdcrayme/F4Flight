@@ -159,6 +159,86 @@ public:
                             DigiState& digi, const AircraftState& state,
                             const FlightControlSystem& fcs,
                             FcsState& fcsState, double maxGs, double dt);
+
+    // -----------------------------------------------------------------------
+    // Round-2 structural additions (Rec 10): the 4 missing maneuver
+    // primitives that the 9 unported DigiMode values dispatch to.
+    // Without these, adding the modes to the enum would be dead code.
+    // -----------------------------------------------------------------------
+
+    // PullToCollisionPoint — lead-pursuit trackpoint smoother.
+    // Port of FreeFalcon randp.cpp:445-555.
+    //
+    // Sets trackX/Y/Z to the predicted collision point with the target:
+    //   tc = range / closure_rate (collision time)
+    //   if tc > 0: trackPoint = target_pos + target_vel * tc
+    //   else:      trackPoint = target_pos + target_vel * MAGIC_NUMBER (2 s)
+    //
+    // On the first frame (lastMode != curMode), sets the trackpoint directly.
+    // On subsequent frames, SMOOTHS the trackpoint: 0.1*new + 0.9*old. This
+    // smoothing is the key behavior — without it, target jitter propagates
+    // directly to the AutoTrack pitch/roll commands and the aircraft
+    // oscillates. F4Flight's TrackPoint/AutoTrack currently set the
+    // trackpoint each frame with no smoothing, which is why BFM tracking
+    // is jittery.
+    //
+    // After setting trackX/Y/Z, calls AutoTrack(maxGs) to fly to it.
+    //
+    //   target : the entity to track (read for position + velocity)
+    //   self   : own aircraft entity (read for position)
+    //   firstFrame : true on the first frame of the mode (no smoothing)
+    static void PullToCollisionPoint(DigiState& digi,
+                                     const DigiEntity& self,
+                                     const DigiEntity& target,
+                                     const AircraftState& as,
+                                     const FlightControlSystem& fcs,
+                                     FcsState& fcsState,
+                                     double maxGs, bool firstFrame);
+
+    // OverBank — roll to (target.droll ± delta) for lateral separation.
+    // Port of FreeFalcon mnvers.cpp:920-965.
+    //
+    // Used by OverBMode to gain separation in a turning fight. Computes a
+    // target roll angle = target's roll + delta (or - delta if our roll is
+    // negative), then SetRstick toward it. Skipped in vertical fights
+    // (|pitch| > 45°).
+    //
+    //   target : the entity whose droll (roll difference) we add delta to
+    //   delta  : bank offset (radians) — typically 30° per FF randp.cpp
+    //   firstFrame : true on the first frame of the mode (compute newRoll)
+    static void OverBank(DigiState& digi,
+                         const DigiEntity& self,
+                         const DigiEntity& target,
+                         const FlightControlSystem& fcs,
+                         FcsState& fcsState,
+                         double delta, bool firstFrame);
+
+    // RollOutOfPlane — roll 30° toward vertical to break a stalemate.
+    // Port of FreeFalcon mnvers.cpp:868-918.
+    //
+    // Used by RoopMode. On first frame, picks a newRoll = self.roll ± 30°
+    // (toward vertical). Then pulls max-G (gsAvail) + rolls toward newRoll
+    // for 1 second.
+    //
+    //   firstFrame : true on the first frame of the mode (compute newRoll)
+    //   returns    : true while the maneuver is still active (mnverTime > 0)
+    static bool RollOutOfPlane(DigiState& digi,
+                                const DigiEntity& self,
+                                const AircraftState& as,
+                                const FlightControlSystem& fcs,
+                                FcsState& fcsState,
+                                double dt, bool firstFrame);
+
+    // WvrBugOut — disengage: hold heading + altitude, accelerate to 2x corner.
+    // Port of FreeFalcon wvrengage.cpp:727-731.
+    //
+    // Used by SeparateMode and BugoutMode. The simplest of the four new
+    // primitives — just fly straight and fast to escape the fight.
+    static void WvrBugOut(DigiState& digi,
+                          const AircraftState& as,
+                          const FlightControlSystem& fcs,
+                          FcsState& fcsState,
+                          double dt);
 };
 
 } // namespace digi

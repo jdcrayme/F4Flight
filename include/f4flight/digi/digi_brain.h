@@ -115,6 +115,12 @@ struct FrameInputs {
     // Production code should populate `truth` instead.
     const DigiEntity* injectedMissile    {nullptr};
     const DigiEntity* injectedGunsThreat {nullptr};
+
+    // --- Round-2 structural addition (Rec 9): A/G target injection ---
+    // The host can inject a ground target for the future GroundMnvr mode.
+    // When non-null, the brain's groundTarget pointer is set; the (still
+    // unported) GroundAttackMode will read it.
+    const DigiEntity* injectedGroundTarget {nullptr};
 };
 
 // ===========================================================================
@@ -163,7 +169,45 @@ public:
     /// Set the per-frame world inputs (truth, self entity, threats, target).
     /// Call this every frame before compute(). Values persist until the next
     /// call (so you can skip a frame and the brain reuses the last inputs).
-    void setFrameInputs(const FrameInputs& inputs) { frameInputs_ = inputs; }
+    ///
+    /// API contract: if `injectedMissile` / `injectedGunsThreat` /
+    /// `injectedTarget` are null AND `truth` is null, any previously
+    /// committed threat/target pointer in `state_` is cleared. This prevents
+    /// a use-after-free when the host's injected entity goes out of scope
+    /// (e.g. a test phase that injects a local DigiEntity then ends — the
+    /// next phase must not inherit a dangling pointer). When `truth` is
+    /// non-null, SensorFusion owns threat/target tracking and stale pointers
+    /// are refreshed in `resolveMode()`.
+    void setFrameInputs(const FrameInputs& inputs) {
+        const bool hostGaveUpOnThreats = (inputs.truth == nullptr);
+        if (hostGaveUpOnThreats) {
+            if (!inputs.injectedMissile) {
+                state_.incomingMissile = nullptr;
+                state_.incomingMissileId = kInvalidEntityId;
+                missileEntityAuto_.reset();
+            }
+            if (!inputs.injectedGunsThreat) {
+                state_.gunsThreat = nullptr;
+                gunsEntityAuto_.reset();
+            }
+            if (!inputs.injectedTarget) {
+                wvrTarget_ = nullptr;
+                targetEntityAuto_.reset();
+            }
+            // Round-2 fix (Rec 9): also clear stale A/G target pointer.
+            if (!inputs.injectedGroundTarget) {
+                state_.groundTarget = nullptr;
+                state_.groundTargetId = kInvalidEntityId;
+            }
+        }
+        // Commit injected ground target immediately (the future GroundMnvr
+        // mode will read state_.groundTarget; the host's injection is the
+        // production path).
+        if (inputs.injectedGroundTarget) {
+            state_.groundTarget = inputs.injectedGroundTarget;
+        }
+        frameInputs_ = inputs;
+    }
 
     /// Read back the current frame inputs.
     const FrameInputs& frameInputs() const { return frameInputs_; }

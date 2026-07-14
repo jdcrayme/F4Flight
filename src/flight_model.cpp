@@ -180,7 +180,13 @@ void FlightModel::updateGear(double dt) {
     gear_.updateStrutCompression(state_.gear, state_.gear.groundZ_ft,
                                  state_.kin.z, state_.kin.vt, dt);
     // Recompute friction
-    state_.gear.muFric = GearModel::calcMuFric(false, false,
+    // NOTE: Round-2 audit found this was hardcoded to (false, false) — the
+    // PilotInput.wheelBrakes / parkingBrake fields existed but were never
+    // plumbed through. We now cache the input fields (see update()) so the
+    // rollout can actually brake. Without this, RunLanding::Rollout sets
+    // throttle=0 but the aircraft doesn't decelerate (no friction increase).
+    state_.gear.muFric = GearModel::calcMuFric(lastInput_.wheelBrakes,
+                                               lastInput_.parkingBrake,
                                                state_.gear.onObject,
                                                state_.gear.overRunway);
     // Recompute minHeight
@@ -324,6 +330,34 @@ void FlightModel::update(double dt, const PilotInput& input,
                          double groundZ_ft, const Vec3& groundNormal) {
     state_.gear.groundZ_ft = groundZ_ft;
     state_.gear.groundNormal = groundNormal;
+
+    // Cache input so updateGear() can read wheelBrakes/parkingBrake.
+    // (Round-2 audit fix — previously these fields were dead.)
+    lastInput_ = input;
+
+    // Map speed-brake handle (-1 retract .. +1 extend) to aero.dbrake (0..1).
+    // Previously dbrake was never set from input — the FCS didn't drive it.
+    // This is the second half of the Rec 7 fix: the digi brain can now
+    // command speed brakes for descent / deceleration.
+    //
+    // NOTE: PilotInput.speedBrake defaults to 0.0 (mid-range), but in
+    // flight 0.0 should mean RETRACTED (no drag), not half-extended. Map
+    // -1..+1 → 0..1 so that:
+    //   speedBrake = -1.0  →  dbrake = 0.0   (retracted, no drag — default)
+    //   speedBrake =  0.0  →  dbrake = 0.5   (half extended)
+    //   speedBrake = +1.0  →  dbrake = 1.0   (full extended)
+    //
+    // The digi brain's DigiState.speedBrakeCmd defaults to 0.0 (retracted)
+    // and the brain maps it to PilotInput.speedBrake = -1.0 by default
+    // (see digi_brain.cpp compute()). So in practice:
+    //   - Aircraft in normal flight: dbrake = 0.0 (no drag)
+    //   - Brain commands speedBrakeCmd = +1.0: dbrake = 1.0 (full drag)
+    //
+    // The mapping in compute() (digi_brain.cpp):
+    //   out.speedBrake = state_.speedBrakeCmd;
+    // is intentional — speedBrakeCmd already uses the PilotInput -1..+1
+    // convention. We need to convert PilotInput.speedBrake to dbrake here.
+    state_.aero.dbrake = limit((input.speedBrake + 1.0) * 0.5, 0.0, 1.0);
 
     // Update gear state once per major frame
     updateGear(dt);

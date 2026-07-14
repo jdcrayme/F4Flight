@@ -14,6 +14,7 @@ namespace digi {
 void RWRSensor::update(const DigiEntity& self, const TruthState& truth,
                         const SkillParameters& skill, double /*dt*/,
                         std::vector<SensorContact>& out) {
+    (void)skill;  // RWR is non-skilled (always detects emissions in range)
     if (!config_.enabled) return;
 
     for (std::size_t i = 0; i < truth.size(); ++i) {

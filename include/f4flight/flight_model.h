@@ -93,6 +93,12 @@ private:
     GearModel              gear_;
     EquationsOfMotion      eom_;
 
+    // Cached copy of the most recent PilotInput — needed by updateGear()
+    // which runs before minorStep() but needs the brake handle state.
+    // Round-2 audit: previously calcMuFric was hardcoded (false, false),
+    // so PilotInput.wheelBrakes was a dead field. Now we plumb it through.
+    PilotInput lastInput_{};
+
     int    minorPerMajor_{6};
     double minorFrameTime_{1.0 / 360.0}; // 6 sub-steps of 1/60 s = 1/10 s major
 };

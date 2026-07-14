@@ -118,6 +118,7 @@ void ATCController::handleLandingRequest(EntityId aircraft, double simTime, Mess
 
 void ATCController::handleRunwayVacated(EntityId aircraft, double simTime, MessageBus& bus) {
     (void)bus;
+    (void)simTime;  // vacate is event-driven; no timestamp needed
     for (auto& rwy : runways_) {
         if (rwy.currentUser == aircraft) {
             rwy.state = RunwayState::Idle;

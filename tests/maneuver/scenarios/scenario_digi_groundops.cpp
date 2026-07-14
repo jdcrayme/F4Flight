@@ -55,9 +55,10 @@ public:
         // Check if this is a heavy aircraft (low T/W may not take off in time)
         isHeavy_ = isHeavy(fm.config());
 
-        // Command takeoff: runway 27 (heading 270° = west, but we use 0° = north for simplicity)
+        // Command takeoff via the new async-command API.
+        // Runway 27 (heading 270° = west, but we use 0° = north for simplicity)
         // Runway threshold at origin, heading 0 (north)
-        sc.brain().startTakeoff(270, 0.0, 0.0, 0.0, 0.0);
+        sc.brain().commandTakeoff(270, 0.0, 0.0, 0.0, 0.0);
 
         sc_brain_ = &sc.brain();
     }
@@ -103,19 +104,24 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // All aircraft must enter Takeoff mode and apply takeoff throttle.
+        // 1. All aircraft must enter Takeoff mode and apply takeoff throttle.
         if (!enteredTakeoff_) return false;
         if (!appliedTakeoffThrottle_) return false;
-        // Heavy aircraft (low T/W) may not have enough thrust to take off
-        // in the test time. For these, accept "entered Takeoff + applied
-        // throttle + no NaN" — but still require the throttle to actually
-        // have been advanced.
+        // 2. Heavy aircraft (low T/W) may not have enough thrust to take off
+        //    in the test time. For these, require at least 80 kts of
+        //    acceleration (proves the throttle actually advanced and the
+        //    aircraft is moving) — the old predicate accepted a stationary
+        //    aircraft as long as the brain latched Takeoff mode.
         if (isHeavy_) {
-            return true;  // heavy: pass if entered mode + throttle + no NaN
+            return maxSpeed_ >= 80.0;
         }
-        // Fighter/attack: must become airborne and reach 100 ft
+        // 3. Fighter/attack: must become airborne AND reach a meaningful
+        //    altitude. The old test only required 100 ft (7% of the 1500 ft
+        //    climbout target) — a hop-and-stall would pass. Require 500 ft
+        //    (33% of climbout) and at least 200 kts (rotation + accel).
         if (!becameAirborne_) return false;
-        if (maxAlt_ < 100.0) return false;
+        if (maxAlt_ < 500.0) return false;
+        if (maxSpeed_ < 200.0) return false;
         return true;
     }
 
@@ -124,14 +130,15 @@ public:
         std::printf("  Entered Takeoff mode:    %s\n", enteredTakeoff_ ? "[PASS]" : "[FAIL]");
         std::printf("  Applied takeoff throttle:%s\n", appliedTakeoffThrottle_ ? "[PASS]" : "[FAIL]");
         if (isHeavy_) {
-            std::printf("  Heavy aircraft (takeoff physics not fully tuned): %s\n",
-                !hasNaN_ && enteredTakeoff_ && appliedTakeoffThrottle_ ? "[PASS]" : "[FAIL]");
+            std::printf("  Heavy: max speed %.1f kts (need >= 80) %s\n",
+                maxSpeed_, maxSpeed_ >= 80.0 ? "[PASS]" : "[FAIL]");
         } else {
             std::printf("  Became airborne: %s\n", becameAirborne_ ? "[PASS]" : "[FAIL]");
-            std::printf("  Max altitude:    %.0f ft (need >= 100) %s\n",
-                maxAlt_, maxAlt_ >= 100.0 ? "[PASS]" : "[FAIL]");
+            std::printf("  Max altitude:    %.0f ft (need >= 500) %s\n",
+                maxAlt_, maxAlt_ >= 500.0 ? "[PASS]" : "[FAIL]");
+            std::printf("  Max speed:       %.1f kts (need >= 200) %s\n",
+                maxSpeed_, maxSpeed_ >= 200.0 ? "[PASS]" : "[FAIL]");
         }
-        std::printf("  Max speed:       %.1f kts\n", maxSpeed_);
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -189,8 +196,8 @@ public:
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
         sc.setMaxGs(fm.config().geometry.maxGs);
 
-        // Command landing: runway 27, heading 0 (north), threshold at origin
-        sc.brain().startLanding(270, 0.0, 0.0, 0.0, 0.0);
+        // Command landing via the new async-command API.
+        sc.brain().commandLanding(270, 0.0, 0.0, 0.0, 0.0);
 
         // The brain now clears pullupTimer/groundAvoidNeeded itself when
         // it detects a landing phase in compute() (matching FreeFalcon's
@@ -208,7 +215,10 @@ public:
         maxSpeed_ = std::max(maxSpeed_, as.vcas);
         minSpeed_ = std::min(minSpeed_, as.vcas);
 
-        if (altAGL < 10.0) touchedDown_ = true;
+        if (altAGL < 10.0 && !touchedDown_) {
+            touchedDown_ = true;
+            touchdownSpeed_ = as.vcas;  // capture speed at moment of touchdown
+        }
         if (touchedDown_ && as.vcas < 30.0) stopped_ = true;
         if (sc_brain_->activeMode() == DigiMode::Landing) enteredLanding_ = true;
 
@@ -245,18 +255,34 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // Must have entered Landing mode
+        // 1. Must have entered Landing mode.
         if (!enteredLanding_) return false;
-        // Must have descended (not just cruised)
-        if (minAlt_ > initialAlt_ - 100.0) return false;
-        // Must not have excessive Phugoid climb (max alt within 500 ft of start)
-        if (maxAlt_ > initialAlt_ + 500.0) return false;
-        // Must touch down (altAGL <= 0 at some point)
+        // 2. Must have descended (not just cruised). The old threshold of
+        //    initialAlt-100 was too generous (a 100-ft descent over 90 s
+        //    is level flight noise). Require descent of at least 500 ft.
+        if (minAlt_ > initialAlt_ - 500.0) return false;
+        // 3. Must not have climbed excessively. The TrackPointLanding
+        //    primitive (ported from FreeFalcon mnvers.cpp:33) is a pure
+        //    proportional tracker — no integral, no gamma feedback. In
+        //    F4Flight's flight model this still produces a ~200-300 ft
+        //    Phugoid transient at capture (the aircraft pitches up first,
+        //    then descends — see DIGI_AUDIT.md "Known library gaps").
+        //    The old test allowed +500 ft (a go-around would pass); we
+        //    tighten to +400 ft (accepts the Phugoid, still catches a
+        //    true go-around).
+        if (maxAlt_ > initialAlt_ + 400.0) return false;
+        // 4. Must touch down (altAGL <= 10 at some point).
         if (!touchedDown_) return false;
-        // Must not go excessively underground (no ground reaction force in
-        // F4Flight's flight model, so a few feet of "underground" is normal
-        // during rollout before the gear model catches up)
+        // 5. Must not go excessively underground (no ground reaction bug).
         if (minAlt_ < -500.0) return false;
+        // 6. Must have decelerated after touchdown. The current rollout
+        //    logic sets throttle=0 but doesn't command wheel brakes
+        //    (PilotInput has no brake field — see structural recommendation
+        //    in DIGI_AUDIT.md). The aircraft decelerates only via drag +
+        //    rolling resistance, so requiring a full stop is unrealistic.
+        //    Instead require at least 30 kts of deceleration after touchdown
+        //    (proves the rollout phase engaged and throttle went to idle).
+        if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 30.0) return false;
         return true;
     }
 
@@ -266,12 +292,17 @@ public:
         std::printf("  Min altitude:        %.1f ft (need >= -500) %s\n",
             minAlt_, minAlt_ >= -500.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Max altitude:        %.1f ft (need <= %.0f) %s\n",
-            maxAlt_, initialAlt_ + 500.0,
-            maxAlt_ <= initialAlt_ + 500.0 ? "[PASS]" : "[FAIL]");
+            maxAlt_, initialAlt_ + 400.0,
+            maxAlt_ <= initialAlt_ + 400.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Touched down:        %s %s\n", touchedDown_ ? "yes" : "no",
             touchedDown_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Descended below start: %s\n",
-            minAlt_ <= initialAlt_ - 100.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Descended >= 500 ft: %s\n",
+            minAlt_ <= initialAlt_ - 500.0 ? "[PASS]" : "[FAIL]");
+        if (touchedDown_) {
+            std::printf("  Decel after TD:      %.0f -> %.0f kts (need >= 30 kts decel) %s\n",
+                touchdownSpeed_, minSpeed_,
+                minSpeed_ <= touchdownSpeed_ - 30.0 ? "[PASS]" : "[FAIL]");
+        }
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -281,6 +312,7 @@ private:
     double maxAlt_{0.0};
     double maxSpeed_{0.0};
     double minSpeed_{1e9};
+    double touchdownSpeed_{0.0};
     double initialAlt_{2000.0};  // start altitude (ft AGL)
     bool touchedDown_{false};
     bool stopped_{false};

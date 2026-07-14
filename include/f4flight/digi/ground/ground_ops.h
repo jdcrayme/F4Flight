@@ -33,8 +33,12 @@
 #include "f4flight/fcs.h"
 #include "f4flight/digi/atc/atc_messages.h"
 
+#include <vector>
+
 namespace f4flight {
 namespace digi {
+
+namespace atc { class TaxiGraph; }  // forward declaration (full header is taxi_graph.h)
 
 // Forward declaration — DigiState is defined in digi_state.h, which includes
 // this file. We only need a reference here.
@@ -81,6 +85,19 @@ struct GroundOpsState {
     int currentTaxiNode{-1};          // current taxi graph node
     int targetTaxiNode{-1};           // next node to taxi to
     double taxiSpeed{0.0};            // target taxi speed (kts)
+    // Round-2 structural fix (Rec 4 / Bug K): the TaxiGraph pointer was
+    // missing entirely, so RunTaxi was dead code — it had no way to look
+    // up the next node. Now the host sets taxiGraph before commanding a
+    // TaxiToRunway / TaxiToParking phase, and RunTaxi follows the BFS
+    // path node-by-node.
+    const atc::TaxiGraph* taxiGraph{nullptr};
+    // Cached BFS path from currentTaxiNode to the final destination.
+    // Re-computed when targetTaxiNode changes or when the aircraft reaches
+    // a node. Each entry is a TaxiNodeId.
+    // (Stored as ints to avoid pulling the TaxiGraph header into this header;
+    // the IDs are stable indices into TaxiGraph::node().)
+    std::vector<int> taxiPath;
+    std::size_t taxiPathIdx{0};
 
     // Takeoff state
     double takeoffRollStart{0.0};     // sim time when roll began

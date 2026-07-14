@@ -223,9 +223,13 @@ void MissileEngage(DigiState& digi, const DigiEntity& self,
             digi.trackY = target.y + target.vy * tof;
             digi.trackZ = target.z + zDot * tof;
         } else {
-            // Behind target 3/9 line — closure control
+            // Behind target 3/9 line — closure control.
+            // FF mengage.cpp:318-336: rdes is the desired standoff range
+            // (40% of missile WEZ). Drive closure to keep range trending
+            // toward rdes — fast-closing aircraft should lag, slow-closing
+            // aircraft should pure-pursue.
             const double rdes = 0.40 * missile.wezMaxNm * 6076.0;
-            double desiredClosure = ((rg.range - 3000.0) / 1000.0) * 50.0;
+            double desiredClosure = ((rg.range - rdes) / 1000.0) * 50.0;
             desiredClosure = std::max(std::min(desiredClosure, 2300.0), -100.0);
 
             const double actualClosure = -rg.rangedot * FTPSEC_TO_KNOTS;

@@ -32,13 +32,16 @@ protected:
     double nextPrint_{0.0};
     double ALT_TOL{150.0};
     double SPD_TOL{25.0};
+    double HDG_TOL{10.0};  // degrees — heading drift tolerance
     const double kSettle{30.0};
 
     std::vector<std::pair<double,double>> altSamples_;
     std::vector<std::pair<double,double>> spdSamples_;
+    std::vector<std::pair<double,double>> hdgSamples_;
 
     double targetAlt_{0.0};
     double targetSpd_{0.0};
+    double targetHdg_{0.0};
     double startAlt_{0.0};
     double altCaptureTime_{0.0};
     double speedCaptureTime_{0.0};
@@ -72,6 +75,21 @@ protected:
         windowMinMax(spdSamples_, phaseTime_, kSettle, mn, mx);
         return std::fabs(mx - targetSpd_) < SPD_TOL &&
                std::fabs(mn - targetSpd_) < SPD_TOL;
+    }
+    bool checkHdgPass() const {
+        // Heading must stay within HDG_TOL of target over the settle window.
+        // Catches a regression where the AI holds alt+speed but drifts heading.
+        double mn, mx;
+        windowMinMax(hdgSamples_, phaseTime_, kSettle, mn, mx);
+        // Wrap-aware comparison: convert heading error to [-180, 180].
+        auto hdgErr = [](double a, double b) {
+            double e = a - b;
+            while (e >  180.0) e -= 360.0;
+            while (e < -180.0) e += 360.0;
+            return std::fabs(e);
+        };
+        return hdgErr(mn, targetHdg_) < HDG_TOL &&
+               hdgErr(mx, targetHdg_) < HDG_TOL;
     }
 
     void printRow(const AircraftState& as, const PilotInput& input) const {
@@ -123,7 +141,7 @@ public:
              phaseTime_ > altCaptureTime_ + 60.0 && phaseTime_ > speedCaptureTime_ + 60.0);
     }
 
-    virtual bool IsPassed() const { return checkAltPass() && checkSpdPass(); }
+    virtual bool IsPassed() const { return checkAltPass() && checkSpdPass() && checkHdgPass(); }
 
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
@@ -152,6 +170,7 @@ public:
 
         altSamples_.emplace_back(phaseTime_, alt);
         spdSamples_.emplace_back(phaseTime_, spd);
+        hdgSamples_.emplace_back(phaseTime_, as.kin.sigma * RTD);
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
@@ -188,6 +207,11 @@ public:
             } else {
                 std::printf("  Speed capture NOT achieved.  [FAIL]\n");
             }
+            double hdgMin, hdgMax;
+            windowMinMax(hdgSamples_, phaseTime_, kSettle, hdgMin, hdgMax);
+            std::printf("  HDG (last %.0fs): %.1f..%.1f deg (target %.1f, tol ±%.0f) %s\n",
+                kSettle, hdgMin, hdgMax, targetHdg_, HDG_TOL,
+                checkHdgPass() ? "[PASS]" : "[FAIL]");
         } else {
             std::printf("  Altitude capture NOT achieved.  [FAIL]\n");
         }

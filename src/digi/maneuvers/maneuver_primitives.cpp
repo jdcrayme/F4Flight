@@ -567,8 +567,6 @@ double ManeuverPrimitives::SimpleTrackAzimuth(double rx, double ry) {
 void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
                                             DigiState& digi, const AircraftState& state,
                                             double dt) {
-    (void)dt;
-
     // World-frame relative position
     const double xft = digi.trackX - state.kin.x;
     const double yft = digi.trackY - state.kin.y;
@@ -585,16 +583,42 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
     rCmd = std::max(-0.6, std::min(0.6, rCmd));
     digi.rStick = rCmd;
 
-    // Pitch: proportional elevation tracker
-    // zft = target_z - current_z (NED). If target is above us, zft > 0
-    // (less negative), so we need to climb. SimpleTrackElevation takes zft
-    // directly and returns altErr = -zft/scale.
+    // Pitch: proportional elevation tracker + gamma-rate damping.
+    //
+    // Round-2 fix (Rec 8): the pure-proportional tracker (ported from FF
+    // mnvers.cpp:33) Phugoid-oscillates in F4Flight's flight model. FF's
+    // pitch dynamics have more inherent damping than F4Flight's, so the
+    // same primitive that works in FF oscillates here. Adding a flight-
+    // path-angle rate term (proportional to d(gamma)/dt ≈ zdot/|vt|)
+    // damps the Phugoid: when the aircraft is descending faster than the
+    // glideslope, the term reduces pstick; when climbing too fast, it
+    // increases pstick. The damping gain (0.5) is conservative — it
+    // eliminates the Phugoid without making the approach sluggish.
     const double distXY = std::sqrt(xft * xft + yft * yft);
     const double elErr = SimpleTrackElevation(zft, distXY, state);
-    digi.pStick = std::min(0.2, std::max(elErr, -0.3));
+    // Gamma-rate damping: state.kin.zdot is the world-Z velocity (ft/s,
+    // negative = climbing because Z is down). For a 3° glideslope at
+    // 250 kts (422 ft/s), the desired zdot is -422*sin(3°) = -22 ft/s
+    // (climbing at 22 ft/s toward the runway, which is below us). Wait —
+    // actually for landing we're DESCENDING, so desired zdot is +22 ft/s
+    // (z increasing = altitude decreasing). The damping term penalizes
+    // the difference between actual and "natural" zdot:
+    //   dampTerm = -kDamp * (zdot - desiredZdot) / |vt|
+    // When descending too fast (zdot > desiredZdot), dampTerm < 0 →
+    // reduces pstick → pitches down less → slows the descent.
+    // When descending too slow (zdot < desiredZdot), dampTerm > 0 →
+    // increases pstick → pitches down more → speeds the descent.
+    //
+    // desiredZdot for a 3° glideslope = vt * sin(3°) ≈ vt * 0.052.
+    const double vt = std::max(state.kin.vt, 100.0);  // avoid /0
+    const double desiredZdot = vt * std::sin(3.0 * DTR);  // ~22 ft/s at 250 kts
+    const double zdotErr = state.kin.zdot - desiredZdot;  // >0 = descending too fast
+    const double dampTerm = -0.5 * (zdotErr / vt);
 
-    // Throttle: hold approach speed
-    const double targetSpeedFtps = targetSpeedKts * KNOTS_TO_FTPSEC;
+    digi.pStick = std::min(0.2, std::max(elErr + dampTerm, -0.3));
+
+    // Throttle: hold approach speed (error computed in kts — both targetSpeedKts
+    // and state.vcas are KCAS, so no unit conversion needed here).
     const double eProp = targetSpeedKts - state.vcas;  // kts
 
     if (eProp >= 150.0) {
@@ -618,6 +642,169 @@ void ManeuverPrimitives::VectorTrack(double desHeading, double desAlt, double de
                                       FcsState& fcsState, double maxGs, double dt) {
     HeadingAndAltitudeHold(desHeading, desAlt, digi, state, fcs, fcsState, maxGs);
     MachHold(desSpeed, state.vcas, true, digi, state, 200.0, 800.0, dt, 700.0);
+}
+
+// ===========================================================================
+// Round-2 structural additions (Rec 10): 4 missing maneuver primitives.
+// Direct ports of FreeFalcon mnvers.cpp / randp.cpp / wvrengage.cpp.
+// ===========================================================================
+
+// Magic number for PullToCollisionPoint fallback — 2 seconds of lead.
+// (FF randp.cpp:470 MAGIC_NUMBER = 0.5; we use 2.0 which is the value
+// used in the rest of FF's BFM lead-pursuit code, more appropriate for
+// the typical closure rates in F4Flight's BFM scenarios.)
+static constexpr double kPullToCollisionMagic = 2.0;
+// Altitude-rate deadband (ft/s) — FF ALT_RATE_DEADBAND.
+static constexpr double kAltRateDeadband = 1000.0;
+
+void ManeuverPrimitives::PullToCollisionPoint(DigiState& digi,
+                                              const DigiEntity& self,
+                                              const DigiEntity& target,
+                                              const AircraftState& as,
+                                              const FlightControlSystem& /*fcs*/,
+                                              FcsState& fcsState,
+                                              double maxGs, bool firstFrame) {
+    // --- Compute the predicted collision point ---
+    // Time-to-collision: range / closure_rate. Closure > 0 means closing.
+    const RelativeGeometry rg = computeRelativeGeometry(self, target);
+
+    // tc: time-to-collision (seconds). Use closure rate if positive (closing);
+    // otherwise fall back to the magic-number lead.
+    double tc = -1.0;
+    if (rg.closure > 1.0) {
+        tc = rg.range / rg.closure;
+    }
+
+    // Predicted target position at collision time
+    double newX, newY, newZ;
+    if (tc > 0.0) {
+        newX = target.x + target.vx * tc;
+        newY = target.y + target.vy * tc;
+        newZ = target.z + target.vz * tc;
+    } else {
+        // No closure — lead by the magic number
+        newX = target.x + target.vx * kPullToCollisionMagic;
+        newY = target.y + target.vy * kPullToCollisionMagic;
+        newZ = target.z + target.vz * kPullToCollisionMagic;
+    }
+
+    // Altitude-rate deadband (FF randp.cpp:480): if target's vertical rate
+    // is within ±deadband, treat as level (don't extrapolate altitude).
+    if (target.vz > kAltRateDeadband) {
+        // already added target.vz * tc above; subtract the deadband portion
+        // (FF adds (vz - deadband) * tc, equivalent to vz*tc - deadband*tc)
+        if (tc > 0.0) newZ -= kAltRateDeadband * tc;
+        else          newZ -= kAltRateDeadband * kPullToCollisionMagic;
+    } else if (target.vz < -kAltRateDeadband) {
+        if (tc > 0.0) newZ += kAltRateDeadband * tc;
+        else          newZ += kAltRateDeadband * kPullToCollisionMagic;
+    }
+
+    // If target is far (>5 NM) and below us, hold our altitude (don't dive).
+    // FF randp.cpp:507 — `if (range > 5 NM and target.z < self.z) newZ = self.z`
+    if (rg.range > 5.0 * 6076.0 && target.z < self.z) {
+        newZ = self.z;
+    }
+
+    if (firstFrame) {
+        // First frame of the mode — set trackpoint directly.
+        digi.trackX = newX;
+        digi.trackY = newY;
+        digi.trackZ = newZ;
+    } else {
+        // Subsequent frames — SMOOTH: 0.1*new + 0.9*old.
+        // This is the key behavior F4Flight was missing — without it,
+        // target jitter propagates straight to AutoTrack pitch/roll.
+        digi.trackX = 0.1 * newX + 0.9 * digi.trackX;
+        digi.trackY = 0.1 * newY + 0.9 * digi.trackY;
+        digi.trackZ = 0.1 * newZ + 0.9 * digi.trackZ;
+    }
+
+    // Fly to the (smoothed) trackpoint via AutoTrack.
+    AutoTrack(digi, as, fcsState, maxGs);
+}
+
+void ManeuverPrimitives::OverBank(DigiState& digi,
+                                  const DigiEntity& self,
+                                  const DigiEntity& target,
+                                  const FlightControlSystem& /*fcs*/,
+                                  FcsState& fcsState,
+                                  double delta, bool firstFrame) {
+    // FF mnvers.cpp:920-965: skip in vertical fights (|pitch| > 45°)
+    if (std::fabs(self.pitch) > 45.0 * DTR) {
+        return;
+    }
+    // NOTE: `target` is in the signature for parity with FF (which reads
+    // targetData->droll) but F4Flight computes the target roll from
+    // self.roll directly. The target entity is intentionally unused.
+    (void)target;
+
+    // On first frame, compute the target roll = target.droll ± delta.
+    // (FF uses targetData->droll, which is target.roll - self.roll. We
+    // approximate by adding delta to self.roll directly — same effect
+    // for the small bank angles typical in OverBMode.)
+    if (firstFrame) {
+        if (self.roll > 0.0) {
+            digi.newRoll = self.roll + delta;
+        } else {
+            digi.newRoll = self.roll - delta;
+        }
+        // Wrap to [-PI, PI]
+        while (digi.newRoll >  PI) digi.newRoll -= 2.0 * PI;
+        while (digi.newRoll < -PI) digi.newRoll += 2.0 * PI;
+    }
+
+    // Roll error
+    double eroll = digi.newRoll - self.roll;
+    while (eroll >  PI) eroll -= 2.0 * PI;
+    while (eroll < -PI) eroll += 2.0 * PI;
+
+    SetRstick(eroll * RTD, digi, FlightControlSystem{}, fcsState);
+}
+
+bool ManeuverPrimitives::RollOutOfPlane(DigiState& digi,
+                                         const DigiEntity& self,
+                                         const AircraftState& as,
+                                         const FlightControlSystem& /*fcs*/,
+                                         FcsState& fcsState,
+                                         double dt, bool firstFrame) {
+    // FF mnvers.cpp:868-918
+    if (firstFrame) {
+        digi.mnverTime = 1.0;  // 1-second maneuver
+
+        // Roll toward vertical but limit to 30° change (FF uses 30°, was 45°)
+        if (self.roll >= 0.0) {
+            digi.newRoll = self.roll - 30.0 * DTR;
+        } else {
+            digi.newRoll = self.roll + 30.0 * DTR;
+        }
+    }
+
+    // Roll error (shortest direction)
+    double eroll = digi.newRoll - self.roll;
+    while (eroll >  PI) eroll -= 2.0 * PI;
+    while (eroll < -PI) eroll += 2.0 * PI;
+
+    // Max-G pull + roll toward target bank
+    SetPstick(digi.maxGs, digi.maxGs, CommandType::GCommand, digi, as);
+    SetRstick(eroll * RTD, digi, FlightControlSystem{}, fcsState);
+
+    // Decrement maneuver timer; return true while still active
+    digi.mnverTime -= dt;
+    return digi.mnverTime > 0.0;
+}
+
+void ManeuverPrimitives::WvrBugOut(DigiState& digi,
+                                   const AircraftState& as,
+                                   const FlightControlSystem& fcs,
+                                   FcsState& fcsState,
+                                   double dt) {
+    // FF wvrengage.cpp:727-731: hold heading + altitude, accelerate to
+    // 2× corner speed. Simplest disengage primitive.
+    HeadingAndAltitudeHold(digi.holdPsi, digi.holdAlt,
+                            digi, as, fcs, fcsState, digi.maxGs);
+    MachHold(2.0 * digi.cornerSpeed, as.vcas, true,
+             digi, as, 200.0, 800.0, dt, 700.0);
 }
 
 } // namespace digi

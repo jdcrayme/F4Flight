@@ -90,6 +90,15 @@ public:
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
 
+        // "Turned toward target" check: target is at +Y (north, bearing π/2
+        // from the aircraft at origin). Track the minimum angular distance
+        // from the aircraft's heading to north — proves the AI turned toward
+        // the target, not away.
+        double dh = as.kin.sigma - (PI / 2.0);
+        while (dh >  PI) dh -= 2.0 * PI;
+        while (dh < -PI) dh += 2.0 * PI;
+        minAbsHeadingToNorth_ = std::min(minAbsHeadingToNorth_, std::fabs(dh));
+
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         if (sc_brain_->activeMode() == DigiMode::WVREngage) enteredWVREngage_ = true;
 
@@ -116,21 +125,35 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // Must have entered WVREngage mode
+        // 1. Must have entered WVREngage mode.
         if (!enteredWVREngage_) return false;
-        // Must not have lawn-darted
-        if (minAlt_ < 1000.0) return false;
+        // 2. Must have turned toward the target. Target is at bearing π/2
+        //    (north); aircraft starts heading 0 (east). BFM involves a
+        //    ~90° turn to put the nose on the target. Requiring the heading
+        //    to get within 35° of north proves the AI turned the right
+        //    direction (not away). Range closure is NOT asserted — BFM
+        //    bleeds energy, so range may increase during the maneuver.
+        if (minAbsHeadingToNorth_ > 35.0 * DTR) return false;
+        // 3. Must have pulled G — BFM is a high-G maneuver. At maxBank=60°
+        //    the level-turn G is 2.0; BFM pulls harder. Require > 2.0 to
+        //    catch a regression where the AI doesn't actually maneuver.
+        if (maxG_ < 2.0) return false;
+        // 4. Must not have lawn-darted.
+        if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Range: %.0f..%.0f ft (start %.0f)\n",
-            minRange_, maxRange_, initialRange_);
-        std::printf("  Min altitude: %.0f ft (need >= 1000) %s\n",
-            minAlt_, minAlt_ >= 1000.0 ? "[PASS]" : "[FAIL]");
-        std::printf("  Max G: %.2f\n", maxG_);
+        std::printf("  Closest hdg to N:  %.1f deg (need <= 35) %s\n",
+            minAbsHeadingToNorth_ * RTD, minAbsHeadingToNorth_ <= 35.0 * DTR ? "[PASS]" : "[FAIL]");
+        std::printf("  Max G (need >= 2.0): %.2f %s\n",
+            maxG_, maxG_ >= 2.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Range: %.0f..%.0f ft (info, BFM may not close)\n",
+            minRange_, maxRange_);
+        std::printf("  Min altitude: %.0f ft (need >= 5000) %s\n",
+            minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -140,6 +163,7 @@ private:
     double nextPrint_{0.0};
     double minRange_{1e9};
     double maxRange_{0.0};
+    double minAbsHeadingToNorth_{std::numeric_limits<double>::max()};
     double minAlt_{1e9};
     double maxG_{0.0};
     bool hasNaN_{false};
@@ -237,17 +261,28 @@ public:
     bool IsPassed() const override {
         if (hasNaN_) return false;
         if (!enteredWVREngage_) return false;
-        if (minAlt_ < 1000.0) return false;
+        // Must have tracked the target through a significant heading
+        // change. Target passes beam (90° bearing change) at ~3 NM closure;
+        // the AI should rotate through at least 45° to track it. The
+        // metric was already tracked and printed but never asserted.
+        if (maxHeadingChange_ < 45.0 * DTR) return false;
+        // Must have come close to the target at some point (proof the
+        // AI turned toward it, not away).
+        if (minRange_ > 0.5 * initialRange_) return false;
+        if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Min range: %.0f ft\n", minRange_);
-        std::printf("  Max heading change: %.1f deg\n", maxHeadingChange_ * RTD);
-        std::printf("  Min altitude: %.0f ft (need >= 1000) %s\n",
-            minAlt_, minAlt_ >= 1000.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Min range:        %.0f ft (need <= %.0f) %s\n",
+            minRange_, 0.5 * initialRange_,
+            minRange_ <= 0.5 * initialRange_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Max heading chg:  %.1f deg (need >= 45) %s\n",
+            maxHeadingChange_ * RTD, maxHeadingChange_ >= 45.0 * DTR ? "[PASS]" : "[FAIL]");
+        std::printf("  Min altitude:     %.0f ft (need >= 5000) %s\n",
+            minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Max G: %.2f\n", maxG_);
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }

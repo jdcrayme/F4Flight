@@ -57,7 +57,10 @@ public:
         truth_.clear();
         truth_.add(200, missile_);
 
-        sc.brain().setTruth(&truth_);
+        // Provide truth via the new FrameInputs API.
+        f4flight::digi::FrameInputs fi = sc.brain().frameInputs();
+        fi.truth = &truth_;
+        sc.brain().setFrameInputs(fi);
         sc_brain_ = &sc.brain();
     }
 
@@ -73,25 +76,37 @@ public:
         truth_.add(200, missile_);
 
         // Track state
-        if (sc_brain_->activeMode() == DigiMode::MissileDefeat) {
+        const DigiMode mode = sc_brain_->activeMode();
+        if (mode == DigiMode::MissileDefeat) {
             enteredMissileDefeat_ = true;
+        }
+        // Verify the sensor pipeline actually saw the missile (not just
+        // that the brain latched the mode). The brain's state_.incomingMissile
+        // should be non-null after sensor fusion runs.
+        if (sc_brain_->state().incomingMissile != nullptr) {
+            sensorSawMissile_ = true;
+        }
+        if (sc_brain_->state().incomingMissileId != kInvalidEntityId) {
+            sensorSawMissile_ = true;
         }
 
         minAlt_ = std::min(minAlt_, -as.kin.z);
+        maxG_ = std::max(maxG_, as.loads.nzcgs);
+        maxHeadingChange_ = std::max(maxHeadingChange_, std::fabs(as.kin.sigma));
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (autonomous missile detection)\n", testName_.c_str());
-                std::printf("%6s %8s %6s %6s %8s %6s\n",
-                    "t(s)", "alt(ft)", "G", "pstk", "missileX", "mode");
+                std::printf("%6s %8s %6s %6s %8s %6s %6s\n",
+                    "t(s)", "alt(ft)", "G", "pstk", "missileX", "mode", "sensor");
             }
             const std::size_t bufSize = 16;
             char modeBuf[bufSize];
-            std::snprintf(modeBuf, bufSize, "%s", digiModeName(sc_brain_->activeMode()));
-            std::printf("%6.1f %8.0f %6.2f %6.2f %8.0f %6s\n",
+            std::snprintf(modeBuf, bufSize, "%s", digiModeName(mode));
+            std::printf("%6.1f %8.0f %6.2f %6.2f %8.0f %6s %6s\n",
                 phaseTime_, -as.kin.z, as.loads.nzcgs, input.pstick,
-                missile_.x, modeBuf);
+                missile_.x, modeBuf, sensorSawMissile_ ? "SEEN" : "-");
             nextPrint_ += 2.0;
         }
     }
@@ -102,14 +117,29 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        return enteredMissileDefeat_;
+        // 1. Must have entered MissileDefeat mode.
+        if (!enteredMissileDefeat_) return false;
+        // 2. Must have autonomously detected the missile via the sensor
+        //    pipeline. The old test only checked mode-entry, which could
+        //    pass from a stale pointer. Verify the brain's
+        //    state_.incomingMissile was actually populated by SensorFusion
+        //    (not just latched from a prior frame).
+        if (!sensorSawMissile_) return false;
+        // 3. Must not have lawn-darted.
+        if (minAlt_ < 5000.0) return false;
+        return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Autonomous MissileDefeat: %s\n",
             enteredMissileDefeat_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Min altitude: %.0f ft\n", minAlt_);
+        std::printf("  Sensor saw missile:       %s\n",
+            sensorSawMissile_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Max G:                    %.2f\n", maxG_);
+        std::printf("  Max heading change:       %.1f deg\n", maxHeadingChange_ * RTD);
+        std::printf("  Min altitude:             %.0f ft (need >= 5000) %s\n",
+            minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -119,8 +149,11 @@ private:
     TruthState truth_;
     double nextPrint_{0.0};
     double minAlt_{1e9};
+    double maxG_{0.0};
+    double maxHeadingChange_{0.0};
     bool hasNaN_{false};
     bool enteredMissileDefeat_{false};
+    bool sensorSawMissile_{false};
     const DigiBrain* sc_brain_{nullptr};
 };
 
@@ -156,7 +189,10 @@ public:
         truth_.clear();
         truth_.add(100, target_);
 
-        sc.brain().setTruth(&truth_);
+        // Provide truth via the new FrameInputs API.
+        f4flight::digi::FrameInputs fi = sc.brain().frameInputs();
+        fi.truth = &truth_;
+        sc.brain().setFrameInputs(fi);
         sc_brain_ = &sc.brain();
     }
 
@@ -171,8 +207,13 @@ public:
         truth_.add(100, target_);
 
         // Track state
-        if (sc_brain_->activeMode() == DigiMode::WVREngage) {
+        const DigiMode mode = sc_brain_->activeMode();
+        if (mode == DigiMode::WVREngage) {
             enteredWVREngage_ = true;
+        }
+        // Verify the sensor pipeline saw the target.
+        if (sc_brain_->sensorPicture().bestTarget != nullptr) {
+            sensorSawTarget_ = true;
         }
 
         minAlt_ = std::min(minAlt_, -as.kin.z);
@@ -181,15 +222,15 @@ public:
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (autonomous target detection)\n", testName_.c_str());
-                std::printf("%6s %8s %6s %6s %8s %6s\n",
-                    "t(s)", "alt(ft)", "G", "pstk", "targetX", "mode");
+                std::printf("%6s %8s %6s %6s %8s %6s %6s\n",
+                    "t(s)", "alt(ft)", "G", "pstk", "targetX", "mode", "sensor");
             }
             const std::size_t bufSize = 16;
             char modeBuf[bufSize];
-            std::snprintf(modeBuf, bufSize, "%s", digiModeName(sc_brain_->activeMode()));
-            std::printf("%6.1f %8.0f %6.2f %6.2f %8.0f %6s\n",
+            std::snprintf(modeBuf, bufSize, "%s", digiModeName(mode));
+            std::printf("%6.1f %8.0f %6.2f %6.2f %8.0f %6s %6s\n",
                 phaseTime_, -as.kin.z, as.loads.nzcgs, input.pstick,
-                target_.x, modeBuf);
+                target_.x, modeBuf, sensorSawTarget_ ? "SEEN" : "-");
             nextPrint_ += 2.0;
         }
     }
@@ -200,14 +241,25 @@ public:
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        return enteredWVREngage_;
+        // 1. Must have entered WVREngage mode.
+        if (!enteredWVREngage_) return false;
+        // 2. Must have autonomously detected the target via the sensor
+        //    pipeline (radar/visual). Verify sensorPicture.bestTarget was
+        //    populated — the old test only checked mode-entry.
+        if (!sensorSawTarget_) return false;
+        // 3. Must not have lawn-darted.
+        if (minAlt_ < 5000.0) return false;
+        return true;
     }
 
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Autonomous WVREngage: %s\n",
             enteredWVREngage_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Min altitude: %.0f ft\n", minAlt_);
+        std::printf("  Sensor saw target:    %s\n",
+            sensorSawTarget_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Min altitude:         %.0f ft (need >= 5000) %s\n",
+            minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
@@ -219,6 +271,7 @@ private:
     double minAlt_{1e9};
     bool hasNaN_{false};
     bool enteredWVREngage_{false};
+    bool sensorSawTarget_{false};
     const DigiBrain* sc_brain_{nullptr};
 };
 

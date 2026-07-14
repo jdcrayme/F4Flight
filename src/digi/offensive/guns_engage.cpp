@@ -143,22 +143,14 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
     // --- Phase A: coarse track until pipper near target ---
     if (!digi.waitingForShot) {
         const double leadTime = 2.0 + 2.0 * std::sin(rg.ataFrom);
-        double cata = 0.0;
-        {
-            // CoarseGunsTrack sets trackX/Y/Z and calls GunsAutoTrack.
-            // We need to save/restore because FineGunsTrack also writes
-            // pStick/rStick below. (FF does the same — CoarseGunsTrack
-            // returns ata, then FineGunsTrack may override pStick.)
-            const double savedPstick = digi.pStick;
-            const double savedRstick = digi.rStick;
-            cata = CoarseGunsTrack(digi, self, target, as, gun, fcsState, leadTime);
-            // If ata is small, keep the coarse track commands. Otherwise
-            // FineGunsTrack will override below.
-            if (ata > 60.0 * DTR) {
-                speed = digi.cornerSpeed;
-            }
-            (void)savedPstick;
-            (void)savedRstick;
+        // CoarseGunsTrack sets trackX/Y/Z and writes pStick/rStick via
+        // GunsAutoTrack. (FF gengage.cpp:308 returns ata from CoarseGunsTrack
+        // but the F4Flight port computes `ata` separately above and doesn't
+        // need the returned value here.) If the pipper is far off, slow down
+        // to corner speed to give the tracking loop more time.
+        CoarseGunsTrack(digi, self, target, as, gun, fcsState, leadTime);
+        if (ata > 60.0 * DTR) {
+            speed = digi.cornerSpeed;
         }
 
         // Transition to fine track when pipper near target
