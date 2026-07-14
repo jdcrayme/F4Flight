@@ -170,28 +170,40 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     for (auto& test : tests) {
         // Detect whether this phase re-initializes the flight model (calls
-        // fm.init()). We do this by saving body rates (p, q) before Init and
-        // checking if they were reset to ~0 afterward. fm.init() always zeros
-        // body rates; a maneuvering aircraft will have non-zero rates. This
-        // is the most reliable way to detect a flight model reset even when
-        // the position/heading happen to be similar.
+        // fm.init()). We use two independent signals:
+        //
+        //  1. Position jump: save x/y/z before Init and compare afterward.
+        //     fm.init() repositions the aircraft to a new spot; if the
+        //     position moved more than a small threshold, a repositioning
+        //     happened. This is the most reliable signal and catches reinits
+        //     even from a near-stationary state (e.g. on the ground).
+        //
+        //  2. Body-rate reset: fm.init() zeros body rates (p,q,r). If the
+        //     aircraft was maneuvering (rates > 0.01) and they dropped to
+        //     ~0 after Init, a reinit happened even if the position didn't
+        //     change much (e.g. attitude/velocity reset in place).
+        const double preX = fm.state().kin.x;
+        const double preY = fm.state().kin.y;
+        const double preZ = fm.state().kin.z;
         const double preP = fm.state().kin.p;
         const double preQ = fm.state().kin.q;
         const double preR = fm.state().kin.r;
-        const double preXdot = fm.state().kin.xdot;
-        const double preYdot = fm.state().kin.ydot;
 
         sc.brain().setFrameInputs({});
         test->Init(sc, fm);
 
-        // A reinit is detected if body rates dropped to near-zero (from
-        // non-zero) OR velocity components changed. This catches fm.init()
-        // even when the aircraft position doesn't change much.
-        const bool reinitializes =
+        const double dx = fm.state().kin.x - preX;
+        const double dy = fm.state().kin.y - preY;
+        const double dz = fm.state().kin.z - preZ;
+        const double jumpFt = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        const bool posJumped = jumpFt > 50.0;
+        const bool ratesDropped =
             (std::fabs(preP) > 0.01 || std::fabs(preQ) > 0.01 || std::fabs(preR) > 0.01) &&
             (std::fabs(fm.state().kin.p) < 0.001 &&
              std::fabs(fm.state().kin.q) < 0.001 &&
              std::fabs(fm.state().kin.r) < 0.001);
+        const bool reinitializes = posJumped || ratesDropped;
 
         // After Init, capture waypoints from the brain (set by Waypoint mode).
         // Done once per phase — if a later phase changes waypoints, the trace

@@ -445,7 +445,12 @@ function computeBounds(tr){
   return{minX,maxX,minY,maxY,minAlt,maxAlt,minSpd,maxSpd,minG,maxG,minT,maxT};
 }
 
-// Phase ranges: [startFrame, endFrame] per phase (frames split at boundaries)
+// Phase ranges: [startFrame, endFrame] per phase (frames split at boundaries).
+// Uses a strict `<` on end_s so that a frame recorded at exactly the phase
+// boundary time (which is the FIRST frame of the next phase, recorded after
+// Init() repositioned the aircraft) is assigned to the NEXT phase, not the
+// current one. This prevents a straight "repositioning" line from being
+// drawn at the tail of the previous phase's polyline.
 function phaseRanges(tr){
   if(!tr.phases||!tr.phases.length){
     return tr.frames.length?[[0,tr.frames.length-1]]:[];
@@ -454,7 +459,7 @@ function phaseRanges(tr){
   let fi=0;
   for(const p of tr.phases){
     const start=fi;
-    while(fi<tr.frames.length&&tr.frames[fi].t<=p.end_s)fi++;
+    while(fi<tr.frames.length&&tr.frames[fi].t<p.end_s)fi++;
     let end=fi-1; if(end<start)end=start;
     ranges.push([start,end]);
   }
@@ -484,6 +489,25 @@ function computeSegments(tr){
     }
   }
   return segs;
+}
+// Return [minT, maxT] for the active segment — the time window the
+// scrubber, time-series X-axis, and playback loop are scoped to.
+function segmentTimeRange(tr,segIdx){
+  const segs=computeSegments(tr);
+  const si=Math.min(segIdx,segs.length-1);
+  const segPhases=segs[si];
+  const ranges=phaseRanges(tr);
+  let minT=Infinity,maxT=-Infinity;
+  for(const pi of segPhases){
+    if(pi>=ranges.length)continue;
+    const [s,e]=ranges[pi];
+    if(s<tr.frames.length){const t=tr.frames[s].t; if(t<minT)minT=t;}
+    if(e<tr.frames.length){const t=tr.frames[e].t; if(t>maxT)maxT=t;}
+  }
+  if(!isFinite(minT))minT=0;
+  if(!isFinite(maxT))maxT=traceDuration(tr);
+  if(maxT<=minT)maxT=minT+1;
+  return [minT,maxT];
 }
 // Get the last valid frame index in a range
 function rangeLastFrame(tr,range){
@@ -803,7 +827,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 // ---------------------------------------------------------------------------
 // Detail view: top-down flight path
 // ---------------------------------------------------------------------------
-let detailBounds=null, detailScales=null, detail3DProject=null;
+let detailBounds=null, detailScales=null, detail3DProject=null, tsScales=null;
 
 function renderTopDown(tr){
   const host=document.getElementById('topdown-host');
@@ -847,17 +871,29 @@ function renderTopDown(tr){
   svg+=sceneLinesSvg(tr,sx,sy,sc);
   svg+=waypointsSvg(tr,sx,sy);
 
-  // Paths — only draw phases in the current segment
+  // Paths — only draw phases in the current segment.
+  // Gradient modes use per-frame colored ribbon quads (filled polygons)
+  // instead of stroked lines. Filled quads render as a flat colored strip
+  // with no stroke caps or bulging at joints — a ribbon, not a tube.
   const ranges=phaseRanges(tr);
   if(state.colorBy==='altitude'||state.colorBy==='speed'||state.colorBy==='g'||state.colorBy==='mode'){
+    const rw=1.5; // ribbon half-width in px
     for(const pi of segPhases){
       if(pi>=ranges.length)continue;
       const [s,e]=ranges[pi];
       for(let fi=s;fi<e&&fi<tr.frames.length-1;fi++){
         const f1=tr.frames[fi], f2=tr.frames[fi+1];
         const col=frameColor(tr,fi,b);
-        svg+=el('line',{x1:sx(f1.x),y1:sy(f1.y),x2:sx(f2.x),y2:sy(f2.y),
-          stroke:col,'stroke-width':2,'stroke-linecap':'round',opacity:0.9});
+        const x1=sx(f1.x), y1=sy(f1.y), x2=sx(f2.x), y2=sy(f2.y);
+        const ddx=x2-x1, ddy=y2-y1;
+        const dlen=Math.sqrt(ddx*ddx+ddy*ddy)||1;
+        const nx=-ddy/dlen, ny=ddx/dlen;
+        const pts=
+          (x1+nx*rw).toFixed(1)+','+(y1+ny*rw).toFixed(1)+' '+
+          (x2+nx*rw).toFixed(1)+','+(y2+ny*rw).toFixed(1)+' '+
+          (x2-nx*rw).toFixed(1)+','+(y2-ny*rw).toFixed(1)+' '+
+          (x1-nx*rw).toFixed(1)+','+(y1-ny*rw).toFixed(1);
+        svg+=el('polygon',{points:pts,fill:col,stroke:'none',opacity:0.9});
       }
     }
   }else{
@@ -909,12 +945,19 @@ function renderTopDown(tr){
 // ---------------------------------------------------------------------------
 function renderTimeSeries(tr){
   const host=document.getElementById('timeseries-host');
-  const b=computeBounds(tr);
+  // Scope to the active segment: bounds, time window, and phase set all
+  // come from segPhases so discontinuities in other segments don't bleed
+  // into the graphs (no phantom connecting lines, no empty time gaps).
+  const segs=computeSegments(tr);
+  const si=Math.min(state.segmentIdx,segs.length-1);
+  const segPhases=segs[si];
+  const b=computeSegmentBounds(tr,segPhases);
   const W=1000,H=560,padL=60,padR=40,padT=20,padB=36;
   const plotW=W-padL-padR;
   const panelH=(H-padT-padB)/3;
-  const dur=traceDuration(tr);
-  const sx=t=>padL+(t/dur)*plotW;
+  const [segMinT,segMaxT]=segmentTimeRange(tr,si);
+  const segDur=segMaxT-segMinT;
+  const sx=t=>padL+((t-segMinT)/segDur)*plotW;
   // Each panel: [field, lo, hi, unit, color, fmtFn]
   const panels=[
     {name:'Altitude',get:f=>-f.z,lo:b.minAlt,hi:b.maxAlt,unit:'ft',col:'#4ade80'},
@@ -922,9 +965,9 @@ function renderTimeSeries(tr){
     {name:'G-load',get:f=>f.nzcgs,lo:0,hi:Math.max(2,b.maxG),unit:'G',col:'#f59e0b'},
   ];
   let svg='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
-  // Time grid spacing
+  // Time grid spacing (based on segment duration, not full trace)
   let ts=10;
-  if(dur>300)ts=60;else if(dur>120)ts=30;else if(dur>60)ts=15;else if(dur>30)ts=10;else ts=5;
+  if(segDur>300)ts=60;else if(segDur>120)ts=30;else if(segDur>60)ts=15;else if(segDur>30)ts=10;else ts=5;
 
   for(let pi=0;pi<panels.length;pi++){
     const p=panels[pi];
@@ -935,7 +978,6 @@ function renderTimeSeries(tr){
     // Panel label
     svg+=el('text',{x:padL,y:top-4,class:'axis-text','font-weight':'bold'},p.name+' ('+p.unit+')');
     // Grid + Y labels
-    let vs=p.lo;
     const vrange=p.hi-p.lo;
     let vstep=vrange/4;
     // nice step
@@ -945,20 +987,25 @@ function renderTimeSeries(tr){
       svg+=el('line',{x1:padL,y1:sy(v),x2:padL+plotW,y2:sy(v),class:'grid-line'});
       svg+=el('text',{x:padL-5,y:sy(v)+3,class:'axis-text','text-anchor':'end'},fmtInt(v));
     }
-    // Phase bands (colored by pass/fail)
+    // Phase bands — only for phases in the active segment
+    const ranges=phaseRanges(tr);
     if(tr.phases&&tr.phases.length){
-      for(let i=0;i<tr.phases.length;i++){
-        const ph=tr.phases[i];
+      for(const phaseIdx of segPhases){
+        if(phaseIdx>=tr.phases.length)continue;
+        const ph=tr.phases[phaseIdx];
         const x1=sx(ph.start_s), x2=sx(ph.end_s);
         const col=ph.skipped?'rgba(148,163,184,0.07)':ph.passed?'rgba(74,222,128,0.07)':'rgba(248,113,113,0.12)';
         svg+=el('rect',{x:x1,y:top,width:Math.max(1,x2-x1),height:ph,fill:col});
         // phase number at top
-        svg+=el('text',{x:(x1+x2)/2,y:bottom+12,class:'axis-text','text-anchor':'middle','font-size':9,fill:ph.passed?'var(--pass)':ph.skipped?'var(--skip)':'var(--fail)'},(i+1));
+        svg+=el('text',{x:(x1+x2)/2,y:bottom+12,class:'axis-text','text-anchor':'middle','font-size':9,fill:ph.passed?'var(--pass)':ph.skipped?'var(--skip)':'var(--fail)'},(phaseIdx+1));
       }
     }
-    // Data line (split by phase)
-    const ranges=phaseRanges(tr);
-    for(const [s,e] of ranges){
+    // Data line — only phases in the active segment, each as a separate
+    // polyline so repositioning breaks (within the segment, if any slipped
+    // through) don't draw a connecting line.
+    for(const phaseIdx of segPhases){
+      if(phaseIdx>=ranges.length)continue;
+      const [s,e]=ranges[phaseIdx];
       if(e<=s)continue;
       let pts='';
       for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
@@ -972,12 +1019,15 @@ function renderTimeSeries(tr){
     // Playhead line (updated separately)
     svg+=el('line',{id:'ts-play-'+pi,x1:padL,y1:top,x2:padL,y2:bottom,stroke:'#fff','stroke-width':1,opacity:0.5});
   }
-  // Time axis labels
-  for(let t=Math.ceil(0/ts)*ts;t<=dur;t+=ts){
+  // Time axis labels — relative to segment start, shown as absolute time
+  for(let t=Math.ceil(segMinT/ts)*ts;t<=segMaxT;t+=ts){
     svg+=el('text',{x:sx(t),y:H-6,class:'axis-text','text-anchor':'middle'},fmtInt(t)+'s');
   }
   svg+='</svg>';
   host.innerHTML=svg;
+  // Stash segment time range + plot geometry so updatePlayhead can position
+  // the playhead line without re-deriving it every frame.
+  tsScales={padL:padL,plotW:plotW,segMinT:segMinT,segMaxT:segMaxT};
 }
 )HTML";
 static const char* kHtmlTail3 = R"HTML(
@@ -996,9 +1046,12 @@ function findFrameIndex(tr,t){
 }
 function updatePlayhead(){
   const tr=TRACES[state.traceIdx]; if(!tr||!tr.frames.length)return;
-  if(state.t<0)state.t=0;
-  const dur=traceDuration(tr);
-  if(state.t>dur)state.t=dur;
+  // Clamp the playhead to the active segment's time window so the
+  // scrubber, graphs, and 3D view all stay in sync with the selected
+  // segment (no data from other segments leaks in).
+  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
+  if(state.t<segMinT)state.t=segMinT;
+  if(state.t>segMaxT)state.t=segMaxT;
   const fi=findFrameIndex(tr,state.t);
   const f=tr.frames[fi];
   // In 3D mode, re-render the view so it stays centered on the aircraft
@@ -1029,7 +1082,7 @@ function updatePlayhead(){
     const span3D=Math.max(detailBounds.maxX-detailBounds.minX,
                           detailBounds.maxY-detailBounds.minY,
                           detailBounds.maxAlt-detailBounds.minAlt,1);
-    const size=span3D*0.01; // aircraft size relative to data span
+    const size=span3D*0.018; // aircraft size relative to data span (larger for visibility)
     const cosP=Math.cos(f.psi), sinP=Math.sin(f.psi);
     // 5 points of the aircraft shape (in world coords, relative to ac pos):
     //   nose: +X (psi direction), at altitude
@@ -1060,20 +1113,43 @@ function updatePlayhead(){
     model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+plw[0].toFixed(1)+','+plw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1),fill:'#ddd',stroke:'#000','stroke-width':0.0,opacity:1.0});
     model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1),fill:'#ccc',stroke:'#000','stroke-width':0.0,opacity:1.0});
     model+=el('polygon',{points:plw[0].toFixed(1)+','+plw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1),fill:'#ccc',stroke:'#000','stroke-width':0.0,opacity:1.0});
+    // Tadpole: dashed vertical drop-line from the aircraft straight down to
+    // the ground grid (z=0), ending in a ring + dot. This gives a constant
+    // visual reference for altitude and ground track position while
+    // orbiting — without it the aircraft pyramid floats in empty space.
+    const pAcTip=detail3DProject(f.x,f.y,alt);
+    const pGndTip=detail3DProject(f.x,f.y,0);
+    let tadpole='';
+    tadpole+=el('line',{x1:pAcTip[0].toFixed(1),y1:pAcTip[1].toFixed(1),
+      x2:pGndTip[0].toFixed(1),y2:pGndTip[1].toFixed(1),
+      stroke:'#e2e8f0','stroke-width':1,'stroke-dasharray':'4,3',opacity:0.55});
+    tadpole+=el('circle',{cx:pGndTip[0].toFixed(1),cy:pGndTip[1].toFixed(1),
+      r:5,fill:'none',stroke:'#e2e8f0','stroke-width':1.5,opacity:0.6});
+    tadpole+=el('circle',{cx:pGndTip[0].toFixed(1),cy:pGndTip[1].toFixed(1),
+      r:1.5,fill:'#e2e8f0',opacity:0.75});
+    // Prepend so the aircraft pyramid draws on top of the drop-line.
+    model=tadpole+model;
     td3.innerHTML=model;
   }
-  // Time-series playhead lines
+  // Time-series playhead lines — positioned within the segment's time
+  // window (tsScales is set by renderTimeSeries).
   for(let pi=0;pi<3;pi++){
     const ln=document.getElementById('ts-play-'+pi);
-    if(ln){
-      const x=detailScales?detailScales.padL+(state.t/dur)*detailScales.plotW:0;
+    if(ln&&tsScales){
+      const frac=(state.t-tsScales.segMinT)/(tsScales.segMaxT-tsScales.segMinT);
+      const x=tsScales.padL+Math.max(0,Math.min(1,frac))*tsScales.plotW;
       ln.setAttribute('x1',x);ln.setAttribute('x2',x);
     }
   }
-  // Scrubber
+  // Scrubber — spans only the active segment's time window.
   const scr=document.getElementById('scrubber');
-  if(scr){scr.value=Math.round((state.t/dur)*1000);}
+  if(scr){
+    const frac=(state.t-segMinT)/(segMaxT-segMinT);
+    scr.value=Math.round(Math.max(0,Math.min(1,frac))*1000);
+  }
   document.getElementById('time-now').textContent=fmt(state.t,1)+'s';
+  const te=document.getElementById('time-end');
+  if(te)te.textContent=fmt(segMaxT,1)+'s';
   // Frame readout
   const ro=document.getElementById('readout');
   const alt=-f.z;
@@ -1154,17 +1230,22 @@ function render3D(tr){
   }
   let svg='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
   svg+=el('rect',{x:0,y:0,width:W,height:H,fill:'#0a0c12'});
-  // Ground grid — centered on aircraft, extends ±span/2
+  // Ground grid — centered on aircraft, extends ±span/2. Brightened so
+  // the ground plane is clearly visible (was too faint to see, making the
+  // 3D view feel disorienting). The two axis lines passing through the
+  // aircraft's ground position are drawn brighter as a reference cross.
   const gs=span>50000?10000:span>10000?5000:1000;
   const gridR=span; // grid extends this far from center
-  svg+='<g opacity="0.3">';
+  svg+='<g opacity="0.5">';
   for(let gx=Math.ceil((cx-gridR)/gs)*gs;gx<=cx+gridR;gx+=gs){
     const p1=project(gx,cy-gridR,0), p2=project(gx,cy+gridR,0);
-    svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:'#2a2f42','stroke-width':.5});
+    const isAxis=Math.abs(gx-cx)<gs*0.5;
+    svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:isAxis?'#5a6275':'#3a4258','stroke-width':isAxis?1.0:0.7});
   }
   for(let gy=Math.ceil((cy-gridR)/gs)*gs;gy<=cy+gridR;gy+=gs){
     const p1=project(cx-gridR,gy,0), p2=project(cx+gridR,gy,0);
-    svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:'#2a2f42','stroke-width':.5});
+    const isAxis=Math.abs(gy-cy)<gs*0.5;
+    svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:isAxis?'#5a6275':'#3a4258','stroke-width':isAxis?1.0:0.7});
   }
   svg+='</g>';
   // Scene lines
@@ -1175,14 +1256,18 @@ function render3D(tr){
       svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:col,'stroke-width':3,opacity:0.7});
     }
   }
-  // Flight path — drawn as per-segment colored lines (like the 2D view) but
-  // projected to 3D. We subsample frames to keep the SVG manageable (max ~500
-  // segments per phase) and ensure each segment is at least 2px on screen.
+  // Flight path — drawn as flat ribbon quads (filled polygons, NOT stroked
+  // lines). Each segment between two projected path points becomes a flat
+  // rectangle: we compute the screen-space perpendicular to the segment
+  // direction and offset both endpoints by ±halfWidth to build a 4-point
+  // polygon. Filled polygons have no stroke caps, no bulging at joints, and
+  // no glossy cylindrical look — they render as a flat colored strip
+  // (ribbon), which is the correct visual metaphor for a trajectory.
   const ranges=phaseRanges(tr);
+  const rw=Math.max(2.0,2.5*state.zoom); // ribbon half-width in px
   for(const pi of segPhases){
     if(pi>=ranges.length)continue;
     const [s,e]=ranges[pi]; if(e-s<2)continue;
-    // Subsample: take every Nth frame, targeting ~300 segments
     const total=e-s;
     const stride=Math.max(1,Math.floor(total/300));
     let prevP=null;
@@ -1191,11 +1276,18 @@ function render3D(tr){
       const p=project(f.x,f.y,-f.z);
       if(prevP){
         const col=frameColor(tr,fi,b);
-        // Line width scales with zoom so it stays visible
-        const lw=Math.max(1.5,2*state.zoom);
-        svg+=el('line',{x1:prevP[0].toFixed(1),y1:prevP[1].toFixed(1),
-          x2:p[0].toFixed(1),y2:p[1].toFixed(1),
-          stroke:col,'stroke-width':lw,'stroke-linecap':'round',opacity:0.8});
+        // Screen-space segment direction
+        const ddx=p[0]-prevP[0], ddy=p[1]-prevP[1];
+        const dlen=Math.sqrt(ddx*ddx+ddy*ddy)||1;
+        // Perpendicular (normal) — rotate direction 90°
+        const nx=-ddy/dlen, ny=ddx/dlen;
+        // Build quad: prevTop, currTop, currBot, prevBot
+        const pts=
+          (prevP[0]+nx*rw).toFixed(1)+','+(prevP[1]+ny*rw).toFixed(1)+' '+
+          (p[0]+nx*rw).toFixed(1)+','+(p[1]+ny*rw).toFixed(1)+' '+
+          (p[0]-nx*rw).toFixed(1)+','+(p[1]-ny*rw).toFixed(1)+' '+
+          (prevP[0]-nx*rw).toFixed(1)+','+(prevP[1]-ny*rw).toFixed(1);
+        svg+=el('polygon',{points:pts,fill:col,stroke:'none',opacity:0.9});
       }
       prevP=p;
     }
@@ -1217,6 +1309,11 @@ function render3D(tr){
   detail3DProject=project;
 }
 
+)HTML";
+// kHtmlTail3c — split from kHtmlTail3b so each raw string literal stays
+// under MSVC's 16380-char limit (error C2026). This piece holds the
+// criteria panel, detail view assembly, playback, routing, and controls.
+static const char* kHtmlTail3c = R"HTML(
 // ---------------------------------------------------------------------------
 // Criteria panel — shows what each phase checks and its pass/fail status.
 // Rows are clickable: clicking a row jumps the playhead to that phase and
@@ -1278,8 +1375,14 @@ function renderCriteria(tr){
     if(tab.tagName==='SPAN'){
       tab.addEventListener('click',()=>{
         state.segmentIdx=+tab.dataset.seg;
+        // Clamp the playhead into the newly selected segment's time
+        // window so the scrubber and graphs stay in sync.
+        const [sMin,sMax]=segmentTimeRange(tr,state.segmentIdx);
+        if(state.t<sMin)state.t=sMin;
+        if(state.t>sMax)state.t=sMax;
         renderCriteria(tr);
         renderPathView(tr);
+        renderTimeSeries(tr);
         updatePlayhead();
       });
     }
@@ -1336,11 +1439,20 @@ function startPlay(){
   const btn=document.getElementById('play-btn');
   btn.innerHTML='&#10073;&#10073; Pause';
   const dt=1/60;
+  // If the playhead is at the end of the segment, rewind to the start
+  // so pressing Play always shows motion.
+  const tr=TRACES[state.traceIdx];
+  if(tr){
+    const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
+    if(state.t>=segMaxT-0.01)state.t=segMinT;
+  }
   if(state.playTimer)clearInterval(state.playTimer);
   state.playTimer=setInterval(()=>{
     const tr=TRACES[state.traceIdx]; if(!tr)return;
     state.t+=dt*state.speed;
-    if(state.t>=traceDuration(tr)){state.t=traceDuration(tr);stopPlay();}
+    // Stop at the end of the active segment (not the full trace).
+    const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
+    if(state.t>=segMaxT){state.t=segMaxT;stopPlay();}
     updatePlayhead();
   },1000/60);
 }
@@ -1372,7 +1484,9 @@ document.getElementById('play-btn').addEventListener('click',togglePlay);
 document.getElementById('scrubber').addEventListener('input',e=>{
   if(state.traceIdx<0)return;
   const tr=TRACES[state.traceIdx];
-  state.t=(+e.target.value/1000)*traceDuration(tr);
+  // Scrubber spans only the active segment's time window.
+  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
+  state.t=segMinT+(+e.target.value/1000)*(segMaxT-segMinT);
   updatePlayhead();
 });
 document.querySelectorAll('#speed-seg button').forEach(b=>{
@@ -1425,9 +1539,17 @@ document.addEventListener('mousemove',e=>{
   const dx=e.clientX-state.orbit.lastX;
   const dy=e.clientY-state.orbit.lastY;
   if(state.viewMode==='3d'){
+    // Yaw: drag right → world rotates so camera orbits right (standard).
+    // Pitch: drag UP (dy<0) → look down more; drag DOWN (dy>0) → look up
+    //   toward horizon. This matches the "grab the scene" convention used
+    //   by Three.js OrbitControls / Blender (previously this was inverted,
+    //   making the camera feel like it was locked below the aircraft).
     state.orbit.yaw+=dx*0.01;
-    state.orbit.pitch+=dy*0.01;
-    state.orbit.pitch=Math.max(-1.4,Math.min(1.4,state.orbit.pitch));
+    state.orbit.pitch-=dy*0.01;
+    // Clamp pitch to [-0.35, 1.45]: allow a slight belly view but prevent
+    // dropping below the horizon where the perspective projection breaks
+    // (zr can approach -d, sending the scale factor to infinity).
+    state.orbit.pitch=Math.max(-0.35,Math.min(1.45,state.orbit.pitch));
     render3D(TRACES[state.traceIdx]);
   }else{
     state.panX+=dx;
@@ -1461,10 +1583,12 @@ document.addEventListener('keydown',e=>{
   if(e.code==='Space'){e.preventDefault();togglePlay();}
   else if(e.code==='ArrowLeft'){
     const tr=TRACES[state.traceIdx];
-    state.t=Math.max(0,state.t-1);updatePlayhead();
+    const [sMin]=segmentTimeRange(tr,state.segmentIdx);
+    state.t=Math.max(sMin,state.t-1);updatePlayhead();
   }else if(e.code==='ArrowRight'){
     const tr=TRACES[state.traceIdx];
-    state.t=Math.min(traceDuration(tr),state.t+1);updatePlayhead();
+    const [,sMax]=segmentTimeRange(tr,state.segmentIdx);
+    state.t=Math.min(sMax,state.t+1);updatePlayhead();
   }else if(e.code==='Escape'){location.hash='#';}
 });
 )HTML";
@@ -1518,7 +1642,7 @@ void generateHtmlReport(const std::vector<Trace>& traces,
 
     // Write the JS template in chunks (MSVC caps a single string literal
     // at 16380 chars — see the kHtmlTail1 comment above).
-    out << kHtmlTail1 << kHtmlTail1b << kHtmlTail2 << kHtmlTail3 << kHtmlTail3b << kHtmlTail4;
+    out << kHtmlTail1 << kHtmlTail1b << kHtmlTail2 << kHtmlTail3 << kHtmlTail3b << kHtmlTail3c << kHtmlTail4;
 }
 
 } // namespace f4flight
