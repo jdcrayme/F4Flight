@@ -1074,49 +1074,110 @@ function updatePlayhead(){
       el('polygon',{points:'0,-9 6,7 0,3 -6,7',fill:'#fff',stroke:'#000','stroke-width':1,opacity:0.95})+
       el('circle',{r:2,fill:'#000'}));
   }
-  // 3D playhead: aircraft as a 3D pyramid (4 triangular faces) pointing in
-  // the direction of travel (psi). Built from 5 points: nose, tail, left
-  // wing, right wing, top. All projected through the 3D projection.
+  // 3D playhead: aircraft as a 3D model with FULL yaw/pitch/roll orientation.
+  //
+  // Uses the EXACT body-to-world DCM from the flight model
+  // (dcmFromEuler in flight/core/types.h), which is the standard ZYX
+  // rotation: R = Rz(psi) * Ry(theta) * Rx(phi).
+  //
+  // Frame conventions (from aircraft_state.h):
+  //   World (NED): X=East, Y=North, Z=Down (altitude = -z)
+  //   Body:        X=forward, Y=right, Z=down
+  //
+  // DCM columns = body axes expressed in world (NED, Z-down):
+  //   Col 0 (body X, forward) = (cp*ct, sp*ct, -st)
+  //   Col 1 (body Y, right)   = (cp*st*sf - sp*cf, sp*st*sf + cp*cf, ct*sf)
+  //   Col 2 (body Z, down)    = (cp*st*cf + sp*sf, sp*st*cf - cp*sf, ct*cf)
+  //
+  // IMPORTANT: This codebase's world frame is X=East, Y=North (NOT standard
+  // NED's X=North, Y=East). The DCM formula is standard ZYX which assumes
+  // X=North, Y=East. When applied to X=East, Y=North, the DCM's "body Y"
+  // column actually points LEFT in world space (e.g., when psi=0 / facing
+  // East, the DCM says body Y = +Y = North, but right = South when facing
+  // East). So we NEGATE the body Y column to get true body right.
+  //
+  // The viz frame uses Z=UP (altitude positive), so we also negate the Z
+  // component of each column (NED Z-down → viz Z-up).
+  //
+  // Final viz body axes (X=East, Y=North, Z=Up):
+  //   X3 (forward) = (cp*ct, sp*ct, st)
+  //   Y3 (right)   = (sp*cf - cp*st*sf, -cp*cf - sp*st*sf, ct*sf)
+  //                = -(DCM col 1 with Z negated)
+  //   Z3 (down)    = (cp*st*cf + sp*sf, sp*st*cf - cp*sf, -ct*cf)
+  //                = (DCM col 2 with Z negated)
+  //
+  // Roll convention: positive phi = right wing down (right bank), matching
+  // the rstick convention (+1 = full right). Verified: at phi=-59° the
+  // aircraft is in a right turn (psi decreasing) and the model correctly
+  // shows right wing down.
+  //
+  // Faces are depth-sorted (painter's algorithm) so the near side is drawn
+  // on top of the far side — critical when banked/inverted.
   const td3=document.getElementById('td3-playhead');
   if(td3&&detail3DProject&&detailBounds){
     const span3D=Math.max(detailBounds.maxX-detailBounds.minX,
                           detailBounds.maxY-detailBounds.minY,
                           detailBounds.maxAlt-detailBounds.minAlt,1);
-    const size=span3D*0.018; // aircraft size relative to data span (larger for visibility)
-    const cosP=Math.cos(f.psi), sinP=Math.sin(f.psi);
-    // 5 points of the aircraft shape (in world coords, relative to ac pos):
-    //   nose: +X (psi direction), at altitude
-    //   tail: -X, slightly below
-    //   lWing: -X, -Y perpendicular, at altitude
-    //   rWing: -X, +Y perpendicular, at altitude
-    //   top: center, above
-    const noseX=f.x+cosP*size*2, noseY=f.y+sinP*size*2;
-    const tailX=f.x-cosP*size*0.5, tailY=f.y-sinP*size*0.5;
-    const lwx=f.x-cosP*size*0.5-sinP*size, lwy=f.y-sinP*size*0.5+cosP*size;
-    const rwx=f.x-cosP*size*0.5+sinP*size, rwy=f.y-sinP*size*0.5-cosP*size;
-    const topX=f.x-cosP*size*0.13, topY=f.y-sinP*size*0.13;
+    const size=span3D*0.04; // aircraft size relative to data span (large enough to see bank/pitch)
+    const psi=f.psi, theta=f.theta, phi=f.phi;
+    const cP=Math.cos(psi), sP=Math.sin(psi);
+    const cT=Math.cos(theta), sT=Math.sin(theta);
+    const cF=Math.cos(phi), sF=Math.sin(phi);
+    // Body axes in viz world (X=East, Y=North, Z=Up).
+    // Derived from dcmFromEuler columns: negate Z (NED→viz) and negate
+    // body-Y column (DCM body-Y points left in this world frame).
+    const X3=[cP*cT, sP*cT, sT];
+    const Y3=[-(cP*sT*sF - sP*cF), -(sP*sT*sF + cP*cF), -(-cT*sF)];
+    const Z3=[cP*sT*cF + sP*sF, sP*sT*cF - cP*sF, -cT*cF];
+    // Body-frame points: [forward, right, down]
+    //   0: nose       — forward
+    //   1: tail       — back, slightly below (belly fin)
+    //   2: left wing  — back, left (-Y body = -right)
+    //   3: right wing — back, right (+Y body)
+    //   4: top        — back slightly, up (-Z body = -down = canopy)
+    const bodyPts=[
+      [size*2,     0,          0       ],
+      [-size*0.5,  0,          size*0.1],
+      [-size*0.5, -size,       0       ],
+      [-size*0.5,  size,       0       ],
+      [-size*0.13, 0,         -size*0.4],
+    ];
     const alt=-f.z;
-    // Project all 5 points
-    const pn=detail3DProject(noseX,noseY,alt);
-    const pt=detail3DProject(tailX,tailY,alt-size*0.1);
-    const plw=detail3DProject(lwx,lwy,alt);
-    const prw=detail3DProject(rwx,rwy,alt);
-    const ptop=detail3DProject(topX,topY,alt+size*0.4);
-    // Draw 4 triangular faces (nose-tail-lwing, nose-tail-rwing, nose-lwing-top, nose-rwing-top)
-    // Use different opacities to give a 3D shaded look
+    // Transform each body point to world ENU, then project to screen.
+    // proj[i] = [screenX, screenY, depthZr]
+    const proj=bodyPts.map(bp=>{
+      const wx=f.x+bp[0]*X3[0]+bp[1]*Y3[0]+bp[2]*Z3[0];
+      const wy=f.y+bp[0]*X3[1]+bp[1]*Y3[1]+bp[2]*Z3[1];
+      const wz=alt+bp[0]*X3[2]+bp[1]*Y3[2]+bp[2]*Z3[2];
+      return detail3DProject(wx,wy,wz);
+    });
+    // Faces (vertex indices) with base color. Bottom faces are darker
+    // (belly), top faces are lighter (canopy) — so when the aircraft rolls
+    // inverted you see the dark belly on top, which is visually correct.
+    const faces=[
+      {idx:[0,1,2], color:'#7a7a7a'}, // bottom-left  (nose-tail-LW)
+      {idx:[0,1,3], color:'#9a9a9a'}, // bottom-right (nose-tail-RW)
+      {idx:[2,1,3], color:'#8a8a8a'}, // bottom       (LW-tail-RW)
+      {idx:[0,2,4], color:'#dadada'}, // top-left     (nose-LW-top)
+      {idx:[0,3,4], color:'#cacaca'}, // top-right    (nose-RW-top)
+      {idx:[2,4,3], color:'#bababa'}, // top-rear     (LW-top-RW)
+    ];
+    // Depth-sort (painter's algorithm): larger zr = further away = draw first.
+    const facesSorted=faces.map(face=>{
+      const avgZr=(proj[face.idx[0]][2]+proj[face.idx[1]][2]+proj[face.idx[2]][2])/3;
+      return {idx:face.idx, color:face.color, avgZr};
+    }).sort((a,b)=>b.avgZr-a.avgZr);
     let model='';
-    // Bottom faces (darker)
-    model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+pt[0].toFixed(1)+','+pt[1].toFixed(1)+' '+plw[0].toFixed(1)+','+plw[1].toFixed(1),fill:'#888',stroke:'#000','stroke-width':0.0,opacity:1.0});
-    model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+pt[0].toFixed(1)+','+pt[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1),fill:'#aaa',stroke:'#000','stroke-width':0.0,opacity:1.0});
-    model+=el('polygon',{points:plw[0].toFixed(1)+','+plw[1].toFixed(1)+' '+pt[0].toFixed(1)+','+pt[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1),fill:'#aaa',stroke:'#000','stroke-width':0.0,opacity:1.0});
-    // Top faces (lighter)
-    model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+plw[0].toFixed(1)+','+plw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1),fill:'#ddd',stroke:'#000','stroke-width':0.0,opacity:1.0});
-    model+=el('polygon',{points:pn[0].toFixed(1)+','+pn[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1),fill:'#ccc',stroke:'#000','stroke-width':0.0,opacity:1.0});
-    model+=el('polygon',{points:plw[0].toFixed(1)+','+plw[1].toFixed(1)+' '+ptop[0].toFixed(1)+','+ptop[1].toFixed(1)+' '+prw[0].toFixed(1)+','+prw[1].toFixed(1),fill:'#ccc',stroke:'#000','stroke-width':0.0,opacity:1.0});
+    for(const face of facesSorted){
+      const pts=face.idx.map(i=>proj[i][0].toFixed(1)+','+proj[i][1].toFixed(1)).join(' ');
+      model+=el('polygon',{points:pts,fill:face.color,stroke:'#000','stroke-width':0.4,opacity:0.96});
+    }
     // Tadpole: dashed vertical drop-line from the aircraft straight down to
     // the ground grid (z=0), ending in a ring + dot. This gives a constant
     // visual reference for altitude and ground track position while
-    // orbiting — without it the aircraft pyramid floats in empty space.
+    // orbiting — without it the aircraft model floats in empty space.
+    // The drop-line uses the aircraft's POSITION (not orientation) so it
+    // always points straight down regardless of bank/pitch.
     const pAcTip=detail3DProject(f.x,f.y,alt);
     const pGndTip=detail3DProject(f.x,f.y,0);
     let tadpole='';
@@ -1127,8 +1188,47 @@ function updatePlayhead(){
       r:5,fill:'none',stroke:'#e2e8f0','stroke-width':1.5,opacity:0.6});
     tadpole+=el('circle',{cx:pGndTip[0].toFixed(1),cy:pGndTip[1].toFixed(1),
       r:1.5,fill:'#e2e8f0',opacity:0.75});
-    // Prepend so the aircraft pyramid draws on top of the drop-line.
+    // Prepend so the aircraft model draws on top of the drop-line.
     model=tadpole+model;
+    // Velocity vector arrow: shows the direction of travel as a bold
+    // arrow extending forward from the nose. The length scales with
+    // airspeed (vt) so faster flight = longer arrow — giving an instant
+    // visual read on energy state. The arrow is drawn in body-X
+    // (forward) direction using the same rotation as the model, so it
+    // follows the nose through yaw/pitch/roll. A bright accent color
+    // (cyan) distinguishes it from the gray model.
+    //
+    // The arrow is built from 3 line segments: a shaft (nose → tip)
+    // and two arrowhead lines (tip → back-left, tip → back-right),
+    // using the body Y axis for the arrowhead spread.
+    {
+      const vScale=span3D*0.000012; // arrow length per ft/s of airspeed
+      const arrowLen=size*1.5+f.vt*vScale; // base size + speed-scaled
+      // Arrow tip: forward from the nose by arrowLen.
+      const tipX=f.x+X3[0]*arrowLen*1.5, tipY=f.y+X3[1]*arrowLen*1.5, tipZ=alt+X3[2]*arrowLen*1.5;
+      // Arrow base: at the nose position.
+      const baseX=f.x+X3[0]*size*2, baseY=f.y+X3[1]*size*2, baseZ=alt+X3[2]*size*2;
+      const pTip=detail3DProject(tipX,tipY,tipZ);
+      const pBase=detail3DProject(baseX,baseY,baseZ);
+      // Arrowhead: two points back from the tip, offset along body Y.
+      const headLen=arrowLen*0.35;
+      const headBackX=tipX-X3[0]*headLen, headBackY=tipY-X3[1]*headLen, headBackZ=tipZ-X3[2]*headLen;
+      const pHeadL=detail3DProject(headBackX+Y3[0]*headLen*0.5, headBackY+Y3[1]*headLen*0.5, headBackZ+Y3[2]*headLen*0.5);
+      const pHeadR=detail3DProject(headBackX-Y3[0]*headLen*0.5, headBackY-Y3[1]*headLen*0.5, headBackZ-Y3[2]*headLen*0.5);
+      let vel='';
+      // Shaft (thick, bright cyan)
+      vel+=el('line',{x1:pBase[0].toFixed(1),y1:pBase[1].toFixed(1),
+        x2:pTip[0].toFixed(1),y2:pTip[1].toFixed(1),
+        stroke:'#22d3ee','stroke-width':2.5,'stroke-linecap':'round',opacity:0.95});
+      // Arrowhead (two lines forming a V at the tip)
+      vel+=el('line',{x1:pTip[0].toFixed(1),y1:pTip[1].toFixed(1),
+        x2:pHeadL[0].toFixed(1),y2:pHeadL[1].toFixed(1),
+        stroke:'#22d3ee','stroke-width':2.5,'stroke-linecap':'round',opacity:0.95});
+      vel+=el('line',{x1:pTip[0].toFixed(1),y1:pTip[1].toFixed(1),
+        x2:pHeadR[0].toFixed(1),y2:pHeadR[1].toFixed(1),
+        stroke:'#22d3ee','stroke-width':2.5,'stroke-linecap':'round',opacity:0.95});
+      model+=vel;
+    }
     td3.innerHTML=model;
   }
   // Time-series playhead lines — positioned within the segment's time
@@ -1217,13 +1317,28 @@ function render3D(tr){
   const span=Math.max(b.maxX-b.minX,b.maxY-b.minY,b.maxAlt-b.minAlt,1);
   const scale=(W*0.35)/span*state.zoom;
   const yaw=state.orbit.yaw, pitch=state.orbit.pitch;
-  // 3D projection centered on the aircraft
+  // 3D projection centered on the aircraft.
+  //
+  // Convention: pitch=0 looks straight DOWN (camera directly above target),
+  // pitch=π/2 looks horizontally (camera at target's altitude, off to the
+  // side set by yaw). The pitch rotation is applied to the (yr, pz) pair
+  // after yaw, mapping:
+  //   yr2 (screen-up before perspective) = yr*cos(pitch) + pz*sin(pitch)
+  //   zr  (depth relative to target)     = yr*sin(pitch) - pz*cos(pitch)
+  //
+  // The +sin(pitch) on pz in yr2 ensures HIGHER altitude → UP on screen
+  // (previously this was `- pz*sin(pitch)`, which inverted altitude: the
+  // ground appeared ABOVE the aircraft when looking down).
+  //
+  // The -cos(pitch) on pz in zr ensures that at pitch=0 (top-down), points
+  // ABOVE the target are CLOSER to the camera (smaller zr → larger f),
+  // which matches a camera looking down from above.
   function project(x,y,z){
     let px=x-cx, py=y-cy, pz=z-cz;
     const xr=px*Math.cos(yaw)-py*Math.sin(yaw);
     const yr=px*Math.sin(yaw)+py*Math.cos(yaw);
-    const yr2=yr*Math.cos(pitch)-pz*Math.sin(pitch);
-    const zr=yr*Math.sin(pitch)+pz*Math.cos(pitch);
+    const yr2=yr*Math.cos(pitch)+pz*Math.sin(pitch);
+    const zr=yr*Math.sin(pitch)-pz*Math.cos(pitch);
     const d=span*3;
     const f=d/(d+zr);
     return [W/2+xr*f*scale+state.panX, H/2-yr2*f*scale+state.panY, zr];
@@ -1256,49 +1371,157 @@ function render3D(tr){
       svg+=el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:col,'stroke-width':3,opacity:0.7});
     }
   }
-  // Flight path — drawn as flat ribbon quads (filled polygons, NOT stroked
-  // lines). Each segment between two projected path points becomes a flat
-  // rectangle: we compute the screen-space perpendicular to the segment
-  // direction and offset both endpoints by ±halfWidth to build a 4-point
-  // polygon. Filled polygons have no stroke caps, no bulging at joints, and
-  // no glossy cylindrical look — they render as a flat colored strip
-  // (ribbon), which is the correct visual metaphor for a trajectory.
+  // Flight path — drawn as a depth-sorted 3D ribbon trail with ground shadow
+  // and bank-tilted orientation.
+  //
+  // The ribbon is a continuous strip that follows the 3D flight path. At
+  // each sample, the ribbon's normal is computed as the horizontal
+  // perpendicular to the path tangent, then TILTED by the aircraft's roll
+  // angle (phi) so the ribbon banks with the aircraft. This makes the
+  // ribbon look like a contrail carved by the wings — when the aircraft
+  // banks right, the ribbon's top leans right, matching the bank.
+  //
+  // Bank math:
+  //   N_h = horizontal normal = normalize(cross(path_tangent, world_up))
+  //   B   = binormal = normalize(cross(N_h, path_tangent))  ≈ world_up
+  //   N_banked = N_h * cos(phi) + B * sin(phi)
+  //
+  // In this codebase's convention, NEGATIVE phi = right bank (right wing
+  // down). With N_banked = N_h*cos(phi) + B*sin(phi):
+  //   phi < 0 (right bank) → sin(phi) < 0 → N_banked tilts DOWNWARD
+  //   → the right edge of the ribbon drops → correct right-bank lean ✓
+  //
+  // The ground shadow is the projection of the banked ribbon edges onto
+  // z=0. When the ribbon banks, its shadow on the ground widens or
+  // narrows accordingly (a vertical ribbon at 90° bank projects to a
+  // line). This gives correct visual feedback for the bank angle even
+  // when looking at just the shadow.
+  //
+  // Other features:
+  //   1. DEPTH SORTING: all quads (ribbon + shadow) across all phases are
+  //      collected and sorted by average depth, drawn far-to-near.
+  //   2. SHARED VERTICES: normals use averaged tangents at interior
+  //      vertices → no gaps at corners.
+  //   3. ANTI-ALIASING: same-color stroke on each quad prevents 1px gaps.
   const ranges=phaseRanges(tr);
-  const rw=Math.max(2.0,2.5*state.zoom); // ribbon half-width in px
+  const rw3D=span*0.015*state.zoom; // 3D half-width in world feet (wide enough to see at all zoom levels)
+  const allQuads=[]; // {pts, color, opacity, avgZr} — collected, then depth-sorted
   for(const pi of segPhases){
     if(pi>=ranges.length)continue;
     const [s,e]=ranges[pi]; if(e-s<2)continue;
     const total=e-s;
-    const stride=Math.max(1,Math.floor(total/300));
-    let prevP=null;
+    const stride=Math.max(1,Math.floor(total/400));
+    // Sample path points in 3D world space (x, y, z=altitude) + roll angle.
+    const samples=[];
     for(let fi=s;fi<=e&&fi<tr.frames.length;fi+=stride){
       const f=tr.frames[fi];
-      const p=project(f.x,f.y,-f.z);
-      if(prevP){
-        const col=frameColor(tr,fi,b);
-        // Screen-space segment direction
-        const ddx=p[0]-prevP[0], ddy=p[1]-prevP[1];
-        const dlen=Math.sqrt(ddx*ddx+ddy*ddy)||1;
-        // Perpendicular (normal) — rotate direction 90°
-        const nx=-ddy/dlen, ny=ddx/dlen;
-        // Build quad: prevTop, currTop, currBot, prevBot
-        const pts=
-          (prevP[0]+nx*rw).toFixed(1)+','+(prevP[1]+ny*rw).toFixed(1)+' '+
-          (p[0]+nx*rw).toFixed(1)+','+(p[1]+ny*rw).toFixed(1)+' '+
-          (p[0]-nx*rw).toFixed(1)+','+(p[1]-ny*rw).toFixed(1)+' '+
-          (prevP[0]-nx*rw).toFixed(1)+','+(prevP[1]-ny*rw).toFixed(1);
-        svg+=el('polygon',{points:pts,fill:col,stroke:'none',opacity:0.9});
-      }
-      prevP=p;
+      samples.push({x:f.x, y:f.y, z:-f.z, phi:f.phi, fi:fi});
+    }
+    if(samples.length<2)continue;
+    // Compute horizontal normal and 3D tangent at each sample using
+    // averaged incoming+outgoing direction (for gap-free joints).
+    const normals=[];  // horizontal normal [nx, ny]
+    const tangents=[];  // 3D tangent [tx, ty, tz] (for binormal)
+    for(let i=0;i<samples.length;i++){
+      const prev=samples[Math.max(0,i-1)];
+      const next=samples[Math.min(samples.length-1,i+1)];
+      const dx=next.x-prev.x, dy=next.y-prev.y, dz=next.z-prev.z;
+      const hlen=Math.sqrt(dx*dx+dy*dy)||1;
+      let nx=-dy/hlen, ny=dx/hlen;
+      const nlen=Math.sqrt(nx*nx+ny*ny)||1;
+      normals.push([nx/nlen, ny/nlen]);
+      const tlen=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+      tangents.push([dx/tlen, dy/tlen, dz/tlen]);
+    }
+    // Project left/right edge points for the ribbon (at altitude, banked)
+    // and for the ground shadow (at z=0, projected from banked edges).
+    const left=[], right=[], sLeft=[], sRight=[];
+    for(let i=0;i<samples.length;i++){
+      const sm=samples[i], n=normals[i], T=tangents[i];
+      // Binormal B = cross(N_h, T) — approximately world-up when path
+      // is horizontal. N_h = [n[0], n[1], 0].
+      // cross([nx,ny,0], [tx,ty,tz]) = [ny*tz, -nx*tz, nx*ty - ny*tx]
+      const bx=n[1]*T[2], by=-n[0]*T[2], bz=n[0]*T[1]-n[1]*T[0];
+      const blen=Math.sqrt(bx*bx+by*by+bz*bz)||1;
+      const Bx=bx/blen, By=by/blen, Bz=bz/blen;
+      // Banked normal: N_h * cos(phi) + B * sin(phi).
+      // phi < 0 (right bank) → sin(phi) < 0 → normal tilts down →
+      // right edge drops, matching the aircraft's right bank.
+      const phi=sm.phi;
+      const cPhi=Math.cos(phi), sPhi=Math.sin(phi);
+      const bnx=n[0]*cPhi+Bx*sPhi;
+      const bny=n[1]*cPhi+By*sPhi;
+      const bnz=Bz*sPhi; // N_h has z=0, so only B contributes to z
+      // Ribbon edges at altitude (banked).
+      left.push(project(sm.x+bnx*rw3D, sm.y+bny*rw3D, sm.z+bnz*rw3D));
+      right.push(project(sm.x-bnx*rw3D, sm.y-bny*rw3D, sm.z-bnz*rw3D));
+      // Ground shadow: project the same 3D edge points onto z=0.
+      // When the ribbon banks, the shadow width changes to match the
+      // projected width of the tilted strip.
+      sLeft.push(project(sm.x+bnx*rw3D, sm.y+bny*rw3D, 0));
+      sRight.push(project(sm.x-bnx*rw3D, sm.y-bny*rw3D, 0));
+    }
+    // Build ribbon quads + shadow quads. Both participate in the same
+    // depth sort so they interleave correctly with each other and with
+    // quads from other phases at crossings.
+    for(let i=0;i<samples.length-1;i++){
+      const col=frameColor(tr,samples[i].fi,b);
+      // Ribbon quad (at altitude).
+      const rAvgZr=(left[i][2]+left[i+1][2]+right[i+1][2]+right[i][2])/4;
+      const rPts=
+        left[i][0].toFixed(1)+','+left[i][1].toFixed(1)+' '+
+        left[i+1][0].toFixed(1)+','+left[i+1][1].toFixed(1)+' '+
+        right[i+1][0].toFixed(1)+','+right[i+1][1].toFixed(1)+' '+
+        right[i][0].toFixed(1)+','+right[i][1].toFixed(1);
+      allQuads.push({pts:rPts, color:col, opacity:0.9, avgZr:rAvgZr});
+      // Ground shadow quad (at z=0). Same color, low opacity — reads as
+      // a cast shadow. The shadow's depth is computed from its own
+      // projected vertices (it's on the ground, so generally further
+      // from the camera than the ribbon above it).
+      const sAvgZr=(sLeft[i][2]+sLeft[i+1][2]+sRight[i+1][2]+sRight[i][2])/4;
+      const sPts=
+        sLeft[i][0].toFixed(1)+','+sLeft[i][1].toFixed(1)+' '+
+        sLeft[i+1][0].toFixed(1)+','+sLeft[i+1][1].toFixed(1)+' '+
+        sRight[i+1][0].toFixed(1)+','+sRight[i+1][1].toFixed(1)+' '+
+        sRight[i][0].toFixed(1)+','+sRight[i][1].toFixed(1);
+      allQuads.push({pts:sPts, color:col, opacity:0.2, avgZr:sAvgZr});
     }
   }
-  // Waypoints
+  // Depth-sort: far (large zr) first, near (small/negative zr) last.
+  // This is the painter's algorithm — draw far things first so near
+  // things paint over them. Critical for path crossings.
+  allQuads.sort(function(a,b){return b.avgZr-a.avgZr;});
+  for(const q of allQuads){
+    svg+=el('polygon',{points:q.pts,fill:q.color,stroke:q.color,'stroke-width':0.5,opacity:q.opacity});
+  }
+  // Waypoints — rendered with the SAME tadpole drop-line + ground circle
+  // as the aircraft playhead, so waypoint altitude and ground position are
+  // readable at a glance while orbiting. Without the tadpole, waypoints
+  // float in space and it's impossible to tell whether they're at ground
+  // level or at altitude.
+  //
+  // Style matches the aircraft playhead tadpole: dashed vertical line from
+  // the waypoint position straight down to z=0, ending in a ring + dot.
+  // The waypoint diamond marker sits at the waypoint's true altitude.
   if(tr.waypoints){
     for(let i=0;i<tr.waypoints.length;i++){
       const w=tr.waypoints[i];
-      const p=project(w.x,w.y,-w.z);
-      svg+=el('polygon',{points:diamondPts(p[0],p[1],7),fill:'#fff',stroke:'#000','stroke-width':1.5});
-      svg+=el('text',{x:p[0]+10,y:p[1]-8,fill:'#fff','font-weight':'bold','font-size':11},esc(w.name||('WP'+(i+1))));
+      const alt=-w.z; // altitude (positive up); NED z is negative for alt
+      const pWp=project(w.x,w.y,alt);
+      const pGnd=project(w.x,w.y,0);
+      // Tadpole: dashed drop-line from waypoint to ground
+      svg+=el('line',{x1:pWp[0].toFixed(1),y1:pWp[1].toFixed(1),
+        x2:pGnd[0].toFixed(1),y2:pGnd[1].toFixed(1),
+        stroke:'#e2e8f0','stroke-width':1,'stroke-dasharray':'4,3',opacity:0.5});
+      // Ground ring + dot (matches aircraft tadpole)
+      svg+=el('circle',{cx:pGnd[0].toFixed(1),cy:pGnd[1].toFixed(1),
+        r:5,fill:'none',stroke:'#e2e8f0','stroke-width':1.5,opacity:0.55});
+      svg+=el('circle',{cx:pGnd[0].toFixed(1),cy:pGnd[1].toFixed(1),
+        r:1.5,fill:'#e2e8f0',opacity:0.7});
+      // Waypoint marker (diamond) at altitude
+      svg+=el('polygon',{points:diamondPts(pWp[0],pWp[1],7),fill:'#fff',stroke:'#000','stroke-width':1.5});
+      // Label
+      svg+=el('text',{x:pWp[0]+10,y:pWp[1]-8,fill:'#fff','font-weight':'bold','font-size':11},esc(w.name||('WP'+(i+1))));
     }
   }
   // Playhead marker (updated by updatePlayhead to include 3D aircraft model)
@@ -1539,16 +1762,19 @@ document.addEventListener('mousemove',e=>{
   const dx=e.clientX-state.orbit.lastX;
   const dy=e.clientY-state.orbit.lastY;
   if(state.viewMode==='3d'){
-    // Yaw: drag right → world rotates so camera orbits right (standard).
-    // Pitch: drag UP (dy<0) → look down more; drag DOWN (dy>0) → look up
-    //   toward horizon. This matches the "grab the scene" convention used
-    //   by Three.js OrbitControls / Blender (previously this was inverted,
-    //   making the camera feel like it was locked below the aircraft).
+    // Yaw: drag right → camera orbits right (world appears to rotate left).
+    // Pitch: drag UP (dy<0) → pitch increases → camera tilts UP from
+    //   top-down toward horizontal (you see more of the horizon).
+    //   drag DOWN (dy>0) → pitch decreases → camera tilts DOWN toward
+    //   top-down, then past it to a slight belly view (negative pitch).
+    //   This is the camera-centric Three.js OrbitControls convention.
+    //   pitch=0 looks straight DOWN, pitch=π/2 looks horizontal.
     state.orbit.yaw+=dx*0.01;
     state.orbit.pitch-=dy*0.01;
-    // Clamp pitch to [-0.35, 1.45]: allow a slight belly view but prevent
-    // dropping below the horizon where the perspective projection breaks
-    // (zr can approach -d, sending the scale factor to infinity).
+    // Clamp pitch to [-0.35, 1.45]: -0.35 is a slight belly view (camera
+    // just below the aircraft looking up), 1.45 is just below horizontal.
+    // Going beyond ±π/2 breaks the perspective projection (zr approaches
+    // -d, sending the scale factor f to infinity).
     state.orbit.pitch=Math.max(-0.35,Math.min(1.45,state.orbit.pitch));
     render3D(TRACES[state.traceIdx]);
   }else{
