@@ -62,6 +62,12 @@ public:
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
 
+        if (std::isnan(as.kin.vt) || std::isnan(as.kin.z) ||
+            std::isnan(as.kin.x) || std::isnan(as.kin.y) ||
+            std::isnan(input.pstick)) {
+            hasNaN_ = true;
+        }
+
         const std::size_t curWp = inputTracker_ ? inputTracker_->currentWaypoint() : 0;
         if (curWp > lastWpIndex_) {
             waypointsVisited_ += (curWp - lastWpIndex_);
@@ -92,6 +98,7 @@ public:
     }
 
     bool IsPassed() const override {
+        if (hasNaN_) return false;
         // 1. Must visit all waypoints (was size-1, which accepted visiting
         //    only 3 of 4 corners — the 4th is "back to start").
         const bool wpOk = waypointsVisited_ >= wps_.size();
@@ -127,6 +134,7 @@ private:
     std::size_t lastWpIndex_{0};
     double minAlt_{std::numeric_limits<double>::max()};
     double maxAlt_{std::numeric_limits<double>::lowest()};
+    bool hasNaN_{false};
     const SteeringController* inputTracker_{nullptr};
 };
 

@@ -188,7 +188,21 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     const TruthState* truth = frameInputs_.truth;
     if (truth && selfEntity) {
         sensorFusion_.update(*selfEntity, *truth, state_.config.skill, dt);
+
+        // Round 7 (P1): Apply GCI + NCTR to the sensor picture.
+        // GCI: skill-gated detection beyond sensor range (veteran/ace only).
+        // NCTR: radar-based type identification at close range.
+        SensorPicture& pic = sensorFusion_.picture();
+        ApplyGCI(state_, pic, *selfEntity);
+        ApplyNCTR(state_, pic, *selfEntity,
+                  /*hasNCTR=*/true,          // host would configure this
+                  /*maxNctrRangeFt=*/60.0 * 6076.0);  // FF default: 60 NM
     }
+
+    // Round 7 (P1): chooseRadarMode — translate radModeSelect → radarMode.
+    // Throttled internally; called every frame but only re-evaluates every
+    // (4 + (4 - skill)) seconds.
+    ChooseRadarMode(state_, simTime_, /*hasTWS=*/true);  // host would configure TWS
 
     // Process incoming messages (ATC clearances, flight commands)
     ProcessATCMessages(state_, state_.comm.mailbox);
@@ -690,7 +704,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     // ===================================================================
     // --- WVR target (offensive) ---
     // ===================================================================
-    // Priority: injected target > SensorPicture bestTarget
+    // Priority: injected target > SensorPicture bestTarget > DoTargeting
     const DigiEntity* tgt = frameInputs_.injectedTarget;
     if (tgt && tgt->isDead) tgt = nullptr;
 
@@ -708,6 +722,18 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         // isFiring.
         targetEntityAuto_ = toDigiEntity(*pic.bestTarget);
         tgt = &(*targetEntityAuto_);
+    }
+
+    // Round 7 (P1): DoTargeting — autonomous target selection.
+    // If no injected target AND no SensorPicture bestTarget, try DoTargeting.
+    // This scans the SensorPicture for the highest-threat aircraft contact
+    // and returns it as the target. Without this, the brain can't find
+    // targets autonomously — it relies on the host injecting them.
+    if (!tgt && sensorFusionActive && selfEntity) {
+        const DigiEntity* autoTarget = DoTargeting(state_, pic, *selfEntity);
+        if (autoTarget) {
+            tgt = autoTarget;
+        }
     }
 
     if (selfEntity && tgt && !tgt->isDead) {
@@ -833,6 +859,13 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         // FF RunDecisionRoutines ends by queuing WaypointMode as the default.
         // addMode() priority resolution ensures any higher-priority mode queued
         // above wins; if nothing matched, Waypoint wins.
+        //
+        // NOTE: FF enters LoiterMode when curWaypoint == NULL (waypoint.cpp:63),
+        // but we DON'T auto-enter Loiter here. Many scenarios and tests use the
+        // brain in "heading hold" mode without waypoints (setHeading +
+        // setAltitude but no setWaypoints). Auto-entering Loiter would make
+        // those aircraft orbit instead of holding heading. Loiter is available
+        // explicitly via SteeringController::Mode::Loiter or forceMode(Loiter).
         addMode(DigiMode::Waypoint);
     }
 
@@ -873,21 +906,23 @@ void DigiBrain::addMode(DigiMode newMode) {
         return;
     }
 
-    // BUG FIX: Waypoint is the lowest-priority fallback — it must NEVER
-    // pre-empt any other queued mode. The Round-2 structural additions
+    // BUG FIX: Waypoint AND Loiter are lowest-priority fallbacks — they must
+    // NEVER pre-empt any other queued mode. The Round-2 structural additions
     // (Refueling=13 ... GroundMnvr=22) were placed AFTER Waypoint=12 in the
-    // enum, so a naive `newMode < nextMode_` check would let Waypoint (12)
-    // incorrectly pre-empt RTB (19), Wingy (20), etc. — modes that should
-    // always win over Waypoint. Without this special-case, fuel-critical
-    // RTB and formation Wingy are silently overridden by Waypoint nav every
-    // frame, leaving the AI to fly past its divert airbase and out of
-    // formation indefinitely.
+    // enum, and Loiter=17 falls between them. A naive `newMode < nextMode_`
+    // check would let Waypoint (12) or Loiter (17) incorrectly pre-empt
+    // RTB (19), Wingy (20), etc. — modes that should always win over both.
+    // Without this special-case, fuel-critical RTB is silently overridden
+    // by Loiter every frame (Loiter=17 < RTB=19), leaving the AI to orbit
+    // instead of returning to base.
     //
     // FreeFalcon's AddMode avoids this by giving Waypoint the highest
     // numerical value (lowest priority) in its mode enum. We preserve the
     // existing enum ordering for backward compatibility with tests that
-    // assert `WVREngage < Waypoint`, and instead special-case Waypoint here.
-    if (newMode == DigiMode::Waypoint && nextMode_ != DigiMode::NoMode) {
+    // assert `WVREngage < Waypoint`, and instead special-case both fallback
+    // modes here.
+    if ((newMode == DigiMode::Waypoint || newMode == DigiMode::Loiter) &&
+        nextMode_ != DigiMode::NoMode) {
         return;
     }
 

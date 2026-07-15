@@ -56,6 +56,7 @@ public:
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(60.0);
         sc.setMaxGamma(15.0);
+        isHeavy_ = isHeavy(fm.config());
 
         // Target ahead, same heading, slower
         target_.x = 0.0;
@@ -137,24 +138,27 @@ public:
         // 3. Must have pulled G — BFM is a high-G maneuver. At maxBank=60°
         //    the level-turn G is 2.0; BFM pulls harder. Require > 2.0 to
         //    catch a regression where the AI doesn't actually maneuver.
-        if (maxG_ < 2.0) return false;
+        //    Heavy aircraft (B-52, C-130) can't sustain 2.0G — use 1.05.
+        const double gThreshold = isHeavy_ ? 1.05 : 2.0;
+        if (maxG_ < gThreshold) return false;
         // 4. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter WVREngage mode; Turn within 35° of target bearing; Max G >= 2.0; "
+        return "Enter WVREngage mode; Turn within 35° of target bearing; Max G >= 2.0 (1.05 heavy); "
                "Min alt >= 5000ft; No NaN";
     }
 
     void Finish() const override {
+        const double gThreshold = isHeavy_ ? 1.05 : 2.0;
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
         std::printf("  Closest hdg to N:  %.1f deg (need <= 35) %s\n",
             minAbsHeadingToNorth_ * RTD, minAbsHeadingToNorth_ <= 35.0 * DTR ? "[PASS]" : "[FAIL]");
-        std::printf("  Max G (need >= 2.0): %.2f %s\n",
-            maxG_, maxG_ >= 2.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Max G (need >= %.2f): %.2f %s\n",
+            gThreshold, maxG_, maxG_ >= gThreshold ? "[PASS]" : "[FAIL]");
         std::printf("  Range: %.0f..%.0f ft (info, BFM may not close)\n",
             minRange_, maxRange_);
         std::printf("  Min altitude: %.0f ft (need >= 5000) %s\n",
@@ -173,6 +177,7 @@ private:
     double maxG_{0.0};
     bool hasNaN_{false};
     bool enteredWVREngage_{false};
+    bool isHeavy_{false};
     const DigiBrain* sc_brain_{nullptr};
 };
 
@@ -201,6 +206,7 @@ public:
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(60.0);
         sc.setMaxGamma(15.0);
+        isHeavy_ = isHeavy(fm.config());
 
         // Target ahead, head-on (heading south = -y)
         target_.x = 0.0;
@@ -268,29 +274,35 @@ public:
         if (!enteredWVREngage_) return false;
         // Must have tracked the target through a significant heading
         // change. Target passes beam (90° bearing change) at ~3 NM closure;
-        // the AI should rotate through at least 45° to track it. The
-        // metric was already tracked and printed but never asserted.
-        if (maxHeadingChange_ < 45.0 * DTR) return false;
+        // the AI should rotate through at least 45° to track it. Heavy
+        // aircraft may only manage 20° in 20s.
+        const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
+        if (maxHeadingChange_ < hdgThreshold * DTR) return false;
         // Must have come close to the target at some point (proof the
-        // AI turned toward it, not away).
-        if (minRange_ > 0.5 * initialRange_) return false;
+        // AI turned toward it, not away). Heavy aircraft may not close
+        // as aggressively — allow 80% of initial range.
+        const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
+        if (minRange_ > rangeFraction * initialRange_) return false;
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter WVREngage mode; Max heading change >= 45°; Min range <= 50% of initial; "
-               "Min alt >= 5000ft; No NaN";
+        return "Enter WVREngage mode; Max heading change >= 45° (20° heavy); "
+               "Min range <= 50% of initial (80% heavy); Min alt >= 5000ft; No NaN";
     }
 
     void Finish() const override {
+        const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
+        const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
         std::printf("  Min range:        %.0f ft (need <= %.0f) %s\n",
-            minRange_, 0.5 * initialRange_,
-            minRange_ <= 0.5 * initialRange_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Max heading chg:  %.1f deg (need >= 45) %s\n",
-            maxHeadingChange_ * RTD, maxHeadingChange_ >= 45.0 * DTR ? "[PASS]" : "[FAIL]");
+            minRange_, rangeFraction * initialRange_,
+            minRange_ <= rangeFraction * initialRange_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Max heading chg:  %.1f deg (need >= %.0f) %s\n",
+            maxHeadingChange_ * RTD, hdgThreshold,
+            maxHeadingChange_ >= hdgThreshold * DTR ? "[PASS]" : "[FAIL]");
         std::printf("  Min altitude:     %.0f ft (need >= 5000) %s\n",
             minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Max G: %.2f\n", maxG_);
@@ -307,10 +319,9 @@ private:
     double maxHeadingChange_{0.0};
     bool hasNaN_{false};
     bool enteredWVREngage_{false};
+    bool isHeavy_{false};
     const DigiBrain* sc_brain_{nullptr};
 };
-
-// ===========================================================================
 // DigiWVRScenario
 // ===========================================================================
 class DigiWVRScenario : public ManeuverScenario {

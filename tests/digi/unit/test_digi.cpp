@@ -691,6 +691,7 @@ TEST_F(DigiBrainTest, ForcedModeOverridesResolve) {
 
     brain.clearForcedMode();
     brain.compute(state, 1.0/60.0, 10000.0, fcs, fcsState);
+    // brain has waypoints to follow.
     EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
 }
 

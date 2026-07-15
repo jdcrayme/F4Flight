@@ -435,10 +435,14 @@ TEST_F(AirbaseCheckTest, BingoBeyondReturnDistanceSetsDivert) {
     EXPECT_NEAR(digi.fuel.divertAirbaseY, 60.0 * 6076.0, 1.0);
 }
 
-TEST_F(AirbaseCheckTest, BingoWithinReturnDistanceNoDivert) {
-    // Airbase 30 NM north (within 50 NM) — no divert needed yet.
+TEST_F(AirbaseCheckTest, BingoWithinReturnDistanceSetsDivert) {
+    // Round 7 fix: Bingo fuel ALWAYS sets the divert airbase to the nearest
+    // one, regardless of distance. (Previously, Bingo within 50 NM did NOT
+    // set a divert — the aircraft entered RTB but had no destination, flying
+    // past the airbase. Now it always heads to the nearest field.)
     FrameInputs::AirbaseInfo ab;
     ab.x = 0.0; ab.y = 30.0 * 6076.0; ab.z = -5000.0;
+    ab.runwayHeading = 0.0; ab.id = 100;
     fi.airbases = &ab;
     fi.airbaseCount = 1;
 
@@ -446,9 +450,10 @@ TEST_F(AirbaseCheckTest, BingoWithinReturnDistanceNoDivert) {
     digi.fuel.phase = DigiFuelState::Phase::Bingo;
 
     const auto action = AirbaseCheck(digi, self, fi, 0.0);
-    // Bingo but within return distance — no divert set yet (brain keeps fighting).
-    EXPECT_EQ(action, AirbaseAction::None);
-    EXPECT_FALSE(digi.fuel.hasDivertAirbase);
+    // Bingo → set divert + RTB (navigate to the airbase).
+    EXPECT_EQ(action, AirbaseAction::RTB);
+    EXPECT_TRUE(digi.fuel.hasDivertAirbase);
+    EXPECT_NEAR(digi.fuel.divertAirbaseY, 30.0 * 6076.0, 1.0);
 }
 
 TEST_F(AirbaseCheckTest, FumesForcesDivertAndLanding) {

@@ -13,6 +13,11 @@
 //   - SeparateCheck   : disengage logic (fuel/damage/mission abort + bugout).
 //   - CommandFlight   : flight-lead issues orders to wingmen via MessageBus.
 //
+// Round 7 (P1) additions:
+//   - ChooseRadarMode : AI radar mode management (RWS/TWS/SAM/STT/OFF).
+//   - ApplyGCI        : skill-gated GCI detection (veteran/ace get GCI spotting).
+//   - ApplyNCTR       : radar-based NCTR identification (close-range type ID).
+//   - DoTargeting     : autonomous target selection from SensorPicture.
 // Source mapping (FreeFalcon sim/digi/):
 //   AirbaseCheck  <- actions.cpp:489-617
 //   SeparateCheck <- separate.cpp:24-253
@@ -26,6 +31,7 @@
 #include "f4flight/digi/digi_entity.h"
 #include "f4flight/digi/digi_brain.h"  // for FrameInputs::AirbaseInfo
 #include "f4flight/digi/comms/message_bus.h"
+#include "f4flight/digi/sensors/sensor_picture.h"  // Round 7: ApplyGCI/NCTR/DoTargeting
 #include "f4flight/flight/aircraft_state.h"
 
 #include <cstddef>
@@ -144,6 +150,106 @@ constexpr double kCommandFlightOrderIntervalSec = 5.0;  // FF: 5000 ms
 
 void CommandFlight(DigiState& digi, const DigiEntity* target,
                    MessageBus* bus, EntityId selfId, double simTime);
+
+// ===========================================================================
+// Round 7 (P1): chooseRadarMode — AI radar mode management.
+// Port of FF bvrengage.cpp:3173-3238.
+//
+// Maps digi.weapon.radModeSelect to a RadarMode and applies it to the
+// RadarSensor. The offensive modes (BvrEngage, MissileEngage, WvrEngage)
+// set radModeSelect; chooseRadarMode translates it to the actual mode.
+//
+// RadarMode enum:
+//   STT  — Single Target Track (hard lock, for missile launch)
+//   SAM  — Situation Awareness Mode (intermediate between TWS and STT)
+//   TWS  — Track While Scan (track multiple targets)
+//   RWS  — Range While Search (default search mode)
+//   OFF  — Radar standby/off
+//
+// Special case: if a SARH missile (not AIM-120/ARH) is in flight, force STT
+// to maintain the guidance link.
+// ===========================================================================
+
+enum class RadarMode : int {
+    STT = 0,   // Single Target Track
+    SAM = 1,   // Situation Awareness Mode
+    TWS = 2,   // Track While Scan
+    RWS = 3,   // Range While Search (default)
+    OFF = 4,   // Radar off/standby
+};
+
+// Throttle: re-evaluate radar mode every (4 + (4 - skill)) seconds.
+// Higher skill = more frequent updates.
+inline double radarModeThrottleSec(int skillLevel) {
+    return 4.0 + (4 - skillLevel);
+}
+
+// ChooseRadarMode — translate radModeSelect → RadarMode and apply.
+//   digi      : AI state (reads weapon.radModeSelect, writes weapon.radarMode)
+//   simTime   : current sim time (for throttle)
+//   hasTWS    : does this aircraft's radar support TWS? (host provides)
+void ChooseRadarMode(DigiState& digi, double simTime, bool hasTWS);
+
+// ===========================================================================
+// Round 7 (P1): ApplyGCI — skill-gated GCI detection.
+// Port of FF sfusion.cpp:67-186.
+//
+// GCI (Ground Control Intercept) lets veteran/ace AI detect contacts beyond
+// sensor range, simulating GCI radar vectors from a ground station. Recruits
+// and rookies don't get GCI.
+//
+// Behavior:
+//   - If skill.gciCapable AND contact range < 30 NM: mark the contact as
+//     detected (quality = Detected) even if no sensor sees it.
+//   - This is applied per-contact in the SensorPicture.
+//
+//   digi   : AI state (reads config.skill)
+//   pic    : the sensor picture (modified — contacts may be upgraded)
+//   self   : own aircraft entity
+void ApplyGCI(const DigiState& digi, SensorPicture& pic, const DigiEntity& self);
+
+// ===========================================================================
+// Round 7 (P1): ApplyNCTR — radar-based NCTR identification.
+// Port of FF sfusion.cpp:209-215.
+//
+// NCTR (Non-Cooperative Target Recognition) identifies the TYPE of a radar
+// contact at close range. It requires:
+//   - The radar supports NCTR (host provides via hasNCTR flag)
+//   - ataFrom < 45° (target's nose is toward us — NCTR needs a face-on view)
+//   - range < maxNctrRange (scaled by skill: higher skill = longer NCTR range)
+//
+// When NCTR succeeds, the contact's type is upgraded from Unknown to the
+// identified type (Fighter/Bomber/etc.) and quality is set to Identified.
+//
+//   digi   : AI state (reads config.skill)
+//   pic    : the sensor picture (modified — contacts may be identified)
+//   self   : own aircraft entity
+//   hasNCTR: does this aircraft's radar support NCTR? (host provides)
+//   maxNctrRangeFt: max NCTR range at skill=0 (scaled by skill internally)
+void ApplyNCTR(const DigiState& digi, SensorPicture& pic, const DigiEntity& self,
+               bool hasNCTR, double maxNctrRangeFt);
+
+// ===========================================================================
+// Round 7 (P1): DoTargeting — autonomous target selection.
+// Port of FF targeting.cpp:DoTargeting + TargetSelection.
+//
+// Without this, the brain relies on injected targets (FrameInputs.injectedTarget).
+// DoTargeting lets the brain find its own target from the SensorPicture.
+//
+// Behavior:
+//   - If the brain already has an injected target, keep it (DoTargeting is
+//     a no-op when the host provides a target).
+//   - Otherwise, scan the SensorPicture for the highest-threat contact that
+//     is an aircraft (not a missile, not ground) and set it as wvrTarget_.
+//   - The host reads the resolved target via brain.state() or the return value.
+//
+//   digi   : AI state (reads SensorPicture via the brain, writes wvrTarget_)
+//   pic    : the sensor picture
+//   self   : own aircraft entity
+//
+// Returns the selected target (nullptr if no suitable target found).
+const DigiEntity* DoTargeting(DigiState& digi, const SensorPicture& pic,
+                               const DigiEntity& self);
 
 } // namespace digi
 } // namespace f4flight

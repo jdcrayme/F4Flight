@@ -136,6 +136,9 @@ set(F4FLIGHT_DIGI_SCENARIOS
     digi_groundops
     digi_sensors
     digi_guns
+    digi_formation
+    digi_rtb
+    digi_tactics
 )
 
 foreach(fixture ${F4FLIGHT_FIXTURES})

@@ -47,6 +47,7 @@ protected:
     double speedCaptureTime_{0.0};
     bool isFirstFrame_{true};
     bool isHeavy_{false};
+    bool hasNaN_{false};
 
     void windowMinMax(const std::vector<std::pair<double,double>>& samples,
                       double tEnd, double window,
@@ -141,7 +142,7 @@ public:
              phaseTime_ > altCaptureTime_ + 60.0 && phaseTime_ > speedCaptureTime_ + 60.0);
     }
 
-    virtual bool IsPassed() const { return checkAltPass() && checkSpdPass() && checkHdgPass(); }
+    virtual bool IsPassed() const { return !hasNaN_ && checkAltPass() && checkSpdPass() && checkHdgPass(); }
 
     std::string criteria() const override {
         return "Altitude ±150ft of target over last 30s; Speed ±25kts (±50kts heavy) "
@@ -150,6 +151,12 @@ public:
 
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
+
+        if (std::isnan(as.kin.vt) || std::isnan(as.kin.z) ||
+            std::isnan(as.kin.sigma) || std::isnan(input.pstick) ||
+            std::isnan(input.throttle)) {
+            hasNaN_ = true;
+        }
 
         double alt = -as.kin.z;
         double spd = as.vcas;

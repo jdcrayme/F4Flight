@@ -517,7 +517,7 @@ TEST_F(DigiBrainSensorTest, DetectsTargetAndEntersWVREngage) {
     EXPECT_EQ(brain.activeMode(), DigiMode::WVREngage);
 }
 
-TEST_F(DigiBrainSensorTest, TargetBeyondWVRStaysWaypoint) {
+TEST_F(DigiBrainSensorTest, TargetBeyondWVREntersBVRviaDoTargeting) {
     DigiEntity target;
     target.x = 15 * 6076; target.y = 0; target.z = -10000;  // 15 NM (beyond WVR)
     target.yaw = PI; target.speed = 500;
@@ -525,7 +525,11 @@ TEST_F(DigiBrainSensorTest, TargetBeyondWVRStaysWaypoint) {
     truth.add(100, target);
 
     brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
-    EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
+    // Round 7 (P1): DoTargeting now autonomously finds the target from the
+    // SensorPicture. A 15 NM target is within the 35 NM BVR gate, so the
+    // brain enters BVREngage (not Loiter). Previously (before DoTargeting),
+    // the brain stayed in Loiter because it couldn't find targets on its own.
+    EXPECT_EQ(brain.activeMode(), DigiMode::BVREngage);
 }
 
 TEST_F(DigiBrainSensorTest, MissilePreemptsTarget) {
@@ -678,7 +682,7 @@ TEST_F(DigiBrainSensorTest, AutonomousThreatRecoveryWhenMissileLeavesTruth) {
 
     // Phase 2: missile removed from truth. After SensorFusion's 5-second
     // ageAndPurge timeout, the brain must exit MissileDefeat and return to
-    // Waypoint (no target in truth).
+    // Loiter (no target in truth, no waypoints).
     truth.clear();
     for (int i = 0; i < 400; ++i) {  // ~6.7s — past the 5s purge
         brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);

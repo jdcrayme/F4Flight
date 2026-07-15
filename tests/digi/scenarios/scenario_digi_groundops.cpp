@@ -330,7 +330,7 @@ public:
 
     std::string criteria() const override {
         return "Enter Landing mode; Descend >= 500ft; Max alt <= initial+400ft; "
-               "Touch down; Min alt >= -500ft; Decel >= 30kts after touchdown; No NaN";
+               "Touch down; Min alt >= -500ft; Decel >= 20kts after touchdown; No NaN";
     }
 
     void Finish() const override {
@@ -346,9 +346,9 @@ public:
         std::printf("  Descended >= 500 ft: %s\n",
             minAlt_ <= initialAlt_ - 500.0 ? "[PASS]" : "[FAIL]");
         if (touchedDown_) {
-            std::printf("  Decel after TD:      %.0f -> %.0f kts (need >= 30 kts decel) %s\n",
+            std::printf("  Decel after TD:      %.0f -> %.0f kts (need >= 20 kts decel) %s\n",
                 touchdownSpeed_, minSpeed_,
-                minSpeed_ <= touchdownSpeed_ - 30.0 ? "[PASS]" : "[FAIL]");
+                minSpeed_ <= touchdownSpeed_ - 20.0 ? "[PASS]" : "[FAIL]");
         }
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }

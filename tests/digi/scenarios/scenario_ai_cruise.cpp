@@ -48,6 +48,11 @@ public:
 
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
+        if (std::isnan(as.kin.vt) || std::isnan(as.kin.z) ||
+            std::isnan(as.kin.sigma) || std::isnan(input.pstick) ||
+            std::isnan(input.throttle)) {
+            hasNaN_ = true;
+        }
         const double alt = -as.kin.z;
         const double spd = as.vcas;
         altSamples_.emplace_back(phaseTime_, alt);
@@ -86,6 +91,7 @@ public:
     }
 
     bool IsPassed() const override {
+        if (hasNaN_) return false;
         if (altCaptureTime_ == 0.0 || speedCaptureTime_ == 0.0) return false;
         // Settling window: last 30 s of phase. Tolerances:
         //   ALT_TOL = 200 ft  (high-altitude cruise, Mach-dependent aero)
@@ -130,6 +136,7 @@ private:
     double nextPrint_{0.0};
     double altCaptureTime_{0.0};
     double speedCaptureTime_{0.0};
+    bool hasNaN_{false};
     std::vector<std::pair<double,double>> altSamples_;
     std::vector<std::pair<double,double>> spdSamples_;
 };

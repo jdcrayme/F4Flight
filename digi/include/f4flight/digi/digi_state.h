@@ -183,6 +183,15 @@ struct DigiWeaponState {
     double ataDot{0.0};               // rate of change of ATA (rad/s)
     double maxAAWpnRange{0.0};        // set by host from SMS; 0 = no missiles
 
+    // Round 7 (P1): radar mode management.
+    // radModeSelect is set by the offensive modes (BvrEngage, MissileEngage,
+    // WvrEngage) to request a radar mode. ChooseRadarMode translates it to
+    // radarMode and applies it. Values: 0=STT, 1=SAM, 2=TWS, 3=RWS(default),
+    // 4=OFF. See decision_routines.h::RadarMode.
+    int    radModeSelect{3};           // default: RWS
+    int    radarMode{3};               // current applied mode (RadarMode enum int)
+    double lastRadarModeTime{-1e9};    // last chooseRadarMode call (throttle)
+
     void reset() noexcept {
         mergeTimer = -1.0;
         gunFireFlag = false;
@@ -196,6 +205,10 @@ struct DigiWeaponState {
         pastPipperAta = 0.0;
         ataDot = 0.0;
         // maxAAWpnRange is NOT reset — it's config-like (set by host from SMS)
+        // Round 7: radar mode fields
+        radModeSelect = 3;  // RWS default
+        radarMode = 3;
+        lastRadarModeTime = -1e9;
     }
 };
 

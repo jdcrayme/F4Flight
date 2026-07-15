@@ -56,7 +56,15 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
     // threat-based mode switching (MissileDefeat, GunsJink pre-empt
     // navigation). The SteeringController's Mode enum only configures the
     // brain's navigation defaults — it does NOT override threat response.
-    brain_.clearForcedMode();
+    //
+    // EXCEPTION: when the SteeringController is in Loiter mode, keep the
+    // forced Loiter mode so the brain's activeMode() returns Loiter and the
+    // Loiter primitive runs through the brain's dispatch (not just the
+    // SteeringController override). Without this, the brain resolves to
+    // Waypoint and the Loiter override fights the Waypoint heading-hold.
+    if (mode_ != Mode::Loiter) {
+        brain_.clearForcedMode();
+    }
 
     // Delegate to the brain. The brain runs GroundCheck, resolves the mode
     // (GroundAvoid > MissileDefeat > GunsJink > Waypoint), dispatches to
