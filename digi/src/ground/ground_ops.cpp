@@ -120,7 +120,7 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
         // Reached target — stop
         digi.throttle = 0.0;
         digi.pStick = 0.0;
-        digi.rStick = 0.0;
+        digi.yPedal = 0.0;
         digi.wheelBrakes = true;  // hold position with brakes
         return;
     }
@@ -128,14 +128,26 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
 
     // Steer toward target. Use body yaw (psi) for the heading error —
     // sigma (velocity heading) is unreliable at low speed. The EOM ground
-    // clamp converts rStick to nose-wheel steering, so we just need to
-    // command the right direction.
+    // clamp uses yPedal for nose-wheel steering, so we command the pedals
+    // (not the roll stick) to steer on the ground.
+    //
+    // BUG FIX (paired with EOM fix): previously used rStick for ground
+    // steering, which only worked because the EOM had a bug (it used
+    // rStick instead of yPedal for NWS). With the EOM fixed, the digi must
+    // use yPedal for ground steering.
     const double desHeading = std::atan2(dy, dx);
     const double headingErr = headingError(desHeading, as.kin.psi);
 
-    // Direct rStick command: full deflection at 30° error.
+    // Direct yPedal command: full deflection at 30° error.
     // The EOM nose-wheel steering will turn the aircraft.
-    digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD / 30.0));
+    //
+    // SIGN NOTE: headingErr > 0 means we need to turn LEFT (increase psi in
+    // NED CCW frame). Left turn requires LEFT pedal = negative yPedal
+    // (per PilotInput convention: -1 = full left, +1 = full right).
+    // The EOM uses `psi -= ypedal * rate`, so ypedal < 0 → psi increases →
+    // left turn. Hence the negation: `yPedal = -headingErr * scale`.
+    digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 30.0));
+    digi.rStick = 0.0;  // no aileron on the ground
 
     // Throttle for taxi speed — simple proportional controller.
     // MachHold's sqrt mapping and integral windup are ill-suited for
@@ -197,6 +209,7 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
             // Hold position and wait for takeoff clearance
             digi.throttle = 0.0;
             digi.pStick = 0.0;
+            digi.yPedal = 0.0;
             digi.rStick = 0.0;
             digi.wheelBrakes = true;
             // Auto-grant clearance after 2 seconds (simplified — real ATC
@@ -235,12 +248,20 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
             // sigma — psi is the actual aircraft heading and is stable at
             // all speeds, while sigma (velocity-vector heading) is noisy
             // at low speed and drifts with minor lateral velocity.
+            //
+            // BUG FIX (paired with EOM fix): use yPedal (rudder pedal) for
+            // NWS, not rStick (roll stick). The EOM was previously buggy
+            // and used rStick for NWS; the digi was compensating. Now both
+            // are fixed: EOM uses yPedal, digi commands yPedal.
             if (as.vcas > 30.0) {
                 const double headingErr = headingError(go.runwayHeading, as.kin.psi);
-                digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD / 20.0));
+                // Sign: headingErr > 0 = need left turn = left pedal (yPedal < 0).
+                // See RunTaxi for the full sign-convention note.
+                digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
             } else {
-                digi.rStick = 0.0;
+                digi.yPedal = 0.0;
             }
+            digi.rStick = 0.0;  // no aileron during takeoff roll
 
             // Hold attitude neutral on the ground.
             digi.pStick = 0.0;
@@ -466,6 +487,7 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             digi.pStick = std::max(-0.2, std::min(0.5, pitchErr * 2.0));
             fcsState.maxRoll = 0.0;
             digi.rStick = 0.0;
+            digi.yPedal = 0.0;
 
             // Transition to rollout after 1 second (nose has settled)
             go.touchdownTimer += dt;
@@ -488,9 +510,11 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             digi.wheelBrakes = (as.vcas > 5.0);  // release brakes below 5 kts
             digi.speedBrakeCmd = (as.vcas > 30.0) ? 1.0 : -1.0;  // full extend then retract
 
-            // Keep straight on runway heading
+            // Keep straight on runway heading (NWS via yPedal)
             const double headingErr = headingError(go.runwayHeading, as.kin.psi);
-            digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD / 20.0));
+            // Sign: headingErr > 0 = need left turn = left pedal (yPedal < 0).
+            digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
+            digi.rStick = 0.0;  // no aileron on rollout
 
             // Hold 2° nose-up while fast (nose gear off ground), relax to
             // level below 80 kts (nose settles naturally as elevator loses
@@ -517,6 +541,7 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             digi.throttle = 0.0;
             digi.pStick = 0.0;
             digi.rStick = 0.0;
+            digi.yPedal = 0.0;
             // In a full impl, this would taxi to a runway exit node
             break;
         }

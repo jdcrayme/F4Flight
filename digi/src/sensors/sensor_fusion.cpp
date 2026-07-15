@@ -58,17 +58,29 @@ void SensorFusion::mergeContact(const SensorContact& contact) {
     // Find existing contact with same entity ID
     for (auto& existing : picture_.contacts) {
         if (existing.entityId == contact.entityId) {
-            // Merge: update position/velocity, combine sensor mask, take max confidence
-            existing.x = contact.x;
-            existing.y = contact.y;
-            existing.z = contact.z;
-            existing.vx = contact.vx;
-            existing.vy = contact.vy;
-            existing.vz = contact.vz;
-            existing.yaw = contact.yaw;
-            existing.pitch = contact.pitch;
-            existing.roll = contact.roll;
-            existing.speed = contact.speed;
+            // Merge: combine sensor mask, take max confidence, refresh age.
+            //
+            // BUG FIX: previously overwrote position/velocity unconditionally
+            // ("last write wins"), which meant a low-confidence RWR update
+            // could clobber a high-confidence radar track. Now we only
+            // update position/velocity if the new contact has equal or
+            // higher confidence than the existing track.
+            const bool newContactIsBetterOrEqual =
+                contact.confidence >= existing.confidence;
+            if (newContactIsBetterOrEqual) {
+                existing.x = contact.x;
+                existing.y = contact.y;
+                existing.z = contact.z;
+                existing.vx = contact.vx;
+                existing.vy = contact.vy;
+                existing.vz = contact.vz;
+                // Attitude is only refreshed by sensors that can measure it
+                // (visual, radar in track-while-scan). Confidence-gate it too.
+                existing.yaw = contact.yaw;
+                existing.pitch = contact.pitch;
+                existing.roll = contact.roll;
+                existing.speed = contact.speed;
+            }
             existing.sensorMask |= contact.sensorMask;
             existing.confidence = std::max(existing.confidence, contact.confidence);
             existing.age = 0.0;  // refresh
@@ -82,6 +94,7 @@ void SensorFusion::mergeContact(const SensorContact& contact) {
             existing.isMissile = existing.isMissile || contact.isMissile;
             existing.isFiring = existing.isFiring || contact.isFiring;
             existing.isThreat = existing.isThreat || contact.isThreat;
+            existing.isRadarEmitting = existing.isRadarEmitting || contact.isRadarEmitting;
 
             // Upgrade type if identified
             if (contact.type != ContactType::Unknown && existing.type == ContactType::Unknown) {
@@ -173,28 +186,35 @@ void SensorFusion::computeThreatScores(const DigiEntity& self) {
         // (< 0.5× range). This prevents two missiles at similar ranges from
         // thrashing pic.incomingMissile every frame, which would defeat the
         // brain's per-missile state initialization (Bug D/H).
+        //
+        // BUG FIX: the previous loop unconditionally set
+        // picture_.incomingMissile = &c when it found the sticky missile,
+        // EVEN IF a closer non-sticky was already chosen in an earlier
+        // iteration. So if the sticky appeared later in the contact list
+        // than a closer non-sticky, the sticky overwrote the closer one.
+        // The intent ("keep sticky unless dramatically closer") was defeated.
+        //
+        // Now we track the best non-sticky candidate separately, and only
+        // fall back to the sticky if no non-sticky was chosen.
         if (c.isMissile && rg.range < 30.0 * 6076.0) {
             const bool isStickyMissile =
                 (stickyMissileId_ != kInvalidEntityId) &&
                 (c.entityId == stickyMissileId_);
-            if (isStickyMissile) {
-                // Keep the sticky missile.
-                picture_.incomingMissile = &c;
-            } else if (!picture_.incomingMissile) {
-                // No current missile — pick this one if it's the closest so far.
-                if (rg.range < newMissileRange) {
-                    newMissileRange = rg.range;
-                    picture_.incomingMissile = &c;
-                }
-            } else {
-                // We have a missile but it's not this one. Swap only if this
-                // one is dramatically closer (e.g. < 0.5× range) — prevents
-                // oscillation between two similar-range missiles.
-                if (rg.range < 0.5 * stickyMissileRange && rg.range < newMissileRange) {
+            if (!isStickyMissile) {
+                // Consider this non-sticky missile for the "best non-sticky" slot.
+                // Only swap into picture_.incomingMissile if:
+                //   - no non-sticky has been chosen yet (newMissileRange is inf), OR
+                //   - this one is dramatically closer than the sticky (if any), AND
+                //     closer than the current best non-sticky.
+                const bool closerThanSticky =
+                    stickyMissileRange == std::numeric_limits<double>::infinity() ||
+                    rg.range < 0.5 * stickyMissileRange;
+                if (closerThanSticky && rg.range < newMissileRange) {
                     newMissileRange = rg.range;
                     picture_.incomingMissile = &c;
                 }
             }
+            // Sticky missile is handled after the loop (fallback).
         }
 
         // Track guns threat (firing + close + in gun cone)
@@ -228,6 +248,20 @@ void SensorFusion::computeThreatScores(const DigiEntity& self) {
             rg.range < 50.0 * 6076.0) {
             picture_.spiked = true;
             picture_.spikeHeading = std::atan2(c.y - self.y, c.x - self.x);
+        }
+    }
+
+    // Sticky-missile fallback: if no non-sticky missile was chosen (or no
+    // non-sticky was dramatically closer than the sticky), keep tracking the
+    // sticky missile. This preserves per-missile state across frames where
+    // the sticky is briefly occluded or the non-sticky candidates are all
+    // farther away than the 0.5× range threshold.
+    if (!picture_.incomingMissile && stickyMissileId_ != kInvalidEntityId) {
+        for (const auto& c : picture_.contacts) {
+            if (c.entityId == stickyMissileId_) {
+                picture_.incomingMissile = &c;
+                break;
+            }
         }
     }
 

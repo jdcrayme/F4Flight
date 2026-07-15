@@ -64,6 +64,13 @@ enum class MessageType : uint16_t {
     ATCGoAround,              // ATC → aircraft: abort landing, go around
     ATCRunwayClear,           // ATC → aircraft: runway is clear, vacate
     ATCTrafficAdvisory,       // ATC → aircraft: traffic at (position)
+    // Round-2 fix: previously the ATC controller had dead handler functions
+    // for landing requests, airborne reports, and landed reports — but no
+    // message types to trigger them. These new types wire up the handlers
+    // so the ATC can actually manage arriving aircraft, not just departures.
+    ATCLandingRequest,        // aircraft → ATC: request landing clearance
+    ATCAirborne,              // aircraft → ATC: reporting airborne (departure complete)
+    ATCLanded,                // aircraft → ATC: reporting landed (arrival complete)
 
     // --- Flight commands (lead → wingman) ---
     FlightCmdEngage,          // engage target

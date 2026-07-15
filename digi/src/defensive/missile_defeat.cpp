@@ -218,23 +218,12 @@ void MissileDragManeuver(DigiState& digi, const DigiEntity& self,
     // has to chase us from behind)
     const double missileYaw = digi.incomingMissile->yaw;
 
-    if (digi.missileFindDragPt) {
-        // Set a trackpoint 20 NM in the missile's heading direction
-        // FreeFalcon mdefeat.cpp:611-626
-        const double tpX = self.x + kDragTrackDist * std::cos(missileYaw);
-        const double tpY = self.y + kDragTrackDist * std::sin(missileYaw);
-        const double tpAlt = -self.z;
-
-        // We can't call SetTrackPoint directly (it's not in our API), but
-        // TrackPoint(x, y, alt) achieves the same effect.
-        digi.missileFindDragPt = false;
-
-        // Store the drag trackpoint implicitly by calling TrackPoint now
-        // — but since we don't cache it, we recompute each frame. This is
-        // slightly different from FreeFalcon (which caches), but the
-        // behavior is the same: fly toward a point 20 NM cold.
-        (void)tpX; (void)tpY; (void)tpAlt;  // computed but not cached
-    }
+    // BUG FIX: removed dead `if (digi.missileFindDragPt)` block. The block
+    // computed tpX/tpY/tpAlt, then immediately discarded them with
+    // `(void)tpX; (void)tpY; (void)tpAlt;` and recomputed the same values
+    // below. The `missileFindDragPt` flag was set to false but never read
+    // elsewhere. The entire block was dead code with a side effect (clearing
+    // the flag). The functional code (TrackPoint + MachHold) is preserved.
 
     // Fly toward the drag point (20 NM cold)
     const double tpX = self.x + kDragTrackDist * std::cos(missileYaw);
@@ -246,6 +235,10 @@ void MissileDragManeuver(DigiState& digi, const DigiEntity& self,
 
     // Hold 3× corner speed (burn through the missile's energy)
     // FreeFalcon mdefeat.cpp:634
+    // NOTE: 3× corner speed is aggressive (Mach 2.5+ for most fighters).
+    // FreeFalcon uses a more nuanced speed schedule. For now we preserve the
+    // existing behavior; a future tuning pass should reduce this to ~1.5×
+    // corner speed to match what most aircraft can sustain.
     const double dragSpeed = 3.0 * digi.cornerSpeed;
     ManeuverPrimitives::MachHold(dragSpeed, as.vcas, true,
                                   digi, as, 200.0, 800.0, dt, 100.0);

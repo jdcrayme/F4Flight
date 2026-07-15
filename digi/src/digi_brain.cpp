@@ -88,6 +88,7 @@ DigiEntity DigiBrain::buildSelfEntity(const AircraftState& as) {
     e.pitch = as.kin.gmma;   // flight path angle
     e.roll = as.kin.phi;     // body roll
     e.speed = as.kin.vt;     // true airspeed (ft/s)
+    e.dcm = as.kin.dcm;      // body-to-world DCM for full 3D geometry
     return e;
 }
 
@@ -156,11 +157,13 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
         if (state_.missileDefeatTtgo < 0.0) {
             // Already in "new missile" state — nothing to do.
         }
-    } else if (frameInputs_.injectedGunsThreat) {
-        // Only clear missile if no injected missile AND no sensor fusion
-        // (sensor fusion path handles its own missile tracking below).
-        // Don't clear here — sensor fusion may still be tracking.
     }
+    // BUG FIX: removed dead else-if branch that checked
+    // `frameInputs_.injectedGunsThreat` but had an empty body. The comment
+    // claimed "Don't clear here — sensor fusion may still be tracking" but
+    // the outer `if (frameInputs_.injectedMissile)` already gated this path,
+    // so the else-if fired whenever there was no injected missile but there
+    // WAS an injected guns threat — and then did nothing. Confusing dead code.
 
     if (frameInputs_.injectedGunsThreat) {
         state_.gunsThreat = frameInputs_.injectedGunsThreat;
@@ -443,17 +446,10 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         else if (sensorFusionActive && pic.incomingMissile &&
                  (!autoTracking ||
                   pic.incomingMissile->entityId != state_.incomingMissileId)) {
-            missileEntityAuto_ = DigiEntity{};
-            missileEntityAuto_->x  = pic.incomingMissile->x;
-            missileEntityAuto_->y  = pic.incomingMissile->y;
-            missileEntityAuto_->z  = pic.incomingMissile->z;
-            missileEntityAuto_->vx = pic.incomingMissile->vx;
-            missileEntityAuto_->vy = pic.incomingMissile->vy;
-            missileEntityAuto_->vz = pic.incomingMissile->vz;
-            missileEntityAuto_->yaw       = pic.incomingMissile->yaw;
-            missileEntityAuto_->speed     = pic.incomingMissile->speed;
-            missileEntityAuto_->seekerType = DigiEntity::SeekerType::Radar;
-            missileEntityAuto_->isDead    = false;
+            // BUG FIX: use the toDigiEntity helper instead of inline
+            // field-by-field copy. The previous code copied 9 fields and
+            // hardcoded seekerType=Radar, missing pitch/roll/isFiring.
+            missileEntityAuto_ = toDigiEntity(*pic.incomingMissile);
             state_.incomingMissile = &(*missileEntityAuto_);
 
             // Reset per-missile state on identity change.
@@ -467,14 +463,9 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         // Same missile — refresh position/velocity.
         else if (sensorFusionActive && autoTracking && pic.incomingMissile &&
                  pic.incomingMissile->entityId == state_.incomingMissileId) {
-            missileEntityAuto_->x  = pic.incomingMissile->x;
-            missileEntityAuto_->y  = pic.incomingMissile->y;
-            missileEntityAuto_->z  = pic.incomingMissile->z;
-            missileEntityAuto_->vx = pic.incomingMissile->vx;
-            missileEntityAuto_->vy = pic.incomingMissile->vy;
-            missileEntityAuto_->vz = pic.incomingMissile->vz;
-            missileEntityAuto_->yaw       = pic.incomingMissile->yaw;
-            missileEntityAuto_->speed     = pic.incomingMissile->speed;
+            // BUG FIX: use the helper here too, so pitch/roll/isFiring stay
+            // current (the previous code only refreshed 8 fields).
+            missileEntityAuto_ = toDigiEntity(*pic.incomingMissile);
         }
     }
 
@@ -500,17 +491,9 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         }
 
         if (!state_.gunsThreat && pic.gunsThreat) {
-            gunsEntityAuto_ = DigiEntity{};
-            gunsEntityAuto_->x  = pic.gunsThreat->x;
-            gunsEntityAuto_->y  = pic.gunsThreat->y;
-            gunsEntityAuto_->z  = pic.gunsThreat->z;
-            gunsEntityAuto_->vx = pic.gunsThreat->vx;
-            gunsEntityAuto_->vy = pic.gunsThreat->vy;
-            gunsEntityAuto_->vz = pic.gunsThreat->vz;
-            gunsEntityAuto_->yaw    = pic.gunsThreat->yaw;
-            gunsEntityAuto_->speed  = pic.gunsThreat->speed;
-            gunsEntityAuto_->isFiring = true;
-            gunsEntityAuto_->isDead   = false;
+            // BUG FIX: use toDigiEntity helper instead of inline copy that
+            // hardcoded isFiring=true and missed pitch/roll/seekerType.
+            gunsEntityAuto_ = toDigiEntity(*pic.gunsThreat);
             state_.gunsThreat = &(*gunsEntityAuto_);
         }
     }
@@ -569,18 +552,10 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     }
 
     if (!tgt && pic.bestTarget) {
-        targetEntityAuto_ = DigiEntity{};
-        targetEntityAuto_->x = pic.bestTarget->x;
-        targetEntityAuto_->y = pic.bestTarget->y;
-        targetEntityAuto_->z = pic.bestTarget->z;
-        targetEntityAuto_->vx = pic.bestTarget->vx;
-        targetEntityAuto_->vy = pic.bestTarget->vy;
-        targetEntityAuto_->vz = pic.bestTarget->vz;
-        targetEntityAuto_->yaw = pic.bestTarget->yaw;
-        targetEntityAuto_->pitch = pic.bestTarget->pitch;
-        targetEntityAuto_->roll = pic.bestTarget->roll;
-        targetEntityAuto_->speed = pic.bestTarget->speed;
-        targetEntityAuto_->isDead = false;
+        // BUG FIX: use toDigiEntity helper for consistency with the missile
+        // and guns paths. The previous inline copy missed seekerType and
+        // isFiring.
+        targetEntityAuto_ = toDigiEntity(*pic.bestTarget);
         tgt = &(*targetEntityAuto_);
     }
 

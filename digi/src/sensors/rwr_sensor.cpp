@@ -24,20 +24,28 @@ void RWRSensor::update(const DigiEntity& self, const TruthState& truth,
         const RelativeGeometry rg = computeRelativeGeometry(self, entity);
         if (rg.range > config_.maxRangeFt) continue;
 
-        // RWR detects radar emissions. In our model, any entity with a
-        // radar seeker type is "emitting." Aircraft (seekerType=None) don't
-        // emit unless they have an active radar — we approximate this by
-        // detecting all aircraft at shorter range (their fire-control radar).
+        // RWR detects radar emissions. Only entities that actually emit
+        // radar should be detected:
+        //   - Missiles with radar seekers (active radar homing)
+        //   - Aircraft with active fire-control radar (isRadarEmitting=true)
+        //
+        // BUG FIX: the previous code treated ALL aircraft (seekerType=None)
+        // within 100 NM as emitting radar. This flooded the RWR picture with
+        // false emissions (tankers, transports, friendly aircraft, even
+        // gliders). Now we use the DigiEntity.isRadarEmitting flag (default
+        // true) so hosts that model radar modes can mark non-emitting
+        // aircraft. Missiles with radar seekers always emit while guiding.
         bool isEmitting = false;
         if (entity.seekerType == DigiEntity::SeekerType::Radar) {
-            // Missile with radar seeker — always emits
+            // Missile with radar seeker — always emits while guiding
             isEmitting = true;
-        } else if (entity.seekerType == DigiEntity::SeekerType::None) {
-            // Aircraft — emit at shorter range (we assume active radar)
-            if (rg.range < 100.0 * 6076.0) {  // 100 NM
-                isEmitting = true;
-            }
+        } else if (entity.seekerType == DigiEntity::SeekerType::None &&
+                   entity.isRadarEmitting) {
+            // Aircraft with active fire-control radar
+            isEmitting = true;
         }
+        // Note: IR missiles (seekerType=IR) and aircraft with radar off are
+        // NOT detected by RWR. This is correct — RWR only sees radar emissions.
 
         if (!isEmitting) continue;
 
@@ -48,7 +56,7 @@ void RWRSensor::update(const DigiEntity& self, const TruthState& truth,
         if (confidence < config_.minConfidence) continue;
 
         SensorContact c = makeContact(truth.ids[i], entity, confidence);
-        c.addSensor(SensorType::RWR);
+        // makeContact already calls c.addSensor(type()) — no need to repeat.
 
         // RWR can't determine range precisely, but we include position
         // for simplicity (in a full impl, RWR only gives bearing)

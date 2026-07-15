@@ -18,19 +18,27 @@ void GearModel::init(GearState& gear) const {
     gear.wheels.assign(geom_->gear.size(), GearState::Wheel{});
 }
 
-double GearModel::computeMinHeight(const GearState& gear) const {
-    (void)gear; // minHeight depends only on the configured gear points, not the runtime state
+double GearModel::computeMinHeight(const GearState& gear, double gearPos) const {
+    (void)gear; // minHeight depends only on the configured gear points + gearPos
     if (!geom_ || geom_->gear.empty()) return 0.0;
     // minHeight is the maximum strut-extended Z (most-positive Z in body axes,
     // since body Z is down). This corresponds to the lowest point on the
-    // airframe.
+    // airframe when the gear is down.
+    //
+    // BUG FIX: previously used a hardcoded gearFactor = 1.0 ("assume gear
+    // down"), so even with gear retracted (gearPos=0) the model still
+    // thought the airframe clearance was the full gear-down height. This
+    // affected the EOM ground clamp (the body sat too high when gear-up)
+    // and made gear-up landings look like gear-down landings.
+    //
+    // Now we scale by gearPos [0..1] so gear-up (gearPos=0) gives zero
+    // clearance -- the body would touch the ground. This matches reality:
+    // a gear-up aircraft belly-lands.
     double h = 0.0;
     for (auto const& gp : geom_->gear) {
         if (gp.z > h) h = gp.z;
     }
-    // Account for current gear-up position (gear retracted = less height)
-    const double gearFactor = 1.0; // assume gear down for min-height calc
-    return h * gearFactor;
+    return h * gearPos;
 }
 
 double GearModel::calcMuFric(bool wheelBrakes, bool parkingBrake,
@@ -62,7 +70,7 @@ void GearModel::updateStrutCompression(GearState& gear, double groundZ_ft,
             const double wheelRadius = std::max(0.5, strutMax * 0.3);
             w.wheelAngle_rad += (vt_ftps * dt) / wheelRadius;
             // Wrap to [0, 2*pi)
-            const double twopi = 2.0 * 3.14159265358979323846;
+            const double twopi = TWO_PI;
             w.wheelAngle_rad = std::fmod(w.wheelAngle_rad, twopi);
             if (w.wheelAngle_rad < 0.0) w.wheelAngle_rad += twopi;
         }

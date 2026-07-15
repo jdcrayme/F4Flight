@@ -16,11 +16,27 @@ void ATCController::update(double simTime, MessageBus& bus) {
     while (auto msg = mailbox_.pop()) {
         switch (msg->type) {
             case MessageType::ATCClearanceRequest:
-                // Determine if this is a takeoff or landing request.
-                // For simplicity, we treat all clearance requests as takeoff
-                // requests unless the aircraft is already on approach.
-                // A real implementation would have separate request types.
+                // Default clearance request is for takeoff (legacy behavior).
+                // Arriving aircraft should use ATCLandingRequest instead.
                 handleClearanceRequest(msg->sender, simTime, bus);
+                break;
+
+            case MessageType::ATCLandingRequest:
+                // Round-2 fix: previously a dead function — no message type
+                // triggered it. Now arriving aircraft can request landing.
+                handleLandingRequest(msg->sender, simTime, bus);
+                break;
+
+            case MessageType::ATCAirborne:
+                // Round-2 fix: aircraft reports airborne → mark runway for
+                // delayed clear (10s buffer for departure end safety zone).
+                handleAirborne(msg->sender, simTime, bus);
+                break;
+
+            case MessageType::ATCLanded:
+                // Round-2 fix: aircraft reports landed → mark runway for
+                // delayed clear (15s buffer for rollout + vacate).
+                handleLanded(msg->sender, simTime, bus);
                 break;
 
             case MessageType::ATCRunwayClear:

@@ -103,15 +103,18 @@ inline Formation defaultTwoShipLineAbreast() {
 // FormationTable — registry of formation definitions by type.
 // Hosts register custom formations; the AI looks up the geometry by type
 // when computing the wingman's desired position.
+//
+// DESIGN NOTE: this was previously a Meyer's singleton (static instance()).
+// That prevented testing (couldn't reset between tests), prevented multiple
+// tables (e.g. NATO vs Warsaw Pact formations), and prevented dependency
+// injection. Now it's a regular class — hosts construct one and pass it
+// where needed. For backward compatibility, a default instance is still
+// available via defaultInstance() (NOT a singleton — just a shared default
+// for hosts that don't want to manage their own).
 class FormationTable {
 public:
-    static FormationTable& instance() {
-        static FormationTable t;
-        return t;
-    }
-
     FormationTable() {
-        // Register the standard formations on first construction.
+        // Register the standard formations on construction.
         formations_[static_cast<int>(FormationType::Wedge)] = defaultWedge();
         formations_[static_cast<int>(FormationType::TwoShipTrail)] = defaultTwoShipTrail();
         formations_[static_cast<int>(FormationType::TwoShipLineAbreast)] = defaultTwoShipLineAbreast();
@@ -137,9 +140,17 @@ public:
     }
 
     // Convenience: get the relative position for the wingman's current
-    // state. Reads formationId + vehicleInUnit from the digi state.
+    // state. Reads formationId + slot from the digi state.
     static PositionData forWingman(int formationId, int slot) {
-        return instance().slotGeometry(static_cast<FormationType>(formationId), slot);
+        return defaultInstance().slotGeometry(static_cast<FormationType>(formationId), slot);
+    }
+
+    // Shared default instance for hosts that don't want to manage their own
+    // FormationTable. NOT a singleton — hosts are free to construct their
+    // own and pass them explicitly (preferred for testing/multi-table use).
+    static FormationTable& defaultInstance() {
+        static FormationTable t;
+        return t;
     }
 
 private:

@@ -44,7 +44,7 @@ void RadarSensor::update(const DigiEntity& self, const TruthState& truth,
         if (confidence < config_.minConfidence) continue;
 
         SensorContact c = makeContact(truth.ids[i], entity, confidence);
-        c.addSensor(SensorType::Radar);
+        // makeContact already calls c.addSensor(type()) — no need to repeat.
 
         // Identify type at close range
         if (range < 20.0 * 6076.0 && confidence > 0.5) {

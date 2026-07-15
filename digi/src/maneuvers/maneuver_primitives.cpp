@@ -267,7 +267,14 @@ void ManeuverPrimitives::LevelTurn(double loadFactor, double turnDir, bool newTu
     if (digi.trackMode != 0) {
         // Phase 2: banked turn
         double edroll = std::atan(std::sqrt(std::max(0.0, loadFactor * loadFactor - 1.0)));
-        digi.maxRollDelta = edroll * RTD;
+        // BUG FIX: do NOT clobber digi.maxRollDelta (a persistent config field)
+        // with the per-frame roll error. The previous line
+        //   digi.maxRollDelta = edroll * RTD;
+        // was a dead write (nothing in the F4Flight codebase reads
+        // digi.maxRollDelta — only fcsState.maxRollDelta is read by the FCS)
+        // but it polluted the config field for any subsequent code that
+        // might read it. The correct write is to fcsState.maxRollDelta
+        // (per-frame FCS limit), which is already done on the next line.
         fcsState.maxRoll = 80.0;  // "no limit" sentinel
         fcsState.maxRollDelta = edroll * RTD;
         if (newTurn) fcsState.startRoll = 0.0;

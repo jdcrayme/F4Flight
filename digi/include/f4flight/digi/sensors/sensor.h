@@ -113,6 +113,8 @@ protected:
         c.vx = entity.vx; c.vy = entity.vy; c.vz = entity.vz;
         c.yaw = entity.yaw; c.pitch = entity.pitch; c.roll = entity.roll;
         c.speed = entity.speed;
+        c.isFiring = entity.isFiring;
+        c.isRadarEmitting = entity.isRadarEmitting;
         c.addSensor(type());
         c.confidence = confidence;
         c.quality = ContactQuality::Detected;

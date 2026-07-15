@@ -107,6 +107,22 @@ inline Message makeTrafficAdvisory(EntityId atcId, EntityId aircraft,
     return m;
 }
 
+// Round-2 fix: factories for the new ATC message types that wire up the
+// previously-dead handler functions (handleLandingRequest, handleAirborne,
+// handleLanded).
+
+inline Message makeLandingRequest(EntityId sender, EntityId atcId) {
+    return Message(MessageType::ATCLandingRequest, sender, atcId);
+}
+
+inline Message makeAirborneReport(EntityId sender, EntityId atcId) {
+    return Message(MessageType::ATCAirborne, sender, atcId);
+}
+
+inline Message makeLandedReport(EntityId sender, EntityId atcId) {
+    return Message(MessageType::ATCLanded, sender, atcId);
+}
+
 // Extract runway ID from a message payload.
 inline RunwayId runwayFromMessage(const Message& msg) {
     return msg.payload.value;

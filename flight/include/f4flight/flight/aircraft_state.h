@@ -230,8 +230,8 @@ struct GearState {
     std::vector<Wheel> wheels;           // sized to AircraftConfig.gear.size()
     bool   inAir{true};
     bool   planted{false};               // stationary on ground
-    double groundZ_ft{0.0};              // terrain altitude at aircraft position
-    Vec3   groundNormal{0.0, 0.0, 1.0};  // up vector
+    double groundZ_ft{0.0};              // terrain altitude at aircraft position (NED Z-down: equals -terrainMSL)
+    Vec3   groundNormal{0.0, 0.0, -1.0}; // terrain normal (NED: -Z is up)
     double muFric{0.04};                 // current friction coefficient
     double minHeight_ft{0.0};            // minimum body clearance
     double nwsAngle_rad{0.0};            // nose-wheel steering angle

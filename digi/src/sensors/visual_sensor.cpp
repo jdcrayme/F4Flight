@@ -43,7 +43,7 @@ void VisualSensor::update(const DigiEntity& self, const TruthState& truth,
         if (confidence < config_.minConfidence) continue;
 
         SensorContact c = makeContact(truth.ids[i], entity, confidence);
-        c.addSensor(SensorType::Visual);
+        // makeContact already calls c.addSensor(type()) — no need to repeat.
 
         // Visual provides full attitude data
         c.yaw = entity.yaw;

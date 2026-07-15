@@ -18,7 +18,12 @@ namespace digi {
 // ===========================================================================
 bool MergeCheck(const DigiState& digi, const DigiEntity& self,
                 const DigiEntity& target) {
-    (void)digi;  // mode-entry test uses only self/target geometry
+    // BUG FIX: previously stayed in Merge mode indefinitely as long as the
+    // geometry matched. Now we exit when mergeTimer expires (3 seconds,
+    // matching FreeFalcon merge.cpp:9-52). The timer is decremented in
+    // MergeManeuver each frame.
+    if (digi.mergeTimer == 0.0) return false;  // timer expired — exit merge
+
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
     // Must be above 3000 ft AGL
@@ -48,7 +53,17 @@ void MergeManeuver(DigiState& digi, const DigiEntity& self,
                    const FlightControlSystem& fcs, FcsState& fcsState,
                    double dt) {
     (void)fcs;
-    (void)dt;
+
+    // BUG FIX: actually use the dt parameter (was previously cast away with
+    // (void)dt and the code used digi.dt instead — usually the same, but
+    // using the parameter is clearer and supports per-call overrides).
+    //
+    // Decrement mergeTimer to time out the mode (FreeFalcon merge.cpp:9-52
+    // uses a 3-second exit). Initialize on first entry.
+    if (digi.mergeTimer < 0.0) {
+        digi.mergeTimer = 3.0;  // 3 seconds in merge mode
+    }
+    digi.mergeTimer = std::max(0.0, digi.mergeTimer - dt);
 
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 

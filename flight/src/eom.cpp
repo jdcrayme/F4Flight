@@ -238,12 +238,24 @@ void EquationsOfMotion::integratePosition(double dt, double cosgam, double singa
     // reaction forces. F4Flight's gear model tracks strut compression
     // but does NOT generate a ground reaction force — without this clamp,
     // the aircraft passes through z=0 and keeps going.
+    //
+    // The clamp target is groundZ - minHeight_ft: the body centre should sit
+    // one minHeight_ft ABOVE the terrain (because the gear extends that far
+    // below the body). Both groundZ and z are NED-Z (negative-up), so
+    // subtracting minHeight_ft moves the body up.
+    //
+    // BUG FIX: previously clamped to groundZ directly, burying the gear
+    // underground. The AircraftState.gear.minHeight_ft field was being
+    // computed every frame but never read.
+    //
     // Only clamp when the aircraft is actually descending (zdot > 0 in NED
     // = moving toward ground). This prevents the clamp from firing on
-    // aircraft that start on the ground at z=0.
+    // aircraft that start on the ground at z = groundZ - minHeight.
     const double groundZ = state.gear.groundZ_ft;
-    if (k.z > groundZ && k.zdot > 0.0) {
-        k.z = groundZ;
+    const double minClearance = state.gear.minHeight_ft;
+    const double clampZ = groundZ - minClearance;
+    if (k.z > clampZ && k.zdot > 0.0) {
+        k.z = clampZ;
         k.zdot = 0.0;  // kill descent rate (don't bounce)
         k.singam = 0.0;  // level the flight path
         k.cosgam = 1.0;
@@ -282,14 +294,28 @@ void EquationsOfMotion::update(double dt, PilotInput const& input,
     // heading and command full rudder — the "erratic spinning on the
     // ground" behavior.
     //
-    // The clamp only applies when the aircraft is within 5 ft of the ground.
-    // Above 5 ft AGL, even if gear.inAir hasn't transitioned yet, the aircraft
-    // is effectively airborne and needs full attitude freedom to rotate and
-    // climb. Without this altitude threshold, the clamp prevents the takeoff
-    // rotation from exceeding 10° pitch, which stalls light fighters (F-5,
-    // F-15C, MiG-21) that need 12-15° pitch to sustain a climb at low speed.
-    const double altAGL_ground = state.gear.groundZ_ft - k.z;
-    if (!state.gear.inAir && altAGL_ground < 5.0) {
+    // The clamp applies when the GEAR is near the ground. The body itself
+    // sits at `groundZ - minHeight` when on the ground (because the gear
+    // extends minHeight below the body), so the check uses
+    //   altAGL_body < minHeight + threshold
+    // i.e. the gear's bottom is within `threshold` ft of the terrain.
+    //
+    // BUG FIX (paired with ground-clamp minHeight fix): the previous check
+    // used `altAGL_body < 5.0` directly, which only worked when minHeight=0
+    // (F-16 with gear data not loaded). For aircraft with tall gear (C-5:
+    // minHeight=18.9 ft), the body sits 18.9 ft above the terrain when on
+    // the ground — the attitude clamp never fired, the FCS pitch loop ran
+    // open-loop on the ground, and the aircraft pitched to 90° immediately
+    // after engine spool-up, never accelerating.
+    //
+    // Above minHeight + 5 ft AGL, the aircraft is effectively airborne and
+    // needs full attitude freedom to rotate and climb. Without this margin,
+    // the clamp would prevent the takeoff rotation from exceeding 10° pitch,
+    // which stalls light fighters (F-5, F-15C, MiG-21) that need 12-15°
+    // pitch to sustain a climb at low speed.
+    const double altAGL_body = state.gear.groundZ_ft - k.z;
+    const double gearAglThreshold = state.gear.minHeight_ft + 5.0;
+    if (!state.gear.inAir && altAGL_body < gearAglThreshold) {
         // Zero roll and yaw rates on the ground (prevents the quaternion
         // singularity at phi=±180°). DO NOT zero pitch rate (q) — the
         // FCS needs q for pitch damping during rotation and climbout.
@@ -303,22 +329,40 @@ void EquationsOfMotion::update(double dt, PilotInput const& input,
         k.theta = std::max(-2.0 * DTR, std::min(15.0 * DTR, k.theta));
 
         // --- Nose-wheel steering ---
-        // On the ground, the rudder (input.rstick) controls the nose wheel,
-        // not the aerodynamic rudder. The FCS's aerodynamic roll/yaw control
-        // is zeroed above (k.p = k.r = 0), so we apply the rudder command
+        // On the ground, the rudder pedals (input.ypedal) control the nose
+        // wheel, not the roll stick. The FCS's aerodynamic roll/yaw control
+        // is zeroed above (k.p = k.r = 0), so we apply the pedal command
         // directly to psi. This gives responsive ground steering without
         // depending on aerodynamic forces (which are negligible at taxi
-        // speed). The steering rate is proportional to rstick and inversely
+        // speed). The steering rate is proportional to ypedal and inversely
         // proportional to speed (more authority at low speed, less at high
         // speed — matching real nose-wheel steering).
         //
-        // Max turn rate: 30°/s at full rudder at <30 kts, decreasing to
-        // 5°/s above 100 kts (rudder pedal travel is limited at high speed
-        // on real aircraft to prevent oversteering).
+        // BUG FIXES (two paired issues):
+        //   1. Previously used input.rstick (the roll stick), which meant
+        //      ground steering responded to roll inputs and the rudder
+        //      pedals did nothing on the ground. This broke every AI taxi /
+        //      takeoff / landing rollout logic that commands ypedal to steer.
+        //   2. Previously used `psi += ...`, which made positive rstick turn
+        //      the aircraft LEFT (psi increases CCW). But rstick +1 is
+        //      documented as "right" — so positive rstick was rolling right
+        //      in the air but yawing left on the ground. The digi AI was
+        //      compensating by setting rstick = +headingErr, which produced
+        //      the right behavior despite the inverted sign.
+        //
+        // Fix: use ypedal (correct axis) and use `psi -= ypedal * rate * dt`
+        // so positive ypedal (right pedal) produces a right yaw (psi decreases
+        // in NED CCW frame). The digi AI must also use `-headingErr` so that
+        // a positive heading error (need to turn left = increase psi) maps
+        // to a negative ypedal (left pedal).
+        //
+        // Max turn rate: 30°/s at full rudder pedal at <50 kts, decreasing
+        // to 5°/s above 150 kts (rudder pedal travel is limited at high
+        // speed on real aircraft to prevent oversteering).
         const double steerRate = (k.vt < 50.0) ? 30.0
                               : (k.vt < 150.0) ? 30.0 * (150.0 - k.vt) / 100.0 + 5.0
                               : 5.0;
-        k.psi += input.rstick * steerRate * DTR * dt;
+        k.psi -= input.ypedal * steerRate * DTR * dt;
         // Wrap psi to [-PI, PI]
         while (k.psi >  PI) k.psi -= 2.0 * PI;
         while (k.psi < -PI) k.psi += 2.0 * PI;

@@ -101,6 +101,9 @@ struct SensorContact {
     // Is this contact firing guns at us? (set by SensorFusion)
     bool isFiring{false};
 
+    // Is this contact's radar emitting? (set by RWR/SensorFusion)
+    bool isRadarEmitting{false};
+
     // Threat score (set by SensorFusion — higher = more dangerous)
     double threatScore{0.0};
 
@@ -159,6 +162,36 @@ struct SensorPicture {
         return nullptr;
     }
 };
+
+// ===========================================================================
+// toDigiEntity — convert a SensorContact to a DigiEntity.
+// Defined here (not in digi_entity.h) because it needs the full
+// SensorContact definition.
+// ===========================================================================
+inline DigiEntity toDigiEntity(const SensorContact& c) {
+    DigiEntity e;
+    e.x = c.x;  e.y = c.y;  e.z = c.z;
+    e.vx = c.vx;  e.vy = c.vy;  e.vz = c.vz;
+    e.yaw = c.yaw;  e.pitch = c.pitch;  e.roll = c.roll;
+    e.speed = c.speed;
+    e.isDead = false;
+    e.isFiring = c.isFiring;
+    e.isRadarEmitting = c.isRadarEmitting;
+    // Compute body-to-world DCM from yaw/pitch/roll so body-frame geometry
+    // works for auto-tracked entities. (For self, the brain copies the
+    // AircraftState.kin.dcm directly via buildSelfEntity.)
+    e.dcm = dcmFromEuler(c.yaw, c.pitch, c.roll);
+    // SensorContact doesn't currently carry seeker type info; preserve the
+    // historical behavior of mapping missiles to Radar seekers. When IR
+    // missile detection is added, extend SensorContact with a seekerType
+    // field and copy it here.
+    if (c.isMissile) {
+        e.seekerType = DigiEntity::SeekerType::Radar;
+    } else {
+        e.seekerType = DigiEntity::SeekerType::None;
+    }
+    return e;
+}
 
 } // namespace digi
 } // namespace f4flight

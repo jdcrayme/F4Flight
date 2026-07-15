@@ -120,6 +120,16 @@ struct DigiState {
     double newRoll{0.0};       // target roll angle (rad)
     double jinkTimer{0.0};     // seconds in pull phase
 
+    // --- Merge state (Tier 2 — offensive) ---
+    // FreeFalcon merge.cpp:9-52 enters MergeMode when range ≤ 1000 ft and
+    // exits when mergeTimer expires (3 seconds). The previous F4Flight code
+    // had no mergeTimer field — MergeCheck returned true based purely on
+    // geometry, so the AI stayed in Merge mode indefinitely as long as the
+    // geometry matched. This field is now decremented by MergeManeuver and
+    // checked by MergeCheck to time out the mode.
+    // -1.0 = not in merge (initial / reset), > 0 = seconds remaining in merge.
+    double mergeTimer{-1.0};
+
     // --- Track point (used by AutoTrack, TrackPointLanding) ---
     // FreeFalcon stores trackX/Y/Z on the DigitalBrain and smooths it
     // (0.1*new + 0.9*old) in PullToCollisionPoint. We store it here so
@@ -237,6 +247,7 @@ struct DigiState {
         jinkTime = -1;
         newRoll = 0.0;
         jinkTimer = 0.0;
+        mergeTimer = -1.0;  // Round-2 fix: merge mode timer (3s when active)
         trackX = trackY = trackZ = 0.0;
         // Weapon / fire control
         gunFireFlag = false;

@@ -190,7 +190,13 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
     // --- Phase 0: roll to target bank angle ---
     // FreeFalcon gunsjink.cpp:279-305
     if (digi.jinkTime == 0) {
-        // Initial negative G to break lift
+        // Initial negative G to break lift — roll the lift vector OFF the
+        // current flight path so the aircraft starts to slice/drop.
+        //
+        // BUG FIX: the previous code immediately overwrote this with a
+        // positive-G pull on line 211, so the negative-G "break lift" never
+        // took effect. Now we sequence them: negative G during the roll,
+        // positive G only after the roll is captured (phase 1).
         ManeuverPrimitives::SetPstick(-2.0, digi.maxGs,
                                        CommandType::GCommand, digi, as);
 
@@ -205,12 +211,6 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
         ManeuverPrimitives::SetRstick(eroll * RTD * 4.0, digi, fcs, fcsState);
         fcsState.maxRollDelta = std::fabs(eroll * RTD);
 
-        // Max pull
-        // FreeFalcon gunsjink.cpp:294-295
-        const double maxPull = std::max(0.8 * digi.maxGs, digi.maxGs);
-        ManeuverPrimitives::SetPstick(maxPull, digi.maxGs,
-                                       CommandType::GCommand, digi, as);
-
         // Stop rolling and pull when within 5°
         // FreeFalcon gunsjink.cpp:300-304
         if (std::fabs(eroll) < kJinkRollTolerance * DTR) {
@@ -223,7 +223,10 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
     // --- Phase 1: pull max G for ~2 seconds ---
     // FreeFalcon gunsjink.cpp:310-325
     if (digi.jinkTime > 0 || digi.groundAvoidNeeded) {
-        const double maxPull = std::max(0.8 * digi.maxGs, digi.maxGs);
+        // BUG FIX: the previous code used `std::max(0.8 * digi.maxGs, digi.maxGs)`
+        // which is always `digi.maxGs` (because x > 0.8*x for x > 0). The intent
+        // (per FF gunsjink.cpp:310) was to pull maxGs. Just use maxGs directly.
+        const double maxPull = digi.maxGs;
         ManeuverPrimitives::SetPstick(maxPull, digi.maxGs,
                                        CommandType::GCommand, digi, as);
 

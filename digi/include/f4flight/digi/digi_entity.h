@@ -19,6 +19,7 @@
 #pragma once
 
 #include "f4flight/flight/core/constants.h"
+#include "f4flight/flight/core/types.h"  // for Matrix3
 #include <cmath>
 
 namespace f4flight {
@@ -36,6 +37,15 @@ struct DigiEntity {
     double pitch{0.0};   // pitch
     double roll{0.0};    // roll
 
+    // --- Body-to-world DCM (3x3) ---
+    // Computed from yaw/pitch/roll. Used by body-frame relative geometry
+    // (e.g. collision_avoid, AutoTrack target-body-frame computations).
+    // For self, the brain populates this from AircraftState.kin.dcm.
+    // For injected/auto-tracked entities, the host or toDigiEntity() helper
+    // populates it. If left as identity (default), only 2D yaw-based
+    // geometry works — pitch/roll effects on body-frame transforms are lost.
+    Matrix3 dcm;
+
     // --- Speed (ft/s) — convenience field for closure calculations ---
     double speed{0.0};
 
@@ -48,6 +58,13 @@ struct DigiEntity {
 
     bool   isFiring{false};   // for aircraft: currently firing guns
     bool   isDead{false};
+
+    // For aircraft: is the fire-control radar emitting? (set by host based on
+    // radar mode). RWR detects this. Defaults to true to preserve historical
+    // behavior (the previous code assumed all aircraft within range were
+    // emitting). Hosts that model radar modes (RWS/TWS/SAM/STT/Off) should
+    // set this false when the radar is in standby or off.
+    bool   isRadarEmitting{true};
 
     // --- Convenience accessors ---
     bool isMissile() const { return seekerType != SeekerType::None; }
@@ -130,6 +147,30 @@ inline RelativeGeometry computeRelativeGeometry(const DigiEntity& self,
 
     return rg;
 }
+
+// ===========================================================================
+// toDigiEntity — convert a SensorContact to a DigiEntity.
+//
+// BUG FIX (background): the brain previously rebuilt DigiEntity from
+// SensorContact in three nearly-identical inline blocks (missile, guns,
+// target), each copying a DIFFERENT field subset. The missile path
+// hardcoded seekerType=Radar (breaking IR missile detection); the guns
+// path hardcoded isFiring=true (ignoring sensor data); the target path
+// missed seekerType and isFiring entirely. Any new field added to
+// DigiEntity would have to be added in three places.
+//
+// This helper centralizes the conversion so all fields are copied
+// consistently. The SensorContact's `isMissile` flag maps to seekerType
+// (Radar by default — a real sensor model would distinguish IR vs radar
+// missiles, but for now we preserve the original behavior of treating
+// auto-detected missiles as radar-guided).
+//
+// SensorContact is forward-declared to avoid a circular include
+// (sensor_picture.h includes digi_entity.h).
+// ===========================================================================
+struct SensorContact;
+
+inline DigiEntity toDigiEntity(const struct SensorContact& c);
 
 } // namespace digi
 } // namespace f4flight

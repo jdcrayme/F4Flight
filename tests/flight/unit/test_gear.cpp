@@ -25,9 +25,18 @@ TEST_F(GearTest, InitCreatesWheels) {
 TEST_F(GearTest, MinHeightIsMaxStrutZ) {
     GearState s;
     gear_.init(s);
-    const double h = gear_.computeMinHeight(s);
+    const double h = gear_.computeMinHeight(s, 1.0);  // gear fully down
     // F-16 gear z = 3.0 (all three)
     EXPECT_NEAR(h, 3.0, 1e-6);
+}
+
+TEST_F(GearTest, MinHeightScalesWithGearPos) {
+    // Bug fix: gear-up (gearPos=0) should give zero clearance.
+    GearState s;
+    gear_.init(s);
+    EXPECT_NEAR(gear_.computeMinHeight(s, 0.0), 0.0, 1e-6);  // gear up
+    EXPECT_NEAR(gear_.computeMinHeight(s, 0.5), 1.5, 1e-6);  // half extended
+    EXPECT_NEAR(gear_.computeMinHeight(s, 1.0), 3.0, 1e-6);  // gear down
 }
 
 TEST_F(GearTest, FrictionRolling) {

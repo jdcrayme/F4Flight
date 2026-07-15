@@ -257,9 +257,11 @@ TEST(FormationGeometryTest, Round2_DefaultWedgeHasFourSlots) {
 }
 
 TEST(FormationGeometryTest, Round2_FormationTableLookup) {
-    // Rec 3: the FormationTable singleton can look up geometry by type + slot.
+    // Rec 3: the FormationTable can look up geometry by type + slot.
+    // (Previously a singleton via instance(); now a regular class with a
+    // shared defaultInstance() for backward compatibility.)
     using namespace f4flight::digi::formation;
-    const auto& table = FormationTable::instance();
+    const auto& table = FormationTable::defaultInstance();
     const auto slot1 = table.slotGeometry(FormationType::Wedge, 1);
     EXPECT_NEAR(slot1.range, 1000.0, 1e-9);
     // Invalid slot returns lead geometry (zero-relative)
@@ -269,6 +271,24 @@ TEST(FormationGeometryTest, Round2_FormationTableLookup) {
     const auto w = FormationTable::forWingman(
         static_cast<int>(FormationType::Wedge), 1);
     EXPECT_NEAR(w.range, 1000.0, 1e-9);
+}
+
+TEST(FormationGeometryTest, InjectableFormationTable) {
+    // Structural fix: FormationTable is now a regular class, not a singleton.
+    // Hosts can construct their own and register custom formations without
+    // affecting the default instance.
+    using namespace f4flight::digi::formation;
+    FormationTable myTable;
+    Formation custom{};
+    custom[0] = {0.0, 0.0, 0.0};
+    custom[1] = {45.0 * M_PI / 180.0, 0.0, 500.0};  // 500 ft at 45° right
+    myTable.registerFormation(FormationType::Custom, custom);
+    const auto slot = myTable.slotGeometry(FormationType::Custom, 1);
+    EXPECT_NEAR(slot.range, 500.0, 1e-9);
+    // Default instance should NOT have the custom formation
+    const auto defaultSlot = FormationTable::defaultInstance().slotGeometry(
+        FormationType::Custom, 1);
+    EXPECT_NEAR(defaultSlot.range, 0.0, 1e-9);  // unregistered → lead slot
 }
 
 TEST(AGDoctrineTest, Round2_EnumsAndNames) {

@@ -71,17 +71,32 @@ bool CollisionCheck(DigiState& digi, const DigiEntity& self,
 
             const double range = 10000.0;  // evasion trackpoint distance
 
-            // Transform body-frame (relAz, relEl) to world frame
-            // Use self's DCM (body-to-world). For simplicity, use yaw only
-            // since we don't have the full DCM in DigiEntity.
-            const double cosAz = std::cos(relAz + self.yaw);
-            const double sinAz = std::sin(relAz + self.yaw);
-            const double cosEl = std::cos(relEl);
-            const double sinEl = std::sin(relEl);
+            // Transform body-frame (relAz, relEl) to world frame using the
+            // full body-to-world DCM.
+            //
+            // BUG FIX: previously used yaw-only rotation ("for simplicity,
+            // since we don't have the full DCM in DigiEntity"). This
+            // produced a wrong trackpoint when self was pitched or banked:
+            // the evasion direction was rotated by self.yaw only, ignoring
+            // pitch/roll, so the trackpoint could end up underground or
+            // behind the aircraft. Now that DigiEntity carries the full
+            // DCM (populated by buildSelfEntity / toDigiEntity), we use it.
+            //
+            // Body-frame direction vector:
+            //   x = cos(el) * cos(az)  (forward)
+            //   y = cos(el) * sin(az)  (right)
+            //   z = -sin(el)           (up — body Z is down, so negate)
+            const double bx = std::cos(relEl) * std::cos(relAz);
+            const double by = std::cos(relEl) * std::sin(relAz);
+            const double bz = -std::sin(relEl);
+            // World-frame direction = DCM * body (DCM is body-to-world)
+            const double wx = self.dcm.m[0][0] * bx + self.dcm.m[0][1] * by + self.dcm.m[0][2] * bz;
+            const double wy = self.dcm.m[1][0] * bx + self.dcm.m[1][1] * by + self.dcm.m[1][2] * bz;
+            const double wz = self.dcm.m[2][0] * bx + self.dcm.m[2][1] * by + self.dcm.m[2][2] * bz;
 
-            digi.trackX = self.x + range * cosEl * cosAz;
-            digi.trackY = self.y + range * cosEl * sinAz;
-            digi.trackZ = self.z - range * sinEl;  // NED: negative up
+            digi.trackX = self.x + range * wx;
+            digi.trackY = self.y + range * wy;
+            digi.trackZ = self.z + range * wz;  // NED: +wz (wz already accounts for body Z down)
 
             return true;
         }

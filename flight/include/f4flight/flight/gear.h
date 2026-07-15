@@ -24,9 +24,10 @@ public:
     void init(GearState& gear) const;
 
     // Compute the minimum body clearance (the lowest gear point in body Z).
-    //   minHeight = max over gear points of (gearZ)
+    //   minHeight = max over gear points of (gearZ) * gearPos
+    //   gearPos   : 0..1 (0 = gear up, 1 = gear down)
     // Used by EOM to pin z = groundZ - minHeight when on ground.
-    double computeMinHeight(const GearState& gear) const;
+    double computeMinHeight(const GearState& gear, double gearPos) const;
 
     // Compute the friction coefficient based on brake state, ground type,
     // and carrier deck.

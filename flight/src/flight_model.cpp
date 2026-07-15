@@ -190,7 +190,7 @@ void FlightModel::updateGear(double dt) {
                                                state_.gear.onObject,
                                                state_.gear.overRunway);
     // Recompute minHeight
-    state_.gear.minHeight_ft = gear_.computeMinHeight(state_.gear);
+    state_.gear.minHeight_ft = gear_.computeMinHeight(state_.gear, state_.aero.gearPos);
 
     // Determine if any wheel is on the ground
     bool anyOnGround = false;
