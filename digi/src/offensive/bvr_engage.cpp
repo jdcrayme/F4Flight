@@ -118,20 +118,24 @@ void StickandThrottle(DigiState& digi, const DigiEntity& self,
     (void)self;
     (void)fcs;
 
-    // Adjust trackZ for altitude management
-    // (FF bvrengage.cpp:3048-3066, simplified)
+    // Adjust trackZ for altitude management (FF bvrengage.cpp:3048-3066,
+    // simplified). NOTE: this is a placeholder — the FF version trades
+    // altitude for speed (descend to accelerate, climb to decelerate) via
+    // a proper energy-management loop. Here we only nudge trackZ toward
+    // the desired altitude when we're roughly at target speed; the
+    // "need speed" branch intentionally leaves trackZ at the target's
+    // altitude (set by the caller) rather than commanding a descent.
+    // TODO: port the FF energy-management loop when BVR tuning is exercised
+    //       by a scenario (currently BVR is smoke-test only — see test audit).
     const double speedDiff = desiredSpeedKts - as.vcas;
 
-    if (speedDiff > 50.0) {
-        // Need speed — sacrifice altitude
-        // trackZ stays at target altitude
-    } else {
-        // Adjust trackZ toward desired altitude
+    if (speedDiff <= 50.0) {
+        // Near target speed — adjust trackZ toward desired altitude.
         if (-as.kin.z < desiredAltFt) {
-            // Below desired — climb
+            // Below desired — command a climb (more-negative NED z).
             digi.trackZ = std::min(as.kin.z + speedDiff * 800.0, -desiredAltFt);
         } else {
-            // Above or at desired — hold
+            // At or above desired — hold.
             digi.trackZ = -desiredAltFt;
         }
     }
@@ -155,7 +159,10 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
                    double dt, int direction) {
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
-    // If target is behind our 3/9 line, just track it
+    // If we're already on the target's tail (ataFrom > 90° = we're behind
+    // their 3/9 line), cranking makes no sense — just pursue. ataFrom is
+    // the angle off the TARGET's nose to us, so > 90° means we're in their
+    // rear hemisphere (the advantageous position cranking would throw away).
     if (rg.ataFrom > 90.0 * DTR) {
         digi.trackX = target.x;
         digi.trackY = target.y;
@@ -240,9 +247,13 @@ void DragManeuver(DigiState& digi, const DigiEntity& self,
                   double dt) {
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
-    // Drag: turn to match the target's heading (cold = missile has to chase)
+    // Drag: turn cold — fly directly AWAY from the target so any missile it
+    // fires has to chase us through our exhaust path (maximizes its kinematic
+    // bleed). az here is the world-frame bearing FROM the target TO us
+    // (target.yaw + rg.azFrom = bearingToSelf), so placing the trackpoint
+    // along that bearing from our position sends us away from the target.
     // (FF bvrengage.cpp:2989-3005)
-    double az = target.yaw + rg.azFrom;  // world-frame heading away from us
+    double az = target.yaw + rg.azFrom;  // world-frame bearing from target to us
     while (az >  PI) az -= 2.0 * PI;
     while (az < -PI) az += 2.0 * PI;
 

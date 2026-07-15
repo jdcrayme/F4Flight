@@ -192,22 +192,66 @@ bool ManeuverPrimitives::HeadingAndAltitudeHold(double desPsi, double desAlt,
     SetYpedal(0.0, digi);
 
     bool retval = false;
-    if (std::fabs(psiErr) < 5.0 * DTR) {
-        double rollDeg = state.kin.phi * RTD;
-        double rollErr = limitRollError(-rollDeg * 2.0, rollDeg, digi.maxRoll);
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
 
-        fcsState.maxRoll = 0.0;
-        fcsState.maxRollDelta = std::fabs(rollDeg * 2.0);
-        if (fcsState.maxRollDelta < 5.0) fcsState.maxRollDelta = 5.0;
+    // --- Continuous heading-to-roll controller (no LevelTurn) ---
+    //
+    // The previous code used a hard 5° threshold: below 5° it commanded
+    // wings-level (maxRoll=0), above 5° it commanded a full LevelTurn at
+    // turnLoadFactor (2G → 60° bank). This created TWO problems:
+    //
+    //   1. A limit cycle near waypoints — after rolling out, the aircraft
+    //      would overshoot the heading, re-enter LevelTurn, overshoot again,
+    //      producing ±20° bank chatter for 30-40 seconds.
+    //
+    //   2. A discontinuity at the threshold — when psiErr drops from 16° to
+    //      14°, the commanded bank jumps from 60° (LevelTurn) to 5° (proportional),
+    //      causing a violent roll reversal that can reach -88° bank.
+    //
+    // Fix: use a SINGLE continuous proportional controller for ALL heading
+    // errors. The desired bank angle = psiErr × gain, capped at maxRoll.
+    // No LevelTurn, no threshold, no discontinuity. The aircraft smoothly
+    // banks proportional to heading error and smoothly rolls out as the
+    // error approaches zero.
+    //
+    // Gain of 2.0: 45° heading error → 90° desired bank → clamped to maxRoll
+    // (45° for fighters, 25° for heavies). This gives aggressive turns for
+    // large errors (waypoint corners) and gentle corrections for small errors.
+    constexpr double kHeadingToBankGain = 2.0;
 
-        double altErr = (desAlt + state.kin.z) - state.kin.zdot;
-        if (std::fabs(altErr) < 25.0) retval = true;
-        GammaHold(altErr * 0.015, digi, state, maxGs);
-    } else {
-        double turnDir = (psiErr > 0.0) ? 1.0 : -1.0;
-        LevelTurn(digi.turnLoadFactor, turnDir, false, digi, state, fcs, fcsState, maxGs);
-    }
+    const double psiErrDeg = psiErr * RTD;
+    double desiredBankDeg = psiErrDeg * kHeadingToBankGain;
+
+    // Clamp the desired bank. The clamp limit is the LARGER of:
+    //   - digi.maxRoll (the brain's navigation bank limit, e.g. 25° for heavy)
+    //   - the bank angle implied by turnLoadFactor (e.g. 47.6° for 1.3G)
+    //
+    // The old LevelTurn code targeted the load-factor-derived bank (47.6° for
+    // 1.3G) regardless of digi.maxRoll, because digi.maxRoll was only used
+    // in the wings-level branch's limitRollError. If we clamp to digi.maxRoll
+    // alone, heavy aircraft (maxRoll=25°) can't bank steeply enough to turn
+    // within the waypoint capture radius — the turn radius at 25° bank and
+    // 250 kts is ~12 NM, far larger than the 5000 ft capture radius.
+    const double loadFactorBankDeg = std::atan(std::sqrt(std::max(0.0,
+        digi.turnLoadFactor * digi.turnLoadFactor - 1.0))) * RTD;
+    const double bankClamp = std::max(digi.maxRoll, loadFactorBankDeg);
+    desiredBankDeg = std::max(-bankClamp, std::min(bankClamp, desiredBankDeg));
+
+    const double rollDeg = state.kin.phi * RTD;
+    double rollErr = (desiredBankDeg - rollDeg) * 2.0;
+    rollErr = limitRollError(rollErr, rollDeg, digi.maxRoll);
+    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01,
+                                digi.rStick, digi.dt);
+
+    // Allow the FCS to roll up to the desired bank angle. Use bankClamp
+    // (not desiredBankDeg) so the FCS doesn't fight the turn when the
+    // desired bank is less than the load-factor-derived limit.
+    fcsState.maxRoll = bankClamp;
+    fcsState.maxRollDelta = std::max(5.0, bankClamp * 2.0);
+
+    double altErr = (desAlt + state.kin.z) - state.kin.zdot;
+    if (std::fabs(altErr) < 25.0) retval = true;
+    GammaHold(altErr * 0.015, digi, state, maxGs);
+
     return retval;
 }
 
@@ -585,37 +629,38 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
 
     // Pitch: proportional elevation tracker + gamma-rate damping.
     //
-    // Round-2 fix (Rec 8): the pure-proportional tracker (ported from FF
-    // mnvers.cpp:33) Phugoid-oscillates in F4Flight's flight model. FF's
-    // pitch dynamics have more inherent damping than F4Flight's, so the
-    // same primitive that works in FF oscillates here. Adding a flight-
-    // path-angle rate term (proportional to d(gamma)/dt ≈ zdot/|vt|)
-    // damps the Phugoid: when the aircraft is descending faster than the
-    // glideslope, the term reduces pstick; when climbing too fast, it
-    // increases pstick. The damping gain (0.5) is conservative — it
-    // eliminates the Phugoid without making the approach sluggish.
+    // The pure-proportional tracker (ported from FF mnvers.cpp:33) Phugoid-
+    // oscillates in F4Flight's flight model. Adding a flight-path-angle rate
+    // term damps the Phugoid. The sign convention (NED, z-down):
+    //
+    //   zdot > 0           = z increasing = altitude DECREASING (descending)
+    //   desiredZdot > 0    = the descent rate we WANT (3° glideslope)
+    //   zdotErr = zdot - desiredZdot
+    //     zdotErr > 0      = descending too fast → need pitch UP (positive)
+    //     zdotErr < 0      = descending too slow → need pitch DOWN (negative)
+    //
+    //   dampTerm = +kDamp * zdotErr / vt
+    //
+    // The previous code used dampTerm = -kDamp * zdotErr / vt, which INVERTED
+    // the damping. When the aircraft was on the glideslope but not yet
+    // descending (zdot=0, desiredZdot=15), the inverted damping produced a
+    // POSITIVE pitch command (pitch UP) — causing the aircraft to climb ABOVE
+    // the glideslope, then overshoot into a dive. This produced the initial
+    // 956→1032 ft climb seen in the landing scenario, followed by an
+    // accelerating descent that the flare couldn't arrest.
     const double distXY = std::sqrt(xft * xft + yft * yft);
     const double elErr = SimpleTrackElevation(zft, distXY, state);
-    // Gamma-rate damping: state.kin.zdot is the world-Z velocity (ft/s,
-    // negative = climbing because Z is down). For a 3° glideslope at
-    // 250 kts (422 ft/s), the desired zdot is -422*sin(3°) = -22 ft/s
-    // (climbing at 22 ft/s toward the runway, which is below us). Wait —
-    // actually for landing we're DESCENDING, so desired zdot is +22 ft/s
-    // (z increasing = altitude decreasing). The damping term penalizes
-    // the difference between actual and "natural" zdot:
-    //   dampTerm = -kDamp * (zdot - desiredZdot) / |vt|
-    // When descending too fast (zdot > desiredZdot), dampTerm < 0 →
-    // reduces pstick → pitches down less → slows the descent.
-    // When descending too slow (zdot < desiredZdot), dampTerm > 0 →
-    // increases pstick → pitches down more → speeds the descent.
-    //
-    // desiredZdot for a 3° glideslope = vt * sin(3°) ≈ vt * 0.052.
     const double vt = std::max(state.kin.vt, 100.0);  // avoid /0
-    const double desiredZdot = vt * std::sin(3.0 * DTR);  // ~22 ft/s at 250 kts
+    const double desiredZdot = vt * std::sin(3.0 * DTR);  // ~15 ft/s at 170 kts
     const double zdotErr = state.kin.zdot - desiredZdot;  // >0 = descending too fast
-    const double dampTerm = -0.5 * (zdotErr / vt);
+    const double dampTerm = 0.5 * (zdotErr / vt);  // positive = pitch up to slow descent
 
-    digi.pStick = std::min(0.2, std::max(elErr + dampTerm, -0.3));
+    // Pitch command: elevation error + gamma-rate damping.
+    // The previous clamp of [-0.3, +0.2] was too tight — it left insufficient
+    // pitch authority to hold the glideslope at high speed or to flare.
+    // Widened to [-0.5, +0.5] (full FCS authority for landing, which the
+    // G-limiter in SetPstick/GammaHold will further clamp to safe G).
+    digi.pStick = std::min(0.5, std::max(elErr + dampTerm, -0.5));
 
     // Throttle: hold approach speed (error computed in kts — both targetSpeedKts
     // and state.vcas are KCAS, so no unit conversion needed here).

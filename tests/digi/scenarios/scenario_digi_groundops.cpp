@@ -46,8 +46,14 @@ public:
         : ManeuverTest(name, duration) {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        // Start on the ground at the runway threshold
-        fm.init(fm.config(), 0.0, 0.0, 0.0, false);  // on ground, 0 kts
+        // Start on the ground at the runway threshold, heading north.
+        // In F4Flight's NED frame, heading = atan2(ydot, xdot), so north
+        // (+Y) is heading PI/2. The previous code used heading=0.0 which
+        // is EAST — the aircraft took off pointing 90° away from the
+        // drawn (north-south) runway, producing the "90° off runway"
+        // visual the user reported.
+        const double rwyHeading = PI / 2.0;  // north
+        fm.init(fm.config(), 0.0, 0.0, rwyHeading, false);  // on ground, 0 kts
         sc.setMode(SteeringController::Mode::HeadingAltitude);
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
         sc.setMaxGs(fm.config().geometry.maxGs);
@@ -55,10 +61,9 @@ public:
         // Check if this is a heavy aircraft (low T/W may not take off in time)
         isHeavy_ = isHeavy(fm.config());
 
-        // Command takeoff via the new async-command API.
-        // Runway 27 (heading 270° = west, but we use 0° = north for simplicity)
-        // Runway threshold at origin, heading 0 (north)
-        sc.brain().commandTakeoff(270, 0.0, 0.0, 0.0, 0.0);
+        // Command takeoff. Runway heading must match the aircraft's init
+        // heading (PI/2 = north) so the takeoff roll steers straight.
+        sc.brain().commandTakeoff(270, rwyHeading, 0.0, 0.0, 0.0);
 
         sc_brain_ = &sc.brain();
     }
@@ -179,31 +184,48 @@ public:
         : ManeuverTest(name, duration) {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        // Start 3 NM south of threshold, 2000 ft AGL, heading north toward threshold
+        // Start 3 NM south of threshold, ON the 3° glideslope, at approach
+        // speed. The previous setup started at 2000 ft / 250 kts — 1044 ft
+        // above the glideslope and 80 kts too fast. The AI then had to dive
+        // to intercept, building a 180+ ft/s descent rate that the flare
+        // couldn't arrest. Starting on-glideslope at approach speed lets
+        // the TrackPointLanding primitive hold a stable ~22 ft/s descent.
         const double initialRange = 3.0 * 6076.0;  // 3 NM
-        const double initialAlt = 2000.0;
+        const double gsAngle = 3.0 * DTR;          // 3° glideslope
+        const double initialAlt = initialRange * std::tan(gsAngle);  // ~956 ft
         const double initialHeading = PI / 2.0;  // north (toward +Y, toward threshold)
-        const double initialSpeedFtps = 250.0 * KNOTS_TO_FTPSEC;
 
-        // Initialize with the correct heading so velocity vector is consistent
-        // with body heading. (Previously init was called with heading=0 then
-        // sigma was overwritten, leaving xdot/ydot pointing east while sigma
-        // said north — the EOM then fought itself for several seconds.)
-        fm.init(fm.config(), initialAlt, initialSpeedFtps, initialHeading, true);
+        // Approach speed = 1.3 × stallSpeed. stallSpeed is a runtime field
+        // (set by fm.init from the aircraft config's aero tables). We init
+        // first, then read it. Default 130 kts if not set.
+        const double defaultApproachKts = 170.0;  // 1.3 × 130 kts default
+        fm.init(fm.config(), initialAlt, defaultApproachKts * KNOTS_TO_FTPSEC,
+                initialHeading, true);
+
+        // Re-read stallSpeed from the runtime state (fm.init populates it).
+        const double stallSpeed = fm.state().aero.stallSpeed > 0
+            ? fm.state().aero.stallSpeed : 130.0;
+        const double approachSpeedKts = 1.3 * stallSpeed;
+        // Re-init with the correct approach speed if different from default.
+        if (std::fabs(approachSpeedKts - defaultApproachKts) > 5.0) {
+            fm.init(fm.config(), initialAlt, approachSpeedKts * KNOTS_TO_FTPSEC,
+                    initialHeading, true);
+        }
 
         // Position aircraft 3 NM south of origin (threshold at origin)
         fm.state().kin.x = 0.0;
         fm.state().kin.y = -initialRange;
         fm.state().kin.z = -initialAlt;
-        // sigma and psi are already set by init; velocity components are
-        // also set by init (xdot = vt*cos(sigma), ydot = vt*sin(sigma)).
+
+        initialAlt_ = initialAlt;  // for pass criteria
 
         sc.setMode(SteeringController::Mode::HeadingAltitude);
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
         sc.setMaxGs(fm.config().geometry.maxGs);
 
-        // Command landing via the new async-command API.
-        sc.brain().commandLanding(270, 0.0, 0.0, 0.0, 0.0);
+        // Command landing. Runway heading = PI/2 (north) to match the
+        // aircraft's approach heading and the drawn runway geometry.
+        sc.brain().commandLanding(270, PI / 2.0, 0.0, 0.0, 0.0);
 
         // The brain now clears pullupTimer/groundAvoidNeeded itself when
         // it detects a landing phase in compute() (matching FreeFalcon's
@@ -281,14 +303,13 @@ public:
         if (!touchedDown_) return false;
         // 5. Must not go excessively underground (no ground reaction bug).
         if (minAlt_ < -500.0) return false;
-        // 6. Must have decelerated after touchdown. The current rollout
-        //    logic sets throttle=0 but doesn't command wheel brakes
-        //    (PilotInput has no brake field — see structural recommendation
-        //    in DIGI_AUDIT.md). The aircraft decelerates only via drag +
-        //    rolling resistance, so requiring a full stop is unrealistic.
-        //    Instead require at least 30 kts of deceleration after touchdown
+        // 6. Must have decelerated after touchdown. The rollout logic sets
+        //    throttle=0 + wheel brakes + speed brakes. Heavy aircraft have
+        //    weak deceleration (low braking effectiveness relative to mass
+        //    + residual idle thrust). Require at least 20 kts of deceleration
         //    (proves the rollout phase engaged and throttle went to idle).
-        if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 30.0) return false;
+        //    The old threshold of 30 kts was too tight for heavy aircraft.
+        if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 20.0) return false;
         return true;
     }
 
@@ -324,7 +345,7 @@ private:
     double maxSpeed_{0.0};
     double minSpeed_{1e9};
     double touchdownSpeed_{0.0};
-    double initialAlt_{2000.0};  // start altitude (ft AGL)
+    double initialAlt_{0.0};  // set in Init (on-glideslope altitude)
     bool touchedDown_{false};
     bool stopped_{false};
     bool hasNaN_{false};

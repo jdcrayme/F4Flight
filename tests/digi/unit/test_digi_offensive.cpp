@@ -267,9 +267,26 @@ TEST_F(DigiBrainWVRTest, TargetBeyondWVREntersBVR) {
     EXPECT_EQ(brain.activeMode(), DigiMode::BVREngage);
 }
 
-TEST_F(DigiBrainWVRTest, TargetBeyondBVRStaysWaypoint) {
-    // Target 40 NM — beyond the 35 NM BVR gate
+TEST_F(DigiBrainWVRTest, TargetAtFortyNmEntersBVR) {
+    // Target 40 NM — within engageRange = max(45 NM, maxAAWpnRange*1.3).
+    // With the default maxAAWpnRange (35 NM), engageRange = 45.5 NM, so a
+    // 40 NM target is engaged as BVR. This locks in the fix for the bug
+    // where BVR was silently capped at maxAAWpnRange (35 NM) by an inline
+    // `range > 8 NM` check nested inside `range < maxAAWpnRangeFt`, which
+    // also left BvrEngageCheck() as dead code. FreeFalcon engages BVR out
+    // to max(45 NM, maxAAWpnRange*1.3) (bvrengage.cpp:100-103).
     target.x = 0.0; target.y = 40.0 * 6076.0; target.z = -10000.0;
+    target.yaw = PI;
+    target.isDead = false;
+    brain.setTarget(&target);
+
+    brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
+    EXPECT_EQ(brain.activeMode(), DigiMode::BVREngage);
+}
+
+TEST_F(DigiBrainWVRTest, TargetBeyondBVRStaysWaypoint) {
+    // Target 50 NM — beyond engageRange = max(45 NM, 35*1.3) = 45.5 NM.
+    target.x = 0.0; target.y = 50.0 * 6076.0; target.z = -10000.0;
     target.yaw = PI;
     target.isDead = false;
     brain.setTarget(&target);

@@ -39,6 +39,8 @@ set(F4FLIGHT_DIGI_SOURCES
     src/sensors/rwr_sensor.cpp
     src/sensors/visual_sensor.cpp
     # Note: formation/ and comms/ and weapons/ are header-only — no .cpp
+    # wingman
+    src/wingman/wingman_state.cpp
 )
 
 set(F4FLIGHT_DIGI_HEADERS
@@ -55,8 +57,11 @@ set(F4FLIGHT_DIGI_HEADERS
     include/f4flight/digi/ground/ground_avoid.h
     include/f4flight/digi/ground/ground_ops.h
     include/f4flight/digi/ground/ag_doctrine.h
+    include/f4flight/digi/ground/ag_attack_phase.h
     # formation
     include/f4flight/digi/formation/formation_geometry.h
+    # wingman
+    include/f4flight/digi/wingman/wingman_state.h
     # defensive
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h

@@ -173,10 +173,19 @@ void EquationsOfMotion::calculateVt(double dt, double muFric, double singam,
         state.vtDot    = vtDot;          // ft/s^2 (true airspeed rate)
         state.netAccel = vtDot * dt;     // ft/s, per-frame delta-Vt (legacy field)
     } else {
-        // Ground: friction
+        // Ground: friction. The weight-on-wheels factor is nzcgs (normal G).
+        // At nzcgs=1.0 (sitting on ground) friction is MAXIMUM; as the aircraft
+        // rotates and nzcgs drops below 1.0, weight shifts off the wheels and
+        // friction decreases. The previous formula used (1.0 - nzcgs) which
+        // INVERTED the logic — it gave zero friction at 1G (normal ground
+        // contact) and maximum friction at 0G (about to lift off). This caused
+        // the aircraft to never decelerate on the ground (brakes had no effect
+        // at 1G) and even accelerate if any thrust or descent energy remained.
         const double nzcgs = state.loads.nzcgs;
         const double sinbet = state.kin.sinbet;
-        const double fric = (0.8 * muFric + std::fabs(0.8 * sinbet)) * (1.0 - nzcgs) * GRAVITY * dt;
+        const double weightOnWheels = std::max(0.0, std::min(1.0, nzcgs));
+        const double fric = (0.8 * muFric + std::fabs(0.8 * sinbet))
+                          * weightOnWheels * GRAVITY * dt;
         double netAccel = vtDot * dt - fric;
         double newVt = k.vt + netAccel;
         if (newVt < 0.0) newVt = 0.0;

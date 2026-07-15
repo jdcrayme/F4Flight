@@ -24,7 +24,7 @@ namespace digi {
 static constexpr double kTaxiSpeedKts = 15.0;       // taxi speed
 static constexpr double kRotationSpeedFraction = 0.9; // V_R = 0.9 * stallSpeed
 static constexpr double kClimboutAltFt = 500.0;      // gear up altitude
-static constexpr double kFlareAltFt = 50.0;           // flare start altitude AGL
+static constexpr double kFlareAltFt = 100.0;          // flare start altitude AGL (was 50 — too low for high descent rates)
 static constexpr double kApproachGlideslope = 3.0;    // degrees
 static constexpr double kApproachSpeedFraction = 1.3; // V_approach = 1.3 * stallSpeed
 static constexpr double kRolloutBrakeSpeed = 80.0;    // kts — start braking below this
@@ -159,16 +159,25 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
         case GroundOpsPhase::TakeoffRoll: {
             // Full throttle (1.5 = AB if available, 1.0 = MIL otherwise)
             digi.throttle = 1.5;
-            // Keep straight on runway heading (use rudder)
-            const double headingErr = headingError(go.runwayHeading, as.kin.sigma);
-            ManeuverPrimitives::SetRstick(headingErr * RTD * 3.0, digi,
-                                           FlightControlSystem{}, fcsState);
-            // Nose down (hold on runway)
-            ManeuverPrimitives::SetPstick(-2.0, 5.0, CommandType::GCommand, digi, as);
+
+            // Keep straight on runway heading. Below 30 kts the velocity
+            // heading (sigma) is unreliable (EOM singularity at 0 speed),
+            // so don't steer. Above 30 kts, use body yaw (psi) instead of
+            // sigma — psi is the actual aircraft heading and is stable at
+            // all speeds, while sigma (velocity-vector heading) is noisy
+            // at low speed and drifts with minor lateral velocity.
+            if (as.vcas > 30.0) {
+                const double headingErr = headingError(go.runwayHeading, as.kin.psi);
+                digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD / 20.0));
+            } else {
+                digi.rStick = 0.0;
+            }
+
+            // Hold attitude neutral on the ground.
+            digi.pStick = 0.0;
             fcsState.maxRoll = 0.0;
 
             // Check for rotation speed
-            // Estimate rotation speed as 1.1 * stallSpeed (simplified)
             const double rotationSpeed = 1.1 * (as.aero.stallSpeed > 0 ? as.aero.stallSpeed : 130.0);
             if (as.vcas >= rotationSpeed) {
                 go.phase = GroundOpsPhase::Rotation;
@@ -177,14 +186,24 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
         }
 
         case GroundOpsPhase::Rotation: {
-            // Pull up — rotate to climb attitude
+            // Pull up — rotate to climb attitude.
+            //
+            // The previous code used SetPstick(3.0, maxGs, GCommand) which
+            // passes through the sqrt G-command mapping: stickCmd = sqrt((3-1)/(9-1))
+            // = 0.5. At high speed the low-speed authority factor saturates at
+            // 1.0, giving pstick = 0.5 — too weak to rotate the nosewheel off
+            // the ground. The aircraft sat on the runway accelerating to 600+
+            // kts without lifting off.
+            //
+            // Fix: set pStick directly to 0.8 (strong but not max deflection).
+            // This produces enough elevator authority to rotate at V_R.
             digi.throttle = 1.5;
-            ManeuverPrimitives::SetPstick(3.0, digi.maxGs, CommandType::GCommand, digi, as);
+            digi.pStick = 0.8;
             fcsState.maxRoll = 0.0;
 
             // Check if airborne (altitude > groundZ + 10ft)
-            const double altAGL = -as.kin.z - groundZ;
-            if (altAGL > 10.0) {
+            const double rotAltAGL = -as.kin.z - groundZ;
+            if (rotAltAGL > 10.0) {
                 go.phase = GroundOpsPhase::AfterTakeoff;
                 go.gearRetracted = false;
             }
@@ -262,6 +281,21 @@ void RunLanding(DigiState& digi, const AircraftState& as,
 
             ManeuverPrimitives::TrackPointLanding(approachSpeed, digi, as, dt);
 
+            // Extend speed brakes if significantly above approach speed.
+            // The TrackPointLanding throttle logic cuts to idle when too
+            // fast, but the aircraft still accelerates from the descent
+            // (trading altitude for speed). Speed brakes provide the
+            // additional drag needed to slow to approach speed on a 3°
+            // glideslope. Without this, the aircraft arrives at the flare
+            // at 300+ kts instead of ~170 kts.
+            if (as.vcas > approachSpeed + 30.0) {
+                digi.speedBrakeCmd = 1.0;  // full extend
+            } else if (as.vcas > approachSpeed + 10.0) {
+                digi.speedBrakeCmd = 0.5;  // half extend
+            } else {
+                digi.speedBrakeCmd = -1.0;  // retract (clean for flare)
+            }
+
             // Check for flare altitude (FF triggers on altitude alone,
             // not distance — landme.cpp:1036)
             if (altAGL < kFlareAltFt) {
@@ -272,18 +306,30 @@ void RunLanding(DigiState& digi, const AircraftState& as,
         }
 
         case GroundOpsPhase::Flare: {
-            // FF flare: tiny constant pitch-down + idle throttle
-            // (landme.cpp:1123: pStick = -0.01685393258427)
-            // The previous code called SetPstick(1.0, GCommand) which
-            // produces ZERO pstick due to the sqrt mapping in SetPstick
-            // (stickCmd = clamp(1.0, ±maxGs) = 1.0 → sqrt((1-1)/...) = 0).
-            digi.throttle = 0.0;
-            digi.pStick = -0.02;  // tiny pitch-down to settle onto runway
+            // Flare: arrest the descent rate by pitching toward level flight.
+            //
+            // The previous code set pStick = -0.02 (pitch DOWN) which is the
+            // OPPOSITE of a flare — it flew the aircraft into the ground at
+            // full descent rate. FreeFalcon's pStick = -0.0169 constant
+            // (landme.cpp:1123) works in FF because it's a tiny bias on top
+            // of an already-decelerating pitch attitude, not the primary
+            // flare command.
+            //
+            // Here we use GammaHold(0) to command a level flight path (gamma
+            // → 0). This naturally pitches UP to arrest the descent, with the
+            // FCS's G-limiter preventing excessive pull. As the aircraft
+            // settles the last few feet, the gamma error drops to zero and
+            // the pitch relaxes to a gentle touchdown attitude.
+            digi.throttle = 0.0;  // idle — no thrust during flare
+
+            // Command level flight path (gamma = 0) to arrest descent.
+            // GammaHold handles the G-limiting and integral smoothing.
+            ManeuverPrimitives::GammaHold(0.0, digi, as, digi.maxGs);
+
+            // Wings level — direct proportional, no FCS gain dependency.
             fcsState.maxRoll = 0.0;
-            // Wings level
             const double rollDeg = as.kin.phi * RTD;
-            digi.rStick = -rollDeg * 2.0 * DTR;
-            digi.rStick = std::max(-1.0, std::min(1.0, digi.rStick));
+            digi.rStick = std::max(-1.0, std::min(1.0, -rollDeg * 2.0 * DTR));
 
             // Check for touchdown — the ground clamp in eom.cpp holds
             // the aircraft at ~5 ft AGL (strut compression), so use 10 ft
@@ -316,10 +362,10 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             digi.wheelBrakes = (as.vcas > 5.0);  // release brakes below 5 kts (stop)
             // Extend speed brakes for extra drag during rollout.
             digi.speedBrakeCmd = (as.vcas > 30.0) ? 1.0 : 0.0;
-            // Keep straight on runway heading
-            const double headingErr = headingError(go.runwayHeading, as.kin.sigma);
-            ManeuverPrimitives::SetRstick(headingErr * RTD * 3.0, digi,
-                                           FlightControlSystem{}, fcsState);
+            // Keep straight on runway heading. Use body yaw (psi) for the
+            // same reason as TakeoffRoll — sigma is noisy at low speed.
+            const double headingErr = headingError(go.runwayHeading, as.kin.psi);
+            digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD / 20.0));
             // Hold attitude level — do NOT push negative G (the aircraft
             // is on the ground; pushing negative G drives it underground
             // because the F4Flight flight model has no ground reaction force).

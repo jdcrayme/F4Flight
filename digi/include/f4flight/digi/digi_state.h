@@ -19,7 +19,9 @@
 #include "f4flight/digi/digi_skill.h"
 #include "f4flight/digi/digi_entity.h"
 #include "f4flight/digi/ground/ground_ops.h"
+#include "f4flight/digi/ground/ag_attack_phase.h"
 #include "f4flight/digi/comms/mailbox.h"
+#include "f4flight/digi/wingman/wingman_state.h"
 
 namespace f4flight {
 namespace digi {
@@ -169,6 +171,12 @@ struct DigiState {
     // --- Ground ops state (Phase 1-2) ---
     GroundOpsState groundOps;
 
+    // --- A/G attack phase (Round-3 structural addition — DIGI_AUDIT_ROUND3.md §3.3) ---
+    // Separate from GroundOpsPhase to avoid FreeFalcon's quirk of reusing
+    // the onStation enum for both landing and A/G. The future GroundMnvr
+    // mode will drive this state machine.
+    AgAttackPhase agAttackPhase{AgAttackPhase::NotThereYet};
+
     // --- Communication (Phase 1) ---
     Mailbox mailbox;           // incoming messages from ATC, flight lead, etc.
     EntityId selfId{kInvalidEntityId};  // this aircraft's entity ID (for addressing)
@@ -194,6 +202,12 @@ struct DigiState {
     double   formRelAz{0.0};     // desired bearing from lead (rad)
     double   formRelEl{0.0};     // desired elevation from lead (rad)
     double   formRange{500.0};   // desired range from lead (ft)
+
+    // --- Wingman command state (Round-3 structural addition — §3.2) ---
+    // Populated by receiveOrders() when Flight* messages arrive. Read by
+    // the future AiRunDecisionRoutines / AiFollowLead / AiPerformManeuver
+    // modes (unported). The Wingy and FollowOrders modes will consume this.
+    WingmanState wingman;
 
     void reset() noexcept {
         pStick = rStick = yPedal = 0.0;
@@ -251,6 +265,10 @@ struct DigiState {
         formRelAz = 0.0;
         formRelEl = 0.0;
         formRange = 500.0;
+        // A/G attack phase (Round-3)
+        agAttackPhase = AgAttackPhase::NotThereYet;
+        // Wingman command state (Round-3)
+        wingman.reset();
     }
 };
 

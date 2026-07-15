@@ -178,25 +178,29 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     ProcessATCMessages(state_, state_.mailbox);
 
     // --- 1. Ground avoidance ---
-    // FreeFalcon explicitly disables GroundCheck during LandingMode
-    // (dlogic.cpp:49-52: "if (curMode != LandingMode) GroundCheck(); else
-    // groundAvoidNeeded = FALSE;"). Landing owns its own terrain logic
-    // (glideslope, flare, rollout) and operates below the 500 ft
-    // kMinClearance threshold, so GroundCheck would pre-empt the controlled
-    // descent with a PullUp every time the aircraft descends through 500 ft
-    // on final approach.
+    // FreeFalcon explicitly disables GroundCheck during LandingMode AND
+    // TakeoffMode (dlogic.cpp:49-52: the ATC state machine owns terrain
+    // logic for both). TakeoffRoll/Rotation/AfterTakeoff operate on the
+    // ground or in the early climbout where the aircraft is below the 500 ft
+    // kMinClearance threshold — GroundCheck would trigger a PullUp every
+    // frame, fighting the takeoff roll with max-G pitch commands and
+    // producing the erratic pitch/yaw seen at takeoff start.
     //
-    // We check state_.groundOps.phase (set by commandLanding) rather than
-    // activeMode_ (which hasn't been resolved yet this frame).
-    const bool isLanding = (state_.groundOps.phase == GroundOpsPhase::Approach ||
-                            state_.groundOps.phase == GroundOpsPhase::Flare ||
-                            state_.groundOps.phase == GroundOpsPhase::Touchdown ||
-                            state_.groundOps.phase == GroundOpsPhase::Rollout ||
-                            state_.groundOps.phase == GroundOpsPhase::VacatingRunway);
+    // We check state_.groundOps.phase (set by commandTakeoff/commandLanding)
+    // rather than curMode_ (which hasn't been resolved yet this frame).
+    const bool isGroundOps = (state_.groundOps.phase == GroundOpsPhase::TakeoffRoll ||
+                              state_.groundOps.phase == GroundOpsPhase::Rotation ||
+                              state_.groundOps.phase == GroundOpsPhase::AfterTakeoff ||
+                              state_.groundOps.phase == GroundOpsPhase::LiningUp ||
+                              state_.groundOps.phase == GroundOpsPhase::Approach ||
+                              state_.groundOps.phase == GroundOpsPhase::Flare ||
+                              state_.groundOps.phase == GroundOpsPhase::Touchdown ||
+                              state_.groundOps.phase == GroundOpsPhase::Rollout ||
+                              state_.groundOps.phase == GroundOpsPhase::VacatingRunway);
 
     bool pullingUp = false;
-    if (isLanding) {
-        // Landing owns terrain logic — suppress ground avoid.
+    if (isGroundOps) {
+        // Ground ops owns terrain logic — suppress ground avoid.
         state_.groundAvoidNeeded = false;
         state_.pullupTimer = 0.0;
     } else {
@@ -211,7 +215,7 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
 
     // --- 3. Actions ---
     if (!pullingUp) {
-        switch (activeMode_) {
+        switch (curMode_) {
             case DigiMode::Waypoint:
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
@@ -234,6 +238,10 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 runLanding(as, dt, fcsState, groundZ);
                 break;
             case DigiMode::GroundAvoid:
+                // Documented no-op: ground avoidance runs as a concurrent
+                // overlay in compute() (RunGroundAvoid → pullingUp), not as
+                // a dispatched mode. This case is reachable only via
+                // forceMode(GroundAvoid) when there is no terrain danger.
                 break;
             case DigiMode::MissileEngage:
                 runMissileEngage(as, dt, fcs, fcsState);
@@ -342,22 +350,44 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
 
 // ===========================================================================
 // resolveMode — priority-stack mode arbitration
+//
+// Port of FreeFalcon dlogic.cpp RunDecisionRoutines (lines 729-790).
+//
+// Architecture:
+//   1. If forcedMode_ set (testing override), curMode_ = forcedMode_, return.
+//   2. Otherwise, reset nextMode_ and walk the priority-ordered check
+//      sequence, calling addMode() for each match. addMode() enforces
+//      the FreeFalcon interlock rules (Bugout sticky, Landing↔WVR
+//      interlock, standard < priority).
+//   3. addMode(Waypoint) is always queued last as the lowest-priority
+//      fallback (matching FF RunDecisionRoutines ending).
+//   4. resolveModeConflicts() copies nextMode_ → curMode_ and snapshots
+//      lastMode_ for next frame's newTurn detection.
+//
+// Behavior preservation:
+//   The check order is the SAME as the previous flat if-else chain. Because
+//   addMode() only accepts a new mode if it has higher priority (smaller
+//   value) than the currently-queued nextMode_, and the checks are ordered
+//   highest-priority-first, the FIRST matching check still wins — exactly
+//   as the old early-return chain behaved.
+//
+//   The BVR-vs-WVR overlap region (8..35 NM) is preserved by structuring the
+//   offensive block as `if (BvrEngageCheck) ... else if (range < maxAAWpnRange)`
+//   so when BVR matches, the WVR sub-branch is skipped entirely (matching
+//   the old early return). Without this, addMode(WVREngage) would override
+//   addMode(BVREngage) since WVREngage has higher priority.
 // ===========================================================================
 void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
                              double dt) {
-    // If a mode is forced (testing), use it.
+    // If a mode is forced (testing), use it directly — bypass the priority
+    // stack and interlocks. (FF: forcedMode is a debug/scripting override.)
     if (forcedMode_ != DigiMode::NoMode) {
-        activeMode_ = forcedMode_;
+        curMode_ = forcedMode_;
         return;
     }
 
-    // Priority stack (highest priority first):
-    //   1. MissileDefeat  — incoming missile
-    //   2. GunsJink       — guns threat
-    //   3. Takeoff/Landing — ground ops (when active)
-    //   4. WVREngage      — target within visual range
-    //   5. Waypoint       — default navigation
-    // GroundAvoid is handled separately in compute() (always pre-empts).
+    // Reset the queue for this frame's resolution pass.
+    nextMode_ = DigiMode::NoMode;
 
     // --- Resolve self entity ---
     // (Same logic as compute() — kept inline to avoid passing it through.)
@@ -446,8 +476,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
 
     if (selfEntity && state_.incomingMissile) {
         if (MissileDefeatCheck(state_, *selfEntity, dt)) {
-            activeMode_ = DigiMode::MissileDefeat;
-            return;
+            addMode(DigiMode::MissileDefeat);
         }
     }
 
@@ -484,8 +513,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
 
     if (selfEntity && state_.gunsThreat) {
         if (GunsJinkCheck(state_, *selfEntity)) {
-            activeMode_ = DigiMode::GunsJink;
-            return;
+            addMode(DigiMode::GunsJink);
         }
     }
 
@@ -501,8 +529,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     if (!collTarget) collTarget = wvrTarget_;
     if (selfEntity && collTarget && !collTarget->isDead) {
         if (CollisionCheck(state_, *selfEntity, *collTarget)) {
-            activeMode_ = DigiMode::CollisionAvoid;
-            return;
+            addMode(DigiMode::CollisionAvoid);
         }
     }
 
@@ -512,14 +539,12 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     const auto gp = state_.groundOps.phase;
     if (gp == GroundOpsPhase::TakeoffRoll || gp == GroundOpsPhase::Rotation ||
         gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp) {
-        activeMode_ = DigiMode::Takeoff;
-        return;
+        addMode(DigiMode::Takeoff);
     }
     if (gp == GroundOpsPhase::Approach || gp == GroundOpsPhase::Flare ||
         gp == GroundOpsPhase::Touchdown || gp == GroundOpsPhase::Rollout ||
         gp == GroundOpsPhase::VacatingRunway) {
-        activeMode_ = DigiMode::Landing;
-        return;
+        addMode(DigiMode::Landing);
     }
 
     // ===================================================================
@@ -569,28 +594,34 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
             ? state_.maxAAWpnRange
             : 35.0 * 6076.0;  // default: AIM-120 RMax (35 NM)
 
-        if (range < maxAAWpnRangeFt) {
-            // --- BVR engagement (beyond 8 NM) ---
-            // FF bvrengage.cpp:46-216: enter BvrEngage when target is beyond
-            // 8 NM and within engageRange. Higher priority than MissileEngage
-            // in FF's mode stack (BVREngage=16, MissileEngage=11), but we
-            // check BVR first here because BVR is the superset — it includes
-            // missile firing via FireControl. When within 8 NM (RAP distance),
-            // BVR defers to MissileEngage/RollAndPull internally.
-            if (range > 8.0 * 6076.0) {
-                wvrTarget_ = tgt;
-                activeMode_ = DigiMode::BVREngage;
-                return;
-            }
-
+        // --- BVR engagement (8 NM .. engageRange) ---
+        // FF bvrengage.cpp:46-216: enter BvrEngage when the target is beyond
+        // the RAP distance (8 NM) and within engageRange = max(maxAAWpnRange
+        // × 1.3, 45 NM). This is checked BEFORE the `range < maxAAWpnRangeFt`
+        // guard below so BVR can engage out to 45 NM even when the host's
+        // maxAAWpnRange is only 35 NM — previously the inline `range > 8 NM`
+        // check was nested inside `range < maxAAWpnRangeFt`, which silently
+        // capped BVR at 35 NM and left BvrEngageCheck() as dead code.
+        // Inside 8 NM, BvrEngageCheck returns false and the WVR-family checks
+        // (Missile/Merge/Guns/WVR) below handle the engagement.
+        //
+        // The if/else-if structure here is CRITICAL: when BVR matches, the
+        // WVR sub-branch is skipped entirely. Without this, addMode(WVREngage)
+        // (priority 10) would override addMode(BVREngage) (priority 11) in
+        // the 8..35 NM overlap region, since WVREngage has higher priority.
+        // (The old code's early return achieved the same effect.)
+        if (BvrEngageCheck(state_, *selfEntity, *tgt, maxAAWpnRangeFt)) {
+            wvrTarget_ = tgt;
+            addMode(DigiMode::BVREngage);
+        }
+        else if (range < maxAAWpnRangeFt) {
             // --- MissileEngage check (within 8 NM, beyond gun range) ---
             // Only enter MissileEngage if we have an SMS with actual missiles.
             if (sms_ && sms_->hasWeaponClass(WeaponClass::AimWpn)) {
                 if (MissileEngageCheck(state_, *selfEntity, *tgt, *sms_, true) &&
                     range > 3500.0) {
                     wvrTarget_ = tgt;
-                    activeMode_ = DigiMode::MissileEngage;
-                    return;
+                    addMode(DigiMode::MissileEngage);
                 }
             }
 
@@ -598,8 +629,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
             // FF merge.cpp:9-52: enter Merge when range ≤ ~1000 ft, ata < 45°
             if (MergeCheck(state_, *selfEntity, *tgt)) {
                 wvrTarget_ = tgt;
-                activeMode_ = DigiMode::Merge;
-                return;
+                addMode(DigiMode::Merge);
             }
 
             // --- Accel check (too slow in combat) ---
@@ -611,19 +641,82 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
             WeaponSpec gun = gunSpec();  // default: M61, 510 rounds
             if (GunsEngageCheck(state_, *selfEntity, *tgt, gun, true)) {
                 wvrTarget_ = tgt;
-                activeMode_ = DigiMode::GunsEngage;
-                return;
+                addMode(DigiMode::GunsEngage);
             }
 
             // --- WVREngage (default offensive mode within 8 NM) ---
+            // Always queued as the offensive fallback within maxAAWpnRange.
+            // addMode() priority resolution ensures any higher-priority
+            // offensive mode (MissileEngage/Merge/GunsEngage) queued above
+            // wins; if none matched, WVREngage wins.
             wvrTarget_ = tgt;
-            activeMode_ = DigiMode::WVREngage;
-            return;
+            addMode(DigiMode::WVREngage);
         }
     }
 
-    // Default: waypoint navigation
-    activeMode_ = DigiMode::Waypoint;
+    // --- Waypoint (lowest-priority fallback) ---
+    // FF RunDecisionRoutines ends by queuing WaypointMode as the default.
+    // addMode() priority resolution ensures any higher-priority mode queued
+    // above wins; if nothing matched, Waypoint wins.
+    addMode(DigiMode::Waypoint);
+
+    // --- Resolve queued mode → curMode_ for this frame ---
+    resolveModeConflicts();
+}
+
+// ===========================================================================
+// addMode — queue a mode for next frame, respecting priority + interlocks.
+// Port of FreeFalcon dlogic.cpp:729-762 (DigitalBrain::AddMode).
+//
+// Rules (in FreeFalcon order):
+//   1. BugoutMode is sticky — can't be bumped except by MissileDefeat
+//      (TJL 11/08/03: keep BugoutMode set, allow MissileDefeat override)
+//   2. LandingMode can't be bumped by WVR-family engagements once set
+//      (2000-11-17 S.G.: keep Landing sticky vs defensive + engage modes)
+//   3. Don't alternate between Landing and WVR each frame
+//      (ME123: prevent ResolveModeConflicts from flooding ATC status flips)
+//   4. Standard priority: only accept if newMode < nextMode (smaller = higher)
+// ===========================================================================
+void DigiBrain::addMode(DigiMode newMode) {
+    // BugoutMode is sticky — can't be bumped except by MissileDefeat
+    if (nextMode_ == DigiMode::Bugout && newMode != DigiMode::MissileDefeat) {
+        return;
+    }
+
+    // LandingMode can't be bumped by WVR-family engagements once set.
+    // (WVR-family = MissileEngage..WVREngage, the offensive engagement modes.)
+    if (nextMode_ == DigiMode::Landing &&
+        newMode >= DigiMode::MissileEngage && newMode <= DigiMode::WVREngage) {
+        return;
+    }
+
+    // Don't alternate between Landing and WVR each frame.
+    // (Without this, ResolveModeConflicts would send noATC when entering
+    //  WvrEngage, alternating between Landing and WvrEngage each frame.)
+    if (curMode_ == DigiMode::Landing && newMode == DigiMode::WVREngage) {
+        return;
+    }
+
+    // Standard priority: keep the smaller (higher-priority) mode.
+    // NoMode is 99 (largest), so the first addMode() always accepts.
+    if (newMode < nextMode_) {
+        nextMode_ = newMode;
+    }
+}
+
+// ===========================================================================
+// resolveModeConflicts — copy nextMode_ → curMode_, snapshot lastMode_.
+// Port of FreeFalcon dlogic.cpp:764-790 (DigitalBrain::ResolveModeConflicts).
+//
+// After this call:
+//   - curMode_  = the mode resolveMode() queued for this frame
+//   - lastMode_ = the previous frame's curMode_ (for newTurn detection)
+//   - nextMode_ = NoMode (ready for next frame's queueing pass)
+// ===========================================================================
+void DigiBrain::resolveModeConflicts() {
+    lastMode_ = curMode_;
+    curMode_ = nextMode_;
+    nextMode_ = DigiMode::NoMode;
 }
 
 // ===========================================================================
@@ -661,12 +754,6 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
                                                 state_, as, fcs, fcsState, state_.maxGs);
     ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
                                   state_, as, 200.0, 800.0, dt, 700.0);
-}
-
-void DigiBrain::runGroundAvoid(const AircraftState& as, double dt,
-                                FcsState& fcsState) {
-    RunGroundAvoid(state_, as, 0.0, state_.cornerSpeed, dt,
-                   fcsState, state_.maxGs);
 }
 
 void DigiBrain::runMissileDefeat(const AircraftState& as, double dt,

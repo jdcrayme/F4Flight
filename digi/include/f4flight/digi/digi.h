@@ -47,8 +47,10 @@
 #include "f4flight/digi/ground/ground_avoid.h"
 #include "f4flight/digi/ground/ground_ops.h"
 #include "f4flight/digi/ground/ag_doctrine.h"
+#include "f4flight/digi/ground/ag_attack_phase.h"
 
 #include "f4flight/digi/formation/formation_geometry.h"
+#include "f4flight/digi/wingman/wingman_state.h"
 
 #include "f4flight/digi/defensive/missile_defeat.h"
 #include "f4flight/digi/defensive/guns_jink.h"

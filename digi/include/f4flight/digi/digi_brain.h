@@ -278,7 +278,7 @@ public:
     // 9. Read-only state access (const only)
     // =======================================================================
 
-    DigiMode activeMode() const { return activeMode_; }
+    DigiMode activeMode() const { return curMode_; }
     const DigiState& state() const { return state_; }
     std::size_t currentWaypoint() const { return curWp_; }
     bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
@@ -313,7 +313,9 @@ public:
         state_.incomingMissile = nullptr;
         state_.gunsThreat = nullptr;
         curWp_ = 0;
-        activeMode_ = DigiMode::Waypoint;
+        curMode_ = DigiMode::Waypoint;
+        nextMode_ = DigiMode::NoMode;
+        lastMode_ = DigiMode::Waypoint;
         forcedMode_ = DigiMode::NoMode;
         frameInputs_ = FrameInputs{};
         missileEntityAuto_.reset();
@@ -451,14 +453,41 @@ private:
     std::optional<DigiEntity> gunsEntityAuto_;
     std::optional<DigiEntity> targetEntityAuto_;
 
-    DigiMode activeMode_{DigiMode::Waypoint};
+    // --- Priority-stack mode arbitration (port of FF dlogic.cpp:729-790) ---
+    // curMode_  : the resolved mode for THIS frame (set by resolveModeConflicts)
+    // nextMode_ : the mode being queued for next frame (set by addMode)
+    // lastMode_ : the mode from last frame (for newTurn detection)
+    //
+    // activeMode() accessor returns curMode_ for backward compatibility.
+    DigiMode curMode_{DigiMode::Waypoint};    // resolved mode this frame
+    DigiMode nextMode_{DigiMode::NoMode};     // mode being queued for next frame
+    DigiMode lastMode_{DigiMode::Waypoint};   // mode from last frame (newTurn detection)
+
+    // AddMode — queue a mode for next frame, respecting priority + interlocks.
+    // Port of FreeFalcon dlogic.cpp:729-762.
+    // Rules:
+    //   1. Standard priority: only accept if newMode < nextMode (smaller = higher priority)
+    //   2. BugoutMode is sticky: can't be bumped except by MissileDefeat
+    //   3. LandingMode can't be bumped by WVR engagements once set
+    //   4. Don't alternate between Landing and WVR each frame
+    void addMode(DigiMode newMode);
+
+    // Resolve queued mode: copy nextMode -> curMode, reset nextMode.
+    // Port of FreeFalcon dlogic.cpp:764-790.
+    void resolveModeConflicts();
+
     DigiMode forcedMode_{DigiMode::NoMode};
 
     // --- Per-mode actions ---
+    // NOTE: there is intentionally no runGroundAvoid(). Ground avoidance is
+    // NOT a dispatched mode — it runs as a concurrent overlay in compute()
+    // (RunGroundAvoid sets `pullingUp`, and the per-mode switch is skipped
+    // entirely while pullingUp is true). The `case DigiMode::GroundAvoid`
+    // in the switch is therefore a documented no-op, reachable only via
+    // forceMode(GroundAvoid) when there is no terrain danger (in which case
+    // doing nothing is correct).
     void runWaypoint(const AircraftState& as, double dt,
                      const FlightControlSystem& fcs, FcsState& fcsState);
-    void runGroundAvoid(const AircraftState& as, double dt,
-                        FcsState& fcsState);
     void runMissileDefeat(const AircraftState& as, double dt,
                           const FlightControlSystem& fcs, FcsState& fcsState);
     void runGunsJink(const AircraftState& as, double dt,

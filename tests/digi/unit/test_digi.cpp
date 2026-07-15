@@ -379,17 +379,25 @@ protected:
 };
 
 TEST_F(CombatPrimitivesTest, TrackPointCommandsHeadingToTarget) {
-    // Target is due north, 10 NM, same altitude
+    // Target is due north (+Y), 10 NM, same altitude. In F4Flight's NED
+    // frame, heading = atan2(ydot, xdot), so north (+Y) is heading PI/2.
+    // Set the aircraft heading to PI/2 (north) so it's already pointed
+    // at the target → small heading error → small rStick.
+    // (The old test used sigma=0 which is EAST in F4Flight — a 90° error
+    // that produced a large rStick. It only passed because the old
+    // LevelTurn started in phase 0 "level wings" which delayed the turn.)
     const double targetX = 0.0;
     const double targetY = 60000.0;  // 10 NM north
     const double targetAlt = 10000.0;
 
+    state.kin.sigma = PI / 2.0;  // north — aligned with target
+    state.kin.sinsig = 1.0;
+    state.kin.cossig = 0.0;
+
     ManeuverPrimitives::TrackPoint(targetX, targetY, targetAlt,
                                     digi, state, fcs, fcsState, 9.0);
 
-    // Aircraft heading is 0 (north), target is north → small heading error
-    // rStick should be near 0 (already pointed at target)
-    // pStick should be near 0 (same altitude)
+    // Already pointed at target → small heading error → small rStick
     EXPECT_LT(std::fabs(digi.rStick), 0.5);
     EXPECT_LT(std::fabs(digi.pStick), 0.5);
 }

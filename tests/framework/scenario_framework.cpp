@@ -246,7 +246,11 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 // draws missile tracks (moving points + trails) and bearing
                 // lines from them.
                 std::vector<ThreatEntity> threats;
-                const auto& ds = sc.brain().state();
+                // Bind to a const DigiBrain& so overload resolution picks
+                // the non-deprecated const state() overload (the non-const
+                // state() is [[deprecated]] — see digi_brain.h).
+                const auto& brain = sc.brain();
+                const auto& ds = brain.state();
                 if (ds.incomingMissile) {
                     threats.push_back({"missile",
                         ds.incomingMissile->x, ds.incomingMissile->y,
