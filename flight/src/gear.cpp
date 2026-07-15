@@ -36,9 +36,9 @@ double GearModel::computeMinHeight(const GearState& gear) const {
 double GearModel::calcMuFric(bool wheelBrakes, bool parkingBrake,
                              bool onObject, bool overRunway) {
     if (onObject) return 20.0;          // carrier deck -- effectively infinite
-    if (parkingBrake) return 0.4;       // parking brake
-    if (wheelBrakes)  return 0.4;       // toe brakes
-    if (overRunway)   return 0.04;      // rolling on paved runway
+    if (parkingBrake) return 0.7;       // parking brake (aggressive)
+    if (wheelBrakes)  return 0.7;       // toe brakes (carbon brakes: 0.6-0.8)
+    if (overRunway)   return 0.04;      // rolling resistance on paved runway
     return 0.5;                         // grass / dirt
 }
 

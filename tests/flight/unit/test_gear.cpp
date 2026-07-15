@@ -35,8 +35,10 @@ TEST_F(GearTest, FrictionRolling) {
 }
 
 TEST_F(GearTest, FrictionBrakes) {
-    EXPECT_NEAR(GearModel::calcMuFric(true, false, false, true), 0.4, 1e-9);
-    EXPECT_NEAR(GearModel::calcMuFric(false, true, false, true), 0.4, 1e-9);
+    // Brake friction increased from 0.4 to 0.7 for realistic deceleration
+    // (carbon brakes: 0.6-0.8 friction coefficient)
+    EXPECT_NEAR(GearModel::calcMuFric(true, false, false, true), 0.7, 1e-9);
+    EXPECT_NEAR(GearModel::calcMuFric(false, true, false, true), 0.7, 1e-9);
 }
 
 TEST_F(GearTest, FrictionCarrier) {

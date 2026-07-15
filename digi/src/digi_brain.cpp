@@ -188,10 +188,14 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     //
     // We check state_.groundOps.phase (set by commandTakeoff/commandLanding)
     // rather than curMode_ (which hasn't been resolved yet this frame).
-    const bool isGroundOps = (state_.groundOps.phase == GroundOpsPhase::TakeoffRoll ||
+    const bool isGroundOps = (state_.groundOps.phase == GroundOpsPhase::Parking ||
+                              state_.groundOps.phase == GroundOpsPhase::RequestTaxi ||
+                              state_.groundOps.phase == GroundOpsPhase::TaxiToRunway ||
+                              state_.groundOps.phase == GroundOpsPhase::HoldingShort ||
+                              state_.groundOps.phase == GroundOpsPhase::LiningUp ||
+                              state_.groundOps.phase == GroundOpsPhase::TakeoffRoll ||
                               state_.groundOps.phase == GroundOpsPhase::Rotation ||
                               state_.groundOps.phase == GroundOpsPhase::AfterTakeoff ||
-                              state_.groundOps.phase == GroundOpsPhase::LiningUp ||
                               state_.groundOps.phase == GroundOpsPhase::Approach ||
                               state_.groundOps.phase == GroundOpsPhase::Flare ||
                               state_.groundOps.phase == GroundOpsPhase::Touchdown ||
@@ -538,7 +542,9 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     // ===================================================================
     const auto gp = state_.groundOps.phase;
     if (gp == GroundOpsPhase::TakeoffRoll || gp == GroundOpsPhase::Rotation ||
-        gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp) {
+        gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp ||
+        gp == GroundOpsPhase::TaxiToRunway || gp == GroundOpsPhase::HoldingShort ||
+        gp == GroundOpsPhase::Parking || gp == GroundOpsPhase::RequestTaxi) {
         addMode(DigiMode::Takeoff);
     }
     if (gp == GroundOpsPhase::Approach || gp == GroundOpsPhase::Flare ||

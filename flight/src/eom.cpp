@@ -176,15 +176,30 @@ void EquationsOfMotion::calculateVt(double dt, double muFric, double singam,
         // Ground: friction. The weight-on-wheels factor is nzcgs (normal G).
         // At nzcgs=1.0 (sitting on ground) friction is MAXIMUM; as the aircraft
         // rotates and nzcgs drops below 1.0, weight shifts off the wheels and
-        // friction decreases. The previous formula used (1.0 - nzcgs) which
-        // INVERTED the logic — it gave zero friction at 1G (normal ground
-        // contact) and maximum friction at 0G (about to lift off). This caused
-        // the aircraft to never decelerate on the ground (brakes had no effect
-        // at 1G) and even accelerate if any thrust or descent energy remained.
+        // friction decreases.
+        //
+        // The previous formula had two bugs:
+        //   1. (1.0 - nzcgs) INVERTED the weight-on-wheels logic
+        //   2. A 0.8× multiplier on muFric reduced effective brake friction
+        //      from 0.4 to 0.32, giving only ~3.7 kts/s deceleration (drag only)
+        //      instead of the expected ~10+ kts/s with real braking.
+        //
+        // Fix: use nzcgs directly as the weight-on-wheels factor, and remove
+        // the 0.8× multiplier. The brake friction coefficient (0.7 in
+        // calcMuFric) now produces ~15 kts/s deceleration at full brakes,
+        // matching real aircraft performance.
         const double nzcgs = state.loads.nzcgs;
         const double sinbet = state.kin.sinbet;
-        const double weightOnWheels = std::max(0.0, std::min(1.0, nzcgs));
-        const double fric = (0.8 * muFric + std::fabs(0.8 * sinbet))
+        // Weight on wheels: at high speed the wings generate lift even on
+        // the ground, reducing nzcgs below 1.0 and thus reducing braking
+        // effectiveness. Real aircraft have this same issue — braking is
+        // less effective above liftoff speed. We enforce a minimum of 0.5
+        // (50% of weight always on the wheels via strut compression) so
+        // that braking is meaningful at high speed. Without this floor, an
+        // F-16 at 200 kts on the ground generates enough lift to reduce
+        // nzcgs to ~0.3, cutting brake effectiveness to near-zero.
+        const double weightOnWheels = std::max(0.5, std::min(1.0, nzcgs));
+        const double fric = (muFric + std::fabs(0.3 * sinbet))
                           * weightOnWheels * GRAVITY * dt;
         double netAccel = vtDot * dt - fric;
         double newVt = k.vt + netAccel;
@@ -241,7 +256,8 @@ void EquationsOfMotion::integratePosition(double dt, double cosgam, double singa
 // ---------------------------------------------------------------------------
 void EquationsOfMotion::update(double dt, PilotInput const& input,
                                AircraftState& state) const {
-    (void)input; // EOM does not read pilot input directly (FCS already wrote alpha/beta/pstab)
+    // NOTE: input IS used on the ground for nose-wheel steering (see below).
+    // In the air, the FCS has already processed input into body rates.
     if (!geom_ || !aux_) return;
 
     auto& k = state.kin;
@@ -255,6 +271,61 @@ void EquationsOfMotion::update(double dt, PilotInput const& input,
 
     // Quaternion integration
     calcBodyOrientation(dt, state);
+
+    // --- Ground clamp (attitude) ---
+    // When on the ground, clamp body attitude to prevent the quaternion
+    // singularity at phi=±180° that occurs when roll rate is near zero.
+    // FreeFalcon does this in AirframeClass ground handling: zero the body
+    // rates, clamp roll to 0, and hold the heading steady. Without this,
+    // tiny numerical perturbations in the quaternion produce 180° roll
+    // flips on the ground, which cause the AI steering to see a flipped
+    // heading and command full rudder — the "erratic spinning on the
+    // ground" behavior.
+    //
+    // The clamp only applies when the aircraft is within 5 ft of the ground.
+    // Above 5 ft AGL, even if gear.inAir hasn't transitioned yet, the aircraft
+    // is effectively airborne and needs full attitude freedom to rotate and
+    // climb. Without this altitude threshold, the clamp prevents the takeoff
+    // rotation from exceeding 10° pitch, which stalls light fighters (F-5,
+    // F-15C, MiG-21) that need 12-15° pitch to sustain a climb at low speed.
+    const double altAGL_ground = state.gear.groundZ_ft - k.z;
+    if (!state.gear.inAir && altAGL_ground < 5.0) {
+        // Zero roll and yaw rates on the ground (prevents the quaternion
+        // singularity at phi=±180°). DO NOT zero pitch rate (q) — the
+        // FCS needs q for pitch damping during rotation and climbout.
+        k.p = 0.0;
+        k.r = 0.0;
+        // Clamp roll to 0 (wings level on the ground)
+        k.phi = 0.0;
+        // Clamp pitch to a small nose-up attitude (for ground attitude)
+        // rather than letting it drift. Real aircraft sit at ~0-5° pitch
+        // on the ground. We allow up to 15° (takeoff rotation) then clamp.
+        k.theta = std::max(-2.0 * DTR, std::min(15.0 * DTR, k.theta));
+
+        // --- Nose-wheel steering ---
+        // On the ground, the rudder (input.rstick) controls the nose wheel,
+        // not the aerodynamic rudder. The FCS's aerodynamic roll/yaw control
+        // is zeroed above (k.p = k.r = 0), so we apply the rudder command
+        // directly to psi. This gives responsive ground steering without
+        // depending on aerodynamic forces (which are negligible at taxi
+        // speed). The steering rate is proportional to rstick and inversely
+        // proportional to speed (more authority at low speed, less at high
+        // speed — matching real nose-wheel steering).
+        //
+        // Max turn rate: 30°/s at full rudder at <30 kts, decreasing to
+        // 5°/s above 100 kts (rudder pedal travel is limited at high speed
+        // on real aircraft to prevent oversteering).
+        const double steerRate = (k.vt < 50.0) ? 30.0
+                              : (k.vt < 150.0) ? 30.0 * (150.0 - k.vt) / 100.0 + 5.0
+                              : 5.0;
+        k.psi += input.rstick * steerRate * DTR * dt;
+        // Wrap psi to [-PI, PI]
+        while (k.psi >  PI) k.psi -= 2.0 * PI;
+        while (k.psi < -PI) k.psi += 2.0 * PI;
+
+        // Rebuild the quaternion from the clamped Euler angles
+        k.quat = quatFromEuler(k.psi, k.theta, k.phi);
+    }
 
     // Recompute trig + DCM
     trigonometry(state);

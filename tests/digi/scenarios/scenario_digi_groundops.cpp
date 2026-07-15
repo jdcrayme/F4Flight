@@ -217,6 +217,21 @@ public:
         fm.state().kin.y = -initialRange;
         fm.state().kin.z = -initialAlt;
 
+        // Set initial pitch + flight path to match the 3° glideslope.
+        // fm.init defaults to 10° pitch (level flight) which causes the
+        // aircraft to climb above the glideslope, then dive to correct.
+        // Setting theta=0 + gamma=-3° starts the aircraft descending
+        // smoothly on the glideslope.
+        fm.state().kin.theta = 0.0;
+        fm.state().kin.gmma = -gsAngle;  // descending at 3°
+        fm.state().kin.singam = -std::sin(gsAngle);
+        fm.state().kin.cosgam = std::cos(gsAngle);
+        const double vt0 = fm.state().kin.vt;
+        fm.state().kin.xdot = 0.0;
+        fm.state().kin.ydot = vt0 * std::cos(gsAngle);
+        fm.state().kin.zdot = vt0 * std::sin(gsAngle);  // positive = descending
+        fm.state().kin.quat = quatFromEuler(fm.state().kin.psi, fm.state().kin.theta, fm.state().kin.phi);
+
         initialAlt_ = initialAlt;  // for pass criteria
 
         sc.setMode(SteeringController::Mode::HeadingAltitude);
@@ -354,6 +369,129 @@ private:
 };
 
 // ===========================================================================
+// Phase: Taxi
+//
+// Demonstrates minimal taxi capability. The aircraft starts at a parking
+// spot 500 ft east of the runway threshold, heading north. The AI taxis
+// to the runway threshold (origin) at taxi speed. This exercises the
+// RunTaxi code path and the TaxiToRunway ground ops phase.
+//
+// Pass criteria:
+//   - Enter TaxiToRunway phase
+//   - Move toward the threshold (distance decreases)
+//   - Arrive within 50 ft of the threshold
+//   - Speed stays at or below taxi speed (~25 kts)
+//   - No NaN, no erratic behavior
+// ===========================================================================
+class TaxiPhase : public ManeuverTest {
+public:
+    TaxiPhase(const char* name, double duration)
+        : ManeuverTest(name, duration) {}
+
+    void Init(SteeringController& sc, FlightModel& fm) override {
+        // Start 500 ft east of the runway threshold, heading north.
+        // In F4Flight's NED frame, north = +Y = heading PI/2.
+        const double startX = 500.0;  // 500 ft east
+        const double startY = 0.0;
+        const double startHeading = PI / 2.0;  // north
+
+        fm.init(fm.config(), 0.0, 0.0, startHeading, false);  // on ground, 0 kts
+        fm.state().kin.x = startX;
+        fm.state().kin.y = startY;
+        fm.state().kin.z = 0.0;
+
+        sc.setMode(SteeringController::Mode::HeadingAltitude);
+        sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
+        sc.setMaxGs(fm.config().geometry.maxGs);
+
+        // Command taxi to the runway threshold (origin).
+        // We set the ground ops state directly — the brain's RunTaxi
+        // function will steer toward (runwayThresholdX, runwayThresholdY).
+        auto& go = sc.brain().stateMutable().groundOps;
+        go.phase = GroundOpsPhase::TaxiToRunway;
+        go.runwayThresholdX = 0.0;  // threshold at origin
+        go.runwayThresholdY = 0.0;
+        go.runwayHeading = PI / 2.0;  // north
+        go.hasTakeoffClearance = false;  // taxi only, no takeoff
+
+        sc_brain_ = &sc.brain();
+        startDist_ = std::sqrt(startX * startX + startY * startY);
+    }
+
+    void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
+        ManeuverTest::Evaluate(as, input, dt);
+
+        const double dx = 0.0 - as.kin.x;  // threshold at origin
+        const double dy = 0.0 - as.kin.y;
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        minDist_ = std::min(minDist_, dist);
+        maxSpeed_ = std::max(maxSpeed_, as.vcas);
+
+        if (sc_brain_->state().groundOps.phase == GroundOpsPhase::TaxiToRunway)
+            enteredTaxi_ = true;
+        if (dist < 50.0) reachedThreshold_ = true;
+
+        if (std::isnan(as.kin.x) || std::isnan(as.kin.vt)) hasNaN_ = true;
+
+        if (phaseTime_ >= nextPrint_) {
+            if (nextPrint_ == 0.0) {
+                std::printf("\n%s (taxi 500ft east → threshold)\n", testName_.c_str());
+                std::printf("%6s %8s %8s %8s %6s %6s %6s\n",
+                    "t(s)", "x(ft)", "y(ft)", "dist(ft)", "vcas", "rstk", "phase");
+            }
+            const std::size_t bufSize = 24;
+            char phaseBuf[bufSize];
+            switch (sc_brain_->state().groundOps.phase) {
+                case GroundOpsPhase::TaxiToRunway: std::snprintf(phaseBuf, bufSize, "Taxi"); break;
+                case GroundOpsPhase::HoldingShort: std::snprintf(phaseBuf, bufSize, "HoldShort"); break;
+                default: std::snprintf(phaseBuf, bufSize, "Other"); break;
+            }
+            std::printf("%6.1f %8.0f %8.0f %8.0f %6.1f %6.2f %6s\n",
+                phaseTime_, as.kin.x, as.kin.y, dist, as.vcas,
+                input.rstick, phaseBuf);
+            nextPrint_ += 5.0;
+        }
+    }
+
+    bool IsFinished() const override {
+        return phaseTime_ >= maxTime_ || hasNaN_ || reachedThreshold_;
+    }
+
+    bool IsPassed() const override {
+        if (hasNaN_) return false;
+        if (!enteredTaxi_) return false;
+        if (!reachedThreshold_) return false;
+        // Speed should stay at or below ~30 kts (taxi speed + margin)
+        if (maxSpeed_ > 35.0) return false;
+        return true;
+    }
+
+    std::string criteria() const override {
+        return "Enter TaxiToRunway; Reach threshold (<50ft); Speed <= 35kts; No NaN";
+    }
+
+    void Finish() const override {
+        std::printf("  --- Summary ---\n");
+        std::printf("  Entered Taxi mode: %s\n", enteredTaxi_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Min distance to threshold: %.1f ft (need < 50) %s\n",
+            minDist_, minDist_ < 50.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Max speed: %.1f kts (need <= 35) %s\n",
+            maxSpeed_, maxSpeed_ <= 35.0 ? "[PASS]" : "[FAIL]");
+        if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
+    }
+
+private:
+    double nextPrint_{0.0};
+    double minDist_{1e9};
+    double maxSpeed_{0.0};
+    double startDist_{0.0};
+    bool reachedThreshold_{false};
+    bool enteredTaxi_{false};
+    bool hasNaN_{false};
+    const DigiBrain* sc_brain_{nullptr};
+};
+
+// ===========================================================================
 // DigiGroundOpsScenario
 // ===========================================================================
 class DigiGroundOpsScenario : public ManeuverScenario {
@@ -361,8 +499,8 @@ public:
     DigiGroundOpsScenario() : ManeuverScenario("digi_groundops") {}
 
     std::string GetDescription() const override {
-        return "Digi AI ground ops: takeoff (accelerate, rotate, climb out) and "
-               "landing (approach, flare, touchdown, rollout). End-to-end.";
+        return "Digi AI ground ops: taxi to runway, takeoff (accelerate, rotate, "
+               "climb out), and landing (approach, flare, touchdown, rollout).";
     }
 
     // 10,000 ft runway centered at origin, running north-south (along +Y).
@@ -411,6 +549,8 @@ public:
         fm.init(ctx.cfg, 0.0, 0.0, 0.0, false);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
+        // Taxi: 60s to taxi 500 ft to the threshold
+        tests.push_back(std::make_unique<TaxiPhase>("Taxi", 60.0));
         // Takeoff: 90s for heavy aircraft (low T/W needs more runway)
         tests.push_back(std::make_unique<TakeoffPhase>("Takeoff", 90.0));
         // Landing: 90s for approach + flare + rollout

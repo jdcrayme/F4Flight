@@ -108,6 +108,7 @@ struct GroundOpsState {
     double approachStartAlt{0.0};     // altitude when approach began
     double flareStartAlt{0.0};        // altitude when flare began
     double touchdownSpeed{0.0};       // speed at touchdown (kts)
+    double touchdownTimer{0.0};       // time since touchdown (s) — for nose settling
     bool gearDeployed{false};
 
     // ATC clearance
@@ -123,6 +124,8 @@ struct GroundOpsState {
         hasLandingClearance = false;
         currentTaxiNode = -1;
         targetTaxiNode = -1;
+        touchdownTimer = 0.0;
+        touchdownSpeed = 0.0;
     }
 };
 

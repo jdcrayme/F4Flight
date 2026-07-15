@@ -627,27 +627,18 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
     rCmd = std::max(-0.6, std::min(0.6, rCmd));
     digi.rStick = rCmd;
 
-    // Pitch: proportional elevation tracker + gamma-rate damping.
+    // Pitch: glideslope tracking with gamma-rate damping.
     //
-    // The pure-proportional tracker (ported from FF mnvers.cpp:33) Phugoid-
-    // oscillates in F4Flight's flight model. Adding a flight-path-angle rate
-    // term damps the Phugoid. The sign convention (NED, z-down):
+    // The pure elevation-angle tracker (SimpleTrackElevation) has too little
+    // gain at long range — at 3 NM, a 189 ft altitude error produces only
+    // 0.7° of pitch command. This lets the aircraft dive well below the
+    // glideslope before the pitch responds, creating a steep dive that the
+    // flare can't arrest.
     //
-    //   zdot > 0           = z increasing = altitude DECREASING (descending)
-    //   desiredZdot > 0    = the descent rate we WANT (3° glideslope)
-    //   zdotErr = zdot - desiredZdot
-    //     zdotErr > 0      = descending too fast → need pitch UP (positive)
-    //     zdotErr < 0      = descending too slow → need pitch DOWN (negative)
-    //
-    //   dampTerm = +kDamp * zdotErr / vt
-    //
-    // The previous code used dampTerm = -kDamp * zdotErr / vt, which INVERTED
-    // the damping. When the aircraft was on the glideslope but not yet
-    // descending (zdot=0, desiredZdot=15), the inverted damping produced a
-    // POSITIVE pitch command (pitch UP) — causing the aircraft to climb ABOVE
-    // the glideslope, then overshoot into a dive. This produced the initial
-    // 956→1032 ft climb seen in the landing scenario, followed by an
-    // accelerating descent that the flare couldn't arrest.
+    // Fix: add a direct altitude-error term (proportional to the altitude
+    // error in feet, not the elevation angle). This gives responsive
+    // glideslope tracking at any range. Combined with the gamma-rate
+    // damping, this produces a stable 3° descent.
     const double distXY = std::sqrt(xft * xft + yft * yft);
     const double elErr = SimpleTrackElevation(zft, distXY, state);
     const double vt = std::max(state.kin.vt, 100.0);  // avoid /0
@@ -655,12 +646,18 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
     const double zdotErr = state.kin.zdot - desiredZdot;  // >0 = descending too fast
     const double dampTerm = 0.5 * (zdotErr / vt);  // positive = pitch up to slow descent
 
-    // Pitch command: elevation error + gamma-rate damping.
-    // The previous clamp of [-0.3, +0.2] was too tight — it left insufficient
-    // pitch authority to hold the glideslope at high speed or to flare.
-    // Widened to [-0.5, +0.5] (full FCS authority for landing, which the
-    // G-limiter in SetPstick/GammaHold will further clamp to safe G).
-    digi.pStick = std::min(0.5, std::max(elErr + dampTerm, -0.5));
+    // Direct altitude-error term: zft is the NED z difference (target - current).
+    // zft < 0 = aircraft below glideslope (need pitch up).
+    // zft > 0 = aircraft above glideslope (need pitch down).
+    // Gain: 0.002 per ft of altitude error. At 100 ft below GS, this adds
+    // 0.2 to the pitch command — enough to correct quickly without oscillating.
+    const double altErrTerm = -zft * 0.002;
+
+    // Pitch command: elevation error + altitude-error term + gamma-rate damping.
+    // The altitude-error term provides the primary glideslope tracking;
+    // the elevation error provides fine-tuning near the threshold; the
+    // damping term prevents Phugoid oscillation.
+    digi.pStick = std::min(0.5, std::max(elErr + altErrTerm + dampTerm, -0.5));
 
     // Throttle: hold approach speed (error computed in kts — both targetSpeedKts
     // and state.vcas are KCAS, so no unit conversion needed here).
