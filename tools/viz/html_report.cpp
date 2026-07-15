@@ -720,9 +720,9 @@ function waypointsSvg(tr,sx,sy){
 // Helper: build SVG for threat tracks + bearing lines at current time
 function threatsSvg(tr,sx,sy,currentT){
   if(!tr.frames)return '';
-  // Collect unique missile tracks (type=missile moves; draw full trail)
-  // and static bearing lines (type=guns/target; draw line from aircraft to threat at currentT)
-  const missileTracks={}; // key=type -> [{x,y,t}]
+  // Collect tracks for moving entities (missile, lead, wingman)
+  // and bearing lines (guns/target) and static markers (slot)
+  const tracks={}; // key=type -> [{x,y,t}]
   const fi=findFrameIndex(tr,currentT);
   const acFrame=tr.frames[fi];
   let bearingLines='';
@@ -730,29 +730,39 @@ function threatsSvg(tr,sx,sy,currentT){
     const f=tr.frames[i];
     if(!f.threats)continue;
     for(const th of f.threats){
-      if(th.type==='missile'){
-        if(!missileTracks['missile'])missileTracks['missile']=[];
-        missileTracks['missile'].push({x:th.x,y:th.y,t:f.t});
+      if(th.type==='missile'||th.type==='lead'||th.type==='wingman'){
+        if(!tracks[th.type])tracks[th.type]=[];
+        tracks[th.type].push({x:th.x,y:th.y,t:f.t});
       }
     }
   }
+  // Color/style config per entity type
+  const style={
+    missile:{color:'#f44336',label:'missile',r:5},
+    lead:{color:'#4caf50',label:'lead',r:6},
+    wingman:{color:'#00e5ff',label:'wingman',r:5},
+    slot:{color:'#2196f3',label:'slot',r:5},
+    guns:{color:'#ff9800',label:'guns',r:5},
+    target:{color:'#9c27b0',label:'target',r:5},
+  };
   let svg='<g class="threats">';
-  // Missile trail
-  for(const key in missileTracks){
-    const track=missileTracks[key];
+  // Draw trails + current positions for moving entities (missile, lead, wingman)
+  for(const key in tracks){
+    const track=tracks[key];
     if(track.length<2)continue;
+    const st=style[key]||style.missile;
     let pts='';
     for(const p of track){pts+=(pts?' ':'')+sx(p.x).toFixed(1)+','+sy(p.y).toFixed(1);}
-    svg+=el('polyline',{points:pts,fill:'none',stroke:'#f44336','stroke-width':1.5,
-      'stroke-dasharray':'4,3',opacity:0.5});
-    // Current missile position
+    svg+=el('polyline',{points:pts,fill:'none',stroke:st.color,'stroke-width':1.5,
+      'stroke-dasharray':key==='missile'?'4,3':'none',opacity:0.5});
+    // Current position
     const cur=track[Math.min(track.length-1,fi)];
     if(cur){
-      svg+=el('circle',{cx:sx(cur.x),cy:sy(cur.y),r:5,fill:'#f44336',stroke:'#fff','stroke-width':1,opacity:0.9});
-      svg+=el('text',{x:sx(cur.x)+7,y:sy(cur.y)+4,fill:'#f44336','font-size':10},'missile');
+      svg+=el('circle',{cx:sx(cur.x),cy:sy(cur.y),r:st.r,fill:st.color,stroke:'#fff','stroke-width':1,opacity:0.9});
+      svg+=el('text',{x:sx(cur.x)+7,y:sy(cur.y)+4,fill:st.color,'font-size':10},st.label);
     }
   }
-  // Bearing lines to guns threats / targets at current frame
+  // Draw bearing lines (guns, target) + slot markers at current frame
   if(acFrame&&acFrame.threats){
     for(const th of acFrame.threats){
       if(th.type==='guns'){
@@ -765,6 +775,12 @@ function threatsSvg(tr,sx,sy,currentT){
           stroke:'#9c27b0','stroke-width':1,'stroke-dasharray':'2,2',opacity:0.7});
         svg+=el('rect',{x:sx(th.x)-5,y:sy(th.y)-5,width:10,height:10,fill:'#9c27b0',opacity:0.6,stroke:'#9c27b0'});
         svg+=el('text',{x:sx(th.x)+7,y:sy(th.y)+4,fill:'#9c27b0','font-size':10},'target');
+      }else if(th.type==='slot'){
+        // Blue diamond marker for desired formation slot
+        const cx=sx(th.x),cy=sy(th.y);
+        svg+=el('polygon',{points:cx+','+(cy-6)+' '+(cx+6)+','+cy+' '+cx+','+(cy+6)+' '+(cx-6)+','+cy,
+          fill:'none',stroke:'#2196f3','stroke-width':1.5,opacity:0.8});
+        svg+=el('text',{x:cx+8,y:cy+4,fill:'#2196f3','font-size':9},'slot');
       }
     }
   }

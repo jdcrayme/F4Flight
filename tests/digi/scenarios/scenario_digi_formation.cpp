@@ -1,19 +1,23 @@
 // f4flight - scenarios/scenario_digi_formation.cpp
 //
-// Digi AI formation following test: a wingman AI follows a flight lead.
+// Digi AI formation following test: 4-ship formation.
 //
-// This scenario verifies the AiFollowLead implementation:
-//   1. A flight lead flies a straight course at constant altitude + speed
-//   2. A wingman (the AI aircraft) starts offset from its formation slot
-//   3. The wingman AI (Wingy mode) should:
-//      - Enter Wingy mode
-//      - Fly toward its formation slot (relative to the lead)
-//      - Maintain formation position (stay within a tolerance of the slot)
-//      - Match the lead's speed and heading
+// This scenario verifies the AiFollowLead implementation with a 4-ship
+// wedge formation:
+//   - Slot 0: Flight lead (kinematic — flies straight at constant speed)
+//   - Slot 1: Wingman 1 (AI aircraft with full flight model) — right wing
+//   - Slot 2: Ghost wingman 2 (kinematic — flies perfect formation) — left wing
+//   - Slot 3: Ghost wingman 3 (kinematic — flies perfect formation) — trail
 //
-// The lead is a simple kinematic entity (no flight model) — it just flies
-// straight at a constant velocity. The wingman uses the full flight model
-// + digi AI to follow.
+// The AI wingman (slot 1) starts offset from its formation slot and must
+// close to the slot and maintain formation. The ghost wingmen fly perfect
+// formation (kinematic, no flight model) to show what a 4-ship looks like.
+//
+// Visualization (in the HTML report):
+//   - Green track + circle: flight lead
+//   - Blue diamond: desired slot position for the AI wingman
+//   - Cyan tracks + circles: ghost wingmen (slots 2, 3)
+//   - White track: AI wingman (the aircraft under test)
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/digi.h"
@@ -30,7 +34,7 @@ using namespace f4flight::digi;
 namespace f4flight_test {
 
 // ===========================================================================
-// FormationFollowPhase — wingman follows a lead flying straight
+// FormationFollowPhase — 4-ship formation following
 // ===========================================================================
 class FormationFollowPhase : public ManeuverTest {
 public:
@@ -40,18 +44,13 @@ public:
           startOffset_(startOffsetFt) {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        // Init the wingman (the AI aircraft) at the specified altitude + speed,
-        // offset from the lead's position.
         const double initialHeading = PI / 2.0;  // north
         fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, initialHeading, true);
 
-        // Place the wingman behind + below the lead's desired slot position.
-        // The lead is at (0, 0, -alt). The wingman starts at (startOffset_, 0, -alt+200)
-        // — offset to the right and slightly below, so the AI has to maneuver
-        // to reach its slot.
+        // Place the AI wingman (slot 1) offset from its desired position.
         fm.state().kin.x = startOffset_;
-        fm.state().kin.y = -startOffset_;  // behind the lead
-        fm.state().kin.z = -(alt_ - 200.0);  // 200 ft below
+        fm.state().kin.y = -startOffset_;
+        fm.state().kin.z = -(alt_ - 200.0);
 
         sc.setMode(SteeringController::Mode::HeadingAltitude);
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
@@ -59,7 +58,8 @@ public:
         sc.setMaxBank(45.0);
         sc.setMaxGamma(15.0);
 
-        // Set up the lead entity. The lead flies north at constant speed/alt.
+        // --- Set up the 4-ship formation ---
+        // Lead (slot 0) flies north at constant speed/altitude.
         const double leadVt = speed_ * KNOTS_TO_FTPSEC;
         lead_.x = 0.0;
         lead_.y = 0.0;
@@ -67,14 +67,33 @@ public:
         lead_.vx = 0.0;
         lead_.vy = leadVt;
         lead_.vz = 0.0;
-        lead_.yaw = PI / 2.0;  // north (sigma = velocity heading)
+        lead_.yaw = PI / 2.0;  // north
         lead_.pitch = 0.0;
         lead_.roll = 0.0;
         lead_.speed = leadVt;
         lead_.isDead = false;
         lead_.dcm = dcmFromEuler(lead_.yaw, 0.0, 0.0);
 
-        // Configure the wingman: slot 1 (first wingman), Wedge formation.
+        // Ghost wingmen (slots 2, 3) start in their perfect formation positions.
+        // Slot 2: left wing (relAz=-30°, range=1000)
+        // Slot 3: trail (relAz=0°, range=2000)
+        const double leadSigma = lead_.yaw;
+        const auto slot2 = formation::FormationTable::defaultInstance().slotGeometry(
+            formation::FormationType::Wedge, 2);
+        const auto slot3 = formation::FormationTable::defaultInstance().slotGeometry(
+            formation::FormationType::Wedge, 3);
+        ghost2_.x = lead_.x + slot2.range * std::cos(slot2.relAz + leadSigma);
+        ghost2_.y = lead_.y + slot2.range * std::sin(slot2.relAz + leadSigma);
+        ghost2_.z = lead_.z;
+        ghost2_.speed = leadVt;
+        ghost2_.yaw = leadSigma;
+        ghost3_.x = lead_.x + slot3.range * std::cos(slot3.relAz + leadSigma);
+        ghost3_.y = lead_.y + slot3.range * std::sin(slot3.relAz + leadSigma);
+        ghost3_.z = lead_.z;
+        ghost3_.speed = leadVt;
+        ghost3_.yaw = leadSigma;
+
+        // Configure the AI wingman: slot 1, Wedge formation.
         sc.setWingman(1, 1);  // leadId=1, slot=1
         sc.setFormation(static_cast<int>(formation::FormationType::Wedge));
         sc.setLead(&lead_);
@@ -85,24 +104,27 @@ public:
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
 
-        // Move the lead forward at its speed
+        // Move the lead forward
         lead_.y += lead_.speed * dt;
 
-        // Re-inject the lead each frame (the brain reads frameInputs_.injectedLead)
-        // — the SteeringController caches the pointer, but the lead's position
-        // changes, so we need to ensure the brain sees the updated entity.
-        // Since lead_ is a member, the pointer is stable; the brain reads
-        // the current position each frame.
-
-        // Track the wingman's distance to its desired formation slot.
-        // The slot for Wedge slot 1 is: relAz=30°, range=1000 ft, relEl=0.
-        // Desired world position = leadPos + 1000*cos(30°+leadSigma),
-        //                                       1000*sin(30°+leadSigma)
-        const double slotRange = 1000.0;
-        const double slotAz = 30.0 * DTR;
+        // Move ghost wingmen to maintain perfect formation relative to lead
         const double leadSigma = lead_.yaw;
-        const double desX = lead_.x + slotRange * std::cos(slotAz + leadSigma);
-        const double desY = lead_.y + slotRange * std::sin(slotAz + leadSigma);
+        const auto slot2 = formation::FormationTable::defaultInstance().slotGeometry(
+            formation::FormationType::Wedge, 2);
+        const auto slot3 = formation::FormationTable::defaultInstance().slotGeometry(
+            formation::FormationType::Wedge, 3);
+        ghost2_.x = lead_.x + slot2.range * std::cos(slot2.relAz + leadSigma);
+        ghost2_.y = lead_.y + slot2.range * std::sin(slot2.relAz + leadSigma);
+        ghost2_.z = lead_.z;
+        ghost3_.x = lead_.x + slot3.range * std::cos(slot3.relAz + leadSigma);
+        ghost3_.y = lead_.y + slot3.range * std::sin(slot3.relAz + leadSigma);
+        ghost3_.z = lead_.z;
+
+        // Track the AI wingman's distance to its desired formation slot (slot 1).
+        const auto slot1 = formation::FormationTable::defaultInstance().slotGeometry(
+            formation::FormationType::Wedge, 1);
+        const double desX = lead_.x + slot1.range * std::cos(slot1.relAz + leadSigma);
+        const double desY = lead_.y + slot1.range * std::sin(slot1.relAz + leadSigma);
         const double desZ = lead_.z;
 
         const double dx = desX - as.kin.x;
@@ -111,7 +133,6 @@ public:
         const double distToSlot = std::sqrt(dx * dx + dy * dy + dz * dz);
 
         minDistToSlot_ = std::min(minDistToSlot_, distToSlot);
-
         maxSpeedErr_ = std::max(maxSpeedErr_, std::fabs(as.vcas - speed_));
 
         if (sc_brain_->activeMode() == DigiMode::Wingy) enteredWingy_ = true;
@@ -119,9 +140,15 @@ public:
 
         if (std::isnan(as.kin.x) || std::isnan(as.kin.vt)) hasNaN_ = true;
 
+        // Store current slot position for traceEntities()
+        curSlotX_ = desX;
+        curSlotY_ = desY;
+        curSlotZ_ = desZ;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
-                std::printf("\n%s (wingman follows lead, Wedge slot 1)\n", testName_.c_str());
+                std::printf("\n%s (4-ship Wedge, AI=slot 1, start %dft offset)\n",
+                    testName_.c_str(), static_cast<int>(startOffset_));
                 std::printf("%6s %8s %8s %8s %6s %6s %6s %6s\n",
                     "t(s)", "wngX", "wngY", "dSlot", "vcas", "pstk", "rstk", "mode");
             }
@@ -135,23 +162,27 @@ public:
         }
     }
 
+    // Provide custom trace entities for visualization:
+    //   - "lead" (green): the flight lead
+    //   - "slot" (blue diamond): the AI wingman's desired formation slot
+    //   - "wingman" (cyan): the two ghost wingmen
+    std::vector<ThreatEntity> traceEntities() const override {
+        return {
+            {"slot", curSlotX_, curSlotY_, curSlotZ_, 0.0},
+            {"wingman", ghost2_.x, ghost2_.y, ghost2_.z, ghost2_.speed},
+            {"wingman", ghost3_.x, ghost3_.y, ghost3_.z, ghost3_.speed},
+        };
+    }
+
     bool IsFinished() const override {
         return phaseTime_ >= maxTime_ || hasNaN_;
     }
 
     bool IsPassed() const override {
         if (hasNaN_) return false;
-        // 1. Must have entered Wingy mode
         if (!enteredWingy_) return false;
-        // 2. Must have gotten close to the formation slot (< 800 ft at some point)
         if (minDistToSlot_ > 800.0) return false;
-        // 3. Must have reached "in position" (within 800 ft of slot)
         if (!inPosition_) return false;
-        // 4. Speed error should be reasonable (< 90 kts — matching lead speed
-        //    within a reasonable band). The wingman uses throttle-only speed
-        //    control which has lag; high-T/W fighters overshoot speed during
-        //    the initial closure and the dive-to-turn geometry adds speed.
-        //    90 kts is ~20% of typical fighter cruise speed.
         if (maxSpeedErr_ > 90.0) return false;
         return true;
     }
@@ -178,6 +209,8 @@ private:
     double speed_{0.0};
     double startOffset_{0.0};
     DigiEntity lead_;
+    DigiEntity ghost2_;  // slot 2 (left wing, kinematic)
+    DigiEntity ghost3_;  // slot 3 (trail, kinematic)
     const DigiBrain* sc_brain_{nullptr};
 
     double minDistToSlot_{1e9};
@@ -185,6 +218,9 @@ private:
     bool enteredWingy_{false};
     bool inPosition_{false};
     bool hasNaN_{false};
+
+    // Current desired slot position (for traceEntities)
+    mutable double curSlotX_{0.0}, curSlotY_{0.0}, curSlotZ_{0.0};
 };
 
 // ===========================================================================
@@ -195,8 +231,10 @@ public:
     DigiFormationScenario() : ManeuverScenario("digi_formation") {}
 
     std::string GetDescription() const override {
-        return "Digi AI formation following: wingman follows a flight lead "
-               "in Wedge formation. Tests AiFollowLead end-to-end.";
+        return "Digi AI 4-ship formation following: AI wingman (slot 1) follows "
+               "a flight lead in Wedge formation. Ghost wingmen (slots 2, 3) "
+               "fly perfect formation for visualization. Tests AiFollowLead "
+               "end-to-end.";
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>
@@ -209,12 +247,8 @@ public:
         fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
-        // Phase 1: wingman starts 1000 ft offset, must close to formation slot.
-        // 60 seconds gives enough time for all aircraft types to converge.
-        // The 1000 ft offset is small enough for low-T/W aircraft (A-10, C-5)
-        // to close, while still testing the formation-following logic.
         tests.push_back(std::make_unique<FormationFollowPhase>(
-            "Formation follow (Wedge, 1000ft offset)", 60.0, alt, speed, 1000.0));
+            "4-ship Wedge formation (AI=slot 1)", 60.0, alt, speed, 1000.0));
         return tests;
     }
 };
@@ -226,5 +260,3 @@ static RegisterScenario g_registerDigiFormation("digi_formation", []() {
 extern "C" void f4flight_forceLink_scenario_digi_formation() {}
 
 } // namespace f4flight_test
-
-// end

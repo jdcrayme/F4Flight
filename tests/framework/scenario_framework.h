@@ -99,6 +99,21 @@ public:
     // source. Default: empty (phase has no explicit criteria text).
     virtual std::string criteria() const { return ""; }
 
+    // Custom trace entities for visualization. Called each frame (when trace
+    // recording is enabled) to let the test provide additional entities to draw
+    // in the HTML report — e.g. the flight lead, formation slot positions,
+    // ghost wingmen, etc. The returned entities are appended to the trace
+    // frame alongside the standard threat/target entities.
+    //
+    // Entity types recognized by the HTML report:
+    //   "missile", "guns", "target"  — standard threats (bearing lines / trails)
+    //   "lead"                       — green moving point with trail (flight lead)
+    //   "slot"                       — blue diamond marker (desired formation slot)
+    //   "wingman"                    — cyan moving point with trail (other wingmen)
+    //
+    // Default: empty (no custom entities).
+    virtual std::vector<ThreatEntity> traceEntities() const { return {}; }
+
 protected:
     std::string testName_;
     double phaseTime_{0.0};

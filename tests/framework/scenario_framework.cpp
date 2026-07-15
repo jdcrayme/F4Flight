@@ -266,6 +266,17 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                         ds.ag.groundTarget->x, ds.ag.groundTarget->y,
                         ds.ag.groundTarget->z, ds.ag.groundTarget->speed});
                 }
+                // Also extract the flight lead (if injected) so it shows up
+                // in the visualization as a green track.
+                if (brain.frameInputs().injectedLead) {
+                    const auto* lead = brain.frameInputs().injectedLead;
+                    threats.push_back({"lead",
+                        lead->x, lead->y, lead->z, lead->speed});
+                }
+                // Merge custom trace entities from the test (formation slots,
+                // ghost wingmen, etc.)
+                auto custom = test->traceEntities();
+                threats.insert(threats.end(), custom.begin(), custom.end());
                 rec->record(simT, fm.state(), input, modeName, test->name(), threats);
             }
             simT += dt;
