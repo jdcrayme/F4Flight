@@ -215,8 +215,22 @@ void EngineModel::update(double dt,
     // Scale fuel flow by nEngines (matches the thrust scaling above)
     fuelFlowSS *= nEngines;
 
-    // 10-frame smoothing (1 Hz one-pole)
-    state.fuelFlow += (fuelFlowSS - state.fuelFlow) / 10.0;
+    // Fuel-flow smoothing — frame-rate-independent one-pole filter.
+    //
+    // BUG FIX: previously used `(fuelFlowSS - state.fuelFlow) / 10.0`, which
+    // was a per-call update (not per-second). At 360 Hz (default minor frame)
+    // the time constant was 10/360 ≈ 28 ms; at 60 Hz it was 167 ms; at 30 Hz
+    // it was 333 ms. The fuel-flow gauge behaved differently depending on
+    // the host's frame rate.
+    //
+    // Now we use the standard discrete one-pole form:
+    //   y[n] = y[n-1] + (u - y[n-1]) * (dt / (dt + tau))
+    // which gives a time constant of `tau` seconds regardless of frame rate.
+    // tau = 0.1 s matches the original 10-frame behavior at 100 Hz (close to
+    // the default minor-frame rate).
+    constexpr double kFuelFlowTauSec = 0.1;
+    const double alpha = dt / (dt + kFuelFlowTauSec);
+    state.fuelFlow += (fuelFlowSS - state.fuelFlow) * alpha;
     if (state.fuelFlow < aux_->minFuelFlow) state.fuelFlow = aux_->minFuelFlow;
     lastFuelFlow_ = state.fuelFlow;
 

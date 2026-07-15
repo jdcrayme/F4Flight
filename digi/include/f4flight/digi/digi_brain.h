@@ -323,6 +323,7 @@ public:
         targetEntityAuto_.reset();
         selfEntityExplicit_ = false;
         wvrTarget_ = nullptr;
+        lastInjectedMissilePtr_ = nullptr;  // so next injection is detected as new
     }
 
     // =======================================================================
@@ -452,6 +453,12 @@ private:
     std::optional<DigiEntity> missileEntityAuto_;
     std::optional<DigiEntity> gunsEntityAuto_;
     std::optional<DigiEntity> targetEntityAuto_;
+
+    // Last injected missile pointer — used to detect when the host injects a
+    // NEW missile (different pointer) so per-missile state can be reset.
+    // Without this, the brain can't tell if the same pointer means "same
+    // missile, refresh" or "new missile at the same address."
+    const DigiEntity* lastInjectedMissilePtr_{nullptr};
 
     // --- Priority-stack mode arbitration (port of FF dlogic.cpp:729-790) ---
     // curMode_  : the resolved mode for THIS frame (set by resolveModeConflicts)

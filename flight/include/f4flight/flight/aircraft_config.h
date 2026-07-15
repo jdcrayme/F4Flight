@@ -191,7 +191,10 @@ struct AircraftGeometry {
     double minVcas_kts{140.0};
     double maxVcas_kts{800.0};
     double cornerVcas_kts{330.0};
-    double thetaMax_rad{1.4};
+    // DAT-PRESERVED: max pitch angle (theta) — currently never read by the
+    // FCS or EOM. The EOM ground clamp hardcodes a 15° pitch limit
+    // (eom.cpp:303). A future FCS pitch limiter would read this.
+    double thetaMax_rad{1.4};           // DAT-PRESERVED
 
     std::vector<GearPoint> gear;
 
@@ -207,6 +210,13 @@ struct AircraftGeometry {
 // Subset of the original AuxAeroData that is actually used by the flight
 // model (sounds, animations, cockpit lights, refueling, TFR, etc. are
 // dropped because they are not flight-model concerns).
+//
+// DAT-PRESERVED FIELDS: many fields below are loaded from the .DAT files
+// (and serialized to JSON) but not yet read by the flight model. They are
+// kept here so the .DAT/JSON round-trip preserves all original data —
+// future enhancements (JFS startup sequence, electrical/epu modeling,
+// drag chute, elevator-rolls roll coupling, etc.) will consume them.
+// Each unused field is individually marked 'DAT-PRESERVED' below.
 // ---------------------------------------------------------------------------
 struct AuxAero {
     // Engine spool dynamics
@@ -215,16 +225,22 @@ struct AuxAero {
     double minFuelFlow{1200.0};        // lb/hr
     double normSpoolRate{0.7};         // 1/s, MIL-or-below RPM spool rate
     double abSpoolRate{0.4};           // 1/s, AB spool rate
-    double jfsSpoolUpRate{10.0};
-    double jfsSpoolUpLimit{0.7};
-    double lightupSpoolRate{10.0};
-    double flameoutSpoolRate{5.0};
-    double jfsRechargeTime{60.0};
-    double jfsMinRechargeRpm{0.12};
-    double jfsSpinTime{240.0};
-    double mainGenRpm{0.63};
-    double stbyGenRpm{0.60};
-    double epuBurnTime{600.0};
+    // DAT-PRESERVED: JFS (Jet Fuel Starter) parameters — the JFS startup
+    // sequence is not yet modeled. A future engine-startup simulation would
+    // consume these to schedule RPM during the JFS-assisted spool-up phase.
+    double jfsSpoolUpRate{10.0};       // DAT-PRESERVED
+    double jfsSpoolUpLimit{0.7};       // DAT-PRESERVED
+    double lightupSpoolRate{10.0};     // DAT-PRESERVED
+    double flameoutSpoolRate{5.0};     // DAT-PRESERVED (flameout path not modeled)
+    double jfsRechargeTime{60.0};      // DAT-PRESERVED
+    double jfsMinRechargeRpm{0.12};    // DAT-PRESERVED
+    double jfsSpinTime{240.0};         // DAT-PRESERVED
+    // DAT-PRESERVED: generator/EPU parameters — electrical and emergency
+    // power unit modeling is not yet implemented. Future systems simulation
+    // would consume these.
+    double mainGenRpm{0.63};           // DAT-PRESERVED
+    double stbyGenRpm{0.60};           // DAT-PRESERVED
+    double epuBurnTime{600.0};         // DAT-PRESERVED
 
     // Surfaces
     bool   hasLef{false};
@@ -247,8 +263,14 @@ struct AuxAero {
     double CDlefFactor{0.05};
     double CDSPDBFactor{0.08};         // speed brake drag additive
     double CDLDGFactor{0.06};          // gear drag additive
-    double dragChuteCd{0.0};
-    double area2Span{0.1066};
+    // DAT-PRESERVED: drag chute — currently never read because the FM has no
+    // dragChutePos input path. A future drag-chute model (post-landing
+    // deceleration) would consume this.
+    double dragChuteCd{0.0};           // DAT-PRESERVED
+    // DAT-PRESERVED: area-to-span ratio — loaded but not read. Induced drag
+    // uses a different formulation; this would be used by a future Oswald
+    // efficiency / induced drag model.
+    double area2Span{0.1066};          // DAT-PRESERVED
 
     // Inertia / damping multipliers
     double rollMomentum{1.0};
@@ -258,13 +280,22 @@ struct AuxAero {
 
     // Misc
     double sinkRate{15.0};             // ft/s, sink-rate threshold for landing
-    double gearPitchFactor{0.0};
+    // DAT-PRESERVED: gear pitch factor — would scale pitch response when
+    // gear is down (e.g. for bomber rotation characteristics). Currently
+    // not read.
+    double gearPitchFactor{0.0};       // DAT-PRESERVED
     double rollGearGain{0.6};
     double yawGearGain{0.6};
     double pitchGearGain{0.8};
     double landingAOA{12.5};           // deg
-    double rollCouple{0.0};            // ARI strength
-    bool   elevatorRolls{false};
+    // DAT-PRESERVED: ARI (Aileron-Rudder Interconnect) strength — would
+    // couple rudder to aileron for coordinated turns at high alpha.
+    // Currently not read; the yaw loop is stubbed (beta=0).
+    double rollCouple{0.0};            // ARI strength — DAT-PRESERVED
+    // DAT-PRESERVED: elevator-rolls flag — would allow elevator to
+    // contribute to roll authority (some aircraft use stabilators).
+    // Currently not read.
+    bool   elevatorRolls{false};       // DAT-PRESERVED
     double criticalAOA{0.0};           // deg, AOA above which stall model activates (0 = disabled)
 
     int    nEngines{1};

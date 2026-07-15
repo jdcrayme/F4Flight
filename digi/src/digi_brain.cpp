@@ -150,20 +150,29 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     // Host-injected values (via setFrameInputs) take priority over
     // SensorPicture and over any stale state_ pointers from last frame.
     if (frameInputs_.injectedMissile) {
+        // Detect missile identity change by pointer value. The host provides
+        // a raw const DigiEntity* — if the pointer differs from last frame,
+        // it's a new missile and we must reset per-missile state.
+        //
+        // CONTRACT FIX: previously the SteeringController's setIncomingMissile
+        // bypassed setFrameInputs and wrote directly to stateMutable() to
+        // force this reset. Now the brain handles it here, so the
+        // SteeringController can be a pure facade.
+        const bool is_new_missile = (frameInputs_.injectedMissile != lastInjectedMissilePtr_);
         state_.incomingMissile = frameInputs_.injectedMissile;
-        // Reset per-missile state if the injected missile changed.
-        // (The deprecated setIncomingMissile shim already does this; for
-        //  the new setFrameInputs path, we do it here on first sight.)
-        if (state_.missileDefeatTtgo < 0.0) {
-            // Already in "new missile" state — nothing to do.
+        if (is_new_missile) {
+            state_.missileDefeatTtgo = -1.0;
+            state_.incomingMissileEvadeTimer = 0.0;
+            // Clear the auto-tracked missile entity (if any) so the brain
+            // doesn't confuse injected with auto-tracked.
+            missileEntityAuto_.reset();
         }
+        lastInjectedMissilePtr_ = frameInputs_.injectedMissile;
+    } else {
+        // No injected missile this frame — clear the last-pointer so the
+        // next injection is detected as new.
+        lastInjectedMissilePtr_ = nullptr;
     }
-    // BUG FIX: removed dead else-if branch that checked
-    // `frameInputs_.injectedGunsThreat` but had an empty body. The comment
-    // claimed "Don't clear here — sensor fusion may still be tracking" but
-    // the outer `if (frameInputs_.injectedMissile)` already gated this path,
-    // so the else-if fired whenever there was no injected missile but there
-    // WAS an injected guns threat — and then did nothing. Confusing dead code.
 
     if (frameInputs_.injectedGunsThreat) {
         state_.gunsThreat = frameInputs_.injectedGunsThreat;

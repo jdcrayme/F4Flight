@@ -13,6 +13,40 @@
 // The struct is intentionally a plain aggregate of doubles + a reset() method.
 // No behavior, no virtual functions — the "behavior" lives in the maneuver
 // functions (digi/maneuvers/) and the brain dispatcher (digi/digi_brain.h).
+//
+// ---------------------------------------------------------------------------
+// PLANNED SUB-STRUCT SPLIT (not yet implemented — tracked as next priority)
+// ---------------------------------------------------------------------------
+// The fields below are organized into logical groups by comment headers.
+// The planned next step is to extract these groups into named sub-structs:
+//
+//   DigiCommands       — stick/throttle/brake/gear outputs (pStick, rStick,
+//                        yPedal, throttle, wheelBrakes, parkingBrake,
+//                        speedBrakeCmd, gearHandleCmd)
+//   DigiConfig         — persistent config (skill, cornerSpeed, maxGs,
+//                        maxRoll, maxRollDelta, maxGammaDeg, turnLoadFactor)
+//   DigiNavState       — navigation state (dt, holdAlt, holdPsi, onStation,
+//                        waypointMode, trackMode, gammaHoldIError,
+//                        autoThrottle, mnverTime, trackX/Y/Z)
+//   DigiGroundAvoidState — groundAvoidNeeded, pullupTimer
+//   DigiMissileState   — incomingMissile, incomingMissileId,
+//                        missileDefeatTtgo, missileFindDragPt, etc.
+//   DigiGunsState      — gunsThreat, jinkTime, newRoll, jinkTimer
+//   DigiMergeState     — mergeTimer
+//   DigiWeaponState    — gunFireFlag, mslFireFlag, fireStation,
+//                        missileShotTimer, inShootShoot, waitingForShot,
+//                        pastPstick, pastAta, pastPipperAta, ataDot,
+//                        maxAAWpnRange
+//   DigiGroundState    — groundTarget, groundTargetId, agDoctrine,
+//                        agApproach, reachedIP, groundOps, agAttackPhase
+//   DigiFormationState — flightLeadId, isWing, vehicleInUnit, formationId,
+//                        formRelAz, formRelEl, formRange, wingman
+//   DigiCommState      — mailbox, selfId
+//
+// This split is deferred because it touches ~300 call sites across 30+ files.
+// The flat layout below is functional; the groups are documented so the
+// split can be done mechanically in a dedicated session.
+// ---------------------------------------------------------------------------
 
 #pragma once
 

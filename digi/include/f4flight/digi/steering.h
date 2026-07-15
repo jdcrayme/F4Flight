@@ -117,27 +117,31 @@ public:
 
     // --- Threat/target setters (Tier 1-2) ---
     // Each call rebuilds the FrameInputs from the previous frame inputs so
-    // only the named field changes. This avoids the deprecated setX shims.
+    // only the named field changes.
+    //
+    // CONTRACT FIX: previously these methods ALSO wrote directly to
+    // brain_.stateMutable() to "mirror the deprecated shim's commit
+    // side-effect". This bypassed the setFrameInputs() contract and created
+    // a subtle race: the brain's compute() would re-apply the injected
+    // values anyway (lines 151-169 of digi_brain.cpp), making the bypass
+    // redundant for the normal case — but the missile-state reset
+    // (missileDefeatTtgo = -1.0) was only done in compute() on ID change,
+    // and the bypass forced it immediately.
+    //
+    // Now we trust the brain's compute() to handle everything: it applies
+    // injected threats, resets per-missile state on ID change, runs
+    // SensorFusion, and dispatches to the right mode. The SteeringController
+    // is a thin facade that only configures — it does NOT touch brain state
+    // directly.
     void setIncomingMissile(const digi::DigiEntity* m) {
         digi::FrameInputs fi = brain_.frameInputs();
         fi.injectedMissile = m;
         brain_.setFrameInputs(fi);
-        // Mirror the deprecated shim's commit side-effect so
-        // runMissileDefeat sees the threat on the same frame (the new
-        // setFrameInputs path delays commit until compute()).
-        if (m) {
-            brain_.stateMutable().incomingMissile = m;
-            brain_.stateMutable().missileDefeatTtgo = -1.0;
-            brain_.stateMutable().incomingMissileEvadeTimer = 0.0;
-        } else {
-            brain_.stateMutable().incomingMissile = nullptr;
-        }
     }
     void setGunsThreat(const digi::DigiEntity* t) {
         digi::FrameInputs fi = brain_.frameInputs();
         fi.injectedGunsThreat = t;
         brain_.setFrameInputs(fi);
-        brain_.stateMutable().gunsThreat = t;
     }
     void setTarget(const digi::DigiEntity* t) {
         digi::FrameInputs fi = brain_.frameInputs();

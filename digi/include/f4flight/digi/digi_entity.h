@@ -15,6 +15,33 @@
 //
 // All positions/velocities are in world frame (NED, Z-down, ft and ft/s).
 // Attitude angles (yaw, pitch, roll) are in radians.
+//
+// ---------------------------------------------------------------------------
+// HEADING CONVENTION (IMPORTANT — diverges from aerospace standard)
+// ---------------------------------------------------------------------------
+// F4Flight uses the math convention inherited from FreeFalcon:
+//   yaw = 0          → aircraft nose points along +X (EAST)
+//   yaw = +π/2       → aircraft nose points along +Y (NORTH)
+//   yaw = +π         → aircraft nose points along -X (WEST)
+//   yaw = -π/2       → aircraft nose points along -Y (SOUTH)
+//   Positive yaw     → COUNTER-CLOCKWISE rotation (looking down from above)
+//
+// Aerospace convention is yaw=0 → NORTH, yaw=π/2 → EAST, positive yaw =
+// CLOCKWISE. F4Flight does NOT follow this. Multiple test files have
+// confused comments about this — when porting FreeFalcon code that uses
+// headings, double-check the sign convention.
+//
+// `bearingToTarget = atan2(dy, dx)` gives the world-frame bearing FROM self
+// TO target in this same convention (0 = east, π/2 = north). The relative
+// azimuth `rg.az = bearingToTarget - self.yaw` is then the angle off self's
+// nose, positive = right.
+//
+// When commanding nose-wheel steering on the ground, the EOM uses
+// `psi -= ypedal * rate * dt` (positive ypedal → psi decreases → right
+// turn in this CCW convention). The digi's ground-ops code uses
+// `yPedal = -headingErr * scale` to compensate (positive headingErr means
+// need to turn left = increase psi = negative ypedal).
+// ---------------------------------------------------------------------------
 
 #pragma once
 

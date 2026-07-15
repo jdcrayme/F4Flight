@@ -133,22 +133,46 @@ struct AeroState {
 };
 
 // Engine state.
+//
+// DAT-PRESERVED FIELDS NOTE: several fields below (thrust2, fuelFlow2,
+// nozzlePos, aburnLit, engLit, flameout, rpmLagInitialized) are loaded
+// from the .DAT files and serialized to JSON, but not yet fully exercised
+// by the engine model. They are preserved here so future engine
+// enhancements (multi-engine support, AB scheduling, flameout modeling)
+// can use them without breaking the .DAT/JSON round-trip. See the
+// 'DAT-PRESERVED' marker on each individual field below.
 struct EngineState {
     double rpm{0.0};           // 0..1+ (1 = MIL, >1 = AB)
     double rpmCmd{0.0};
     double thrust{0.0};        // thrust acceleration (ft/s^2) = thrust_lbf / mass
-    double thrust2{0.0};       // second engine (if present)
+    // DAT-PRESERVED: second engine state — currently write-only. The FM
+    // folds nEngines into thrust multiplicatively (engine.cpp:190); there's
+    // no per-engine RPM/flameout modeling yet. Multi-engine aircraft (B-52,
+    // C-5, KC-135) all use the single rpm state. Future engine-out training
+    // will need this wired up.
+    double thrust2{0.0};       // second engine thrust (if present) — DAT-PRESERVED
     double fuelFlow{0.0};      // lb/hr
-    double fuelFlow2{0.0};
+    // DAT-PRESERVED: second engine fuel flow — currently write-only, mirrors
+    // the single-engine fuelFlow. Same multi-engine limitation as thrust2.
+    double fuelFlow2{0.0};     // second engine fuel flow — DAT-PRESERVED
     double ftit{0.0};          // 0..10 normalized
-    double nozzlePos{0.0};     // 0..1
-    bool   aburnLit{false};
+    // DAT-PRESERVED: nozzle position — currently set by the engine model but
+    // not read by anyone. A future afterburner visualization or nozzle
+    // dynamics model would consume this.
+    double nozzlePos{0.0};     // 0..1 — DAT-PRESERVED
+    // DAT-PRESERVED: AB lit flag — set when rpmCmd > 1.0 but not read by
+    // anyone outside the engine. A future display/telemetry model would
+    // consume this.
+    bool   aburnLit{false};    // DAT-PRESERVED
     bool   engLit{true};       // engine running
     bool   flameout{false};
 
     // Spool filter state
     LagFilter rpmLag;
-    bool   rpmLagInitialized{false};
+    // DAT-PRESERVED: init flag — the LagFilter has its own internal reset
+    // semantics; this flag was intended to mark "first call" but is no
+    // longer used. Kept for .DAT/JSON round-trip compatibility.
+    bool   rpmLagInitialized{false};  // DAT-PRESERVED
 };
 
 // Fuel state.
@@ -168,8 +192,14 @@ struct FcsState {
     LagFilter pitchRateLag;     // for q from qptchc
     AdamsBash2 pitchIntegral;   // NZ error integrator
     LeadLagFilter pitchAlphaLag; // F7Tust lead-lag (tau1=tp01, tau2=tp02, tau3=tp03)
-    double oldp02[6]{};
-    double oldp03[6]{};
+    // DAT-PRESERVED: lag filter history buffers. FreeFalcon's F7Tust filter
+    // uses oldp02[0..5] and oldp03[0..5] for the lead-lag state. F4Flight's
+    // LeadLagFilter encapsulates this internally; only oldp03[0] is read
+    // (for alpha_dot computation in fcs.cpp). The other 11 doubles are
+    // preserved for compatibility with future filter rewrites and for
+    // state save/restore round-tripping.
+    double oldp02[6]{};        // DAT-PRESERVED (only [0] would be used)
+    double oldp03[6]{};        // DAT-PRESERVED (only [0] is read — alpha_dot)
     double kp01{1.0}, kp02{1.0}, kp03{2.0}, kp05{1.0};
     double tp01{0.2}, tp02{0.2}, tp03{0.2};
     double zp01{0.9};
@@ -229,14 +259,29 @@ struct GearState {
     };
     std::vector<Wheel> wheels;           // sized to AircraftConfig.gear.size()
     bool   inAir{true};
-    bool   planted{false};               // stationary on ground
+    // DAT-PRESERVED: 'planted' is set on init/touchdown but never read by
+    // the FM. Future physics improvements (e.g. proper static friction,
+    // parking brake logic) will read this.
+    bool   planted{false};               // stationary on ground — DAT-PRESERVED
     double groundZ_ft{0.0};              // terrain altitude at aircraft position (NED Z-down: equals -terrainMSL)
     Vec3   groundNormal{0.0, 0.0, -1.0}; // terrain normal (NED: -Z is up)
     double muFric{0.04};                 // current friction coefficient
     double minHeight_ft{0.0};            // minimum body clearance
-    double nwsAngle_rad{0.0};            // nose-wheel steering angle
-    bool   onObject{false};              // carrier deck / hard surface
-    bool   overRunway{true};
+    // DAT-PRESERVED: nose-wheel steering angle — currently write-only. The
+    // EOM applies NWS directly to psi via `psi -= ypedal * rate * dt` without
+    // storing the resulting wheel angle here. A future visual model or NWS
+    // authority limiter would consume this.
+    double nwsAngle_rad{0.0};            // nose-wheel steering angle — DAT-PRESERVED
+    // DAT-PRESERVED: carrier deck / hard surface flag — currently never set
+    // (always false). calcMuFric returns 20.0 (effectively infinite friction)
+    // when this is true, but no code path sets it. Future carrier ops will
+    // set this from a terrain/object query.
+    bool   onObject{false};              // carrier deck / hard surface — DAT-PRESERVED
+    // DAT-PRESERVED: overRunway is set to true by default and never updated.
+    // calcMuFric uses it to choose between 0.04 (paved) and 0.5 (grass)
+    // rolling resistance, but the runtime value is always 'true'. A future
+    // terrain type query would update this.
+    bool   overRunway{true};             // DAT-PRESERVED (default true, never updated)
 };
 
 // All state combined. Owned by FlightModel.
@@ -244,7 +289,12 @@ struct AircraftState {
     KinematicState    kin;
     AeroState         aero;
     EngineState       engine;
-    EngineState       engine2;
+    // DAT-PRESERVED: second engine state slot for multi-engine aircraft.
+    // Currently never written or read — the FM uses a single EngineState
+    // and folds nEngines into thrust multiplicatively. Kept here so the
+    // JSON/JSON round-trip preserves the second-engine state for future
+    // per-engine flameout modeling.
+    EngineState       engine2;            // DAT-PRESERVED
     FuelState         fuel;
     FcsState          fcs;
     LoadFactorState   loads;
@@ -264,11 +314,19 @@ struct AircraftState {
     double windX{0.0}, windY{0.0};
 
     // Misc flags
-    bool   simplified{false};     // use simple model (for AI)
+    // DAT-PRESERVED: 'simplified' is read by the engine model to scale fuel
+    // flow by 0.75, but never set by any API. The host must mutate
+    // state_.simplified directly. FreeFalcon uses SIMPLE_MODE_AF (kinematic)
+    // for non-combat AI; F4Flight always uses full EOM. This flag is the
+    // stub of that future capability.
+    bool   simplified{false};     // use simple model (for AI) — DAT-PRESERVED
     bool   trimming{false};
     double netAccel{0.0};         // last frame's net accel (ft/s^2)
     double vtDot{0.0};            // true airspeed rate (ft/s^2) — set by EOM
-    double vRot{0.0};             // rotation speed
+    // DAT-PRESERVED: rotation speed — currently never set or read. A future
+    // takeoff model would compute V_R from weight/flap config and use it to
+    // trigger rotation phase transition (currently uses 1.2 × stallSpeed).
+    double vRot{0.0};             // rotation speed — DAT-PRESERVED
 
     // -----------------------------------------------------------------------
     // Reset every field to its default-constructed value.
