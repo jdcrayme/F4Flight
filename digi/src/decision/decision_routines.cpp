@@ -21,6 +21,7 @@ namespace digi {
 // ===========================================================================
 AirbaseAction AirbaseCheck(DigiState& digi, const DigiEntity& self,
                             const FrameInputs& inputs, double simTime) {
+    (void)simTime;  // FF throttles on g_nAirbaseCheck; we search every frame (cheap)
     // No airbases available — can't do anything.
     if (!inputs.airbases || inputs.airbaseCount == 0) {
         return AirbaseAction::None;
@@ -377,6 +378,13 @@ const DigiEntity* DoTargeting(DigiState& digi, const SensorPicture& pic,
     // If the brain already has an injected target, keep it.
     // (The caller — DigiBrain::resolveMode — checks frameInputs_.injectedTarget
     // before calling DoTargeting. If we get here, there's no injected target.)
+    //
+    // `digi` and `self` are reserved for future threat-scoring that weights
+    // ownship energy, skill, and offensive doctrine — FF's DoTargeting reads
+    // several DigiState fields. The current simplified scoring uses only the
+    // SensorPicture's pre-computed threatScore.
+    (void)digi;
+    (void)self;
 
     // Scan the SensorPicture for the highest-threat aircraft contact.
     // FF uses a complex threat-scoring algorithm (range, ATA, type, aspect).

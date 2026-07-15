@@ -116,6 +116,46 @@ public:
                "Altitude ±200ft over last 30s; Speed ±25kts over last 30s; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (altCaptureTime_ == 0.0) {
+            return "Altitude capture never achieved (target " +
+                   std::to_string(static_cast<int>(targetAlt_)) +
+                   "ft) — high-altitude GammaHold did not settle.";
+        }
+        if (speedCaptureTime_ == 0.0) {
+            return "Speed capture never achieved (target " +
+                   std::to_string(static_cast<int>(targetSpd_)) +
+                   "kts) — MachHold did not bring the aircraft to target cruise speed.";
+        }
+        if (phaseTime_ < std::max(altCaptureTime_, speedCaptureTime_) + 60.0) {
+            return "Phase ended too soon after capture (T+" +
+                   std::to_string(phaseTime_) + "s, need T+" +
+                   std::to_string(std::max(altCaptureTime_, speedCaptureTime_) + 60.0) +
+                   "s) — settling window was not a true settling window.";
+        }
+        const double tEnd = phaseTime_;
+        const double tStart = tEnd - 30.0;
+        double altMin = 1e9, altMax = -1e9, spdMin = 1e9, spdMax = -1e9;
+        for (const auto& s : altSamples_) if (s.first >= tStart) { altMin = std::min(altMin, s.second); altMax = std::max(altMax, s.second); }
+        for (const auto& s : spdSamples_) if (s.first >= tStart) { spdMin = std::min(spdMin, s.second); spdMax = std::max(spdMax, s.second); }
+        if (std::fabs(altMax - targetAlt_) >= 200.0 || std::fabs(altMin - targetAlt_) >= 200.0) {
+            return "Altitude band over last 30s was " +
+                   std::to_string(static_cast<int>(altMin)) + ".." +
+                   std::to_string(static_cast<int>(altMax)) +
+                   "ft (target " + std::to_string(static_cast<int>(targetAlt_)) +
+                   "ft, tolerance ±200ft) — high-altitude cruise not stable.";
+        }
+        if (std::fabs(spdMax - targetSpd_) >= 25.0 || std::fabs(spdMin - targetSpd_) >= 25.0) {
+            return "Speed band over last 30s was " +
+                   std::to_string(static_cast<int>(spdMin)) + ".." +
+                   std::to_string(static_cast<int>(spdMax)) +
+                   "kts (target " + std::to_string(static_cast<int>(targetSpd_)) +
+                   "kts, tolerance ±25kts) — cruise MachHold not stable.";
+        }
+        return "";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         if (altCaptureTime_ > 0.0) {

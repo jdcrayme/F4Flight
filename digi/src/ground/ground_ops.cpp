@@ -158,6 +158,7 @@ void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
 
 void RunTaxi(DigiState& digi, const AircraftState& as,
              FcsState& fcsState, double dt) {
+    (void)dt;  // reserved for future speed-proportional taxi steering
     auto& go = digi.ag.groundOps;
 
     // Round-2 structural fix (Rec 4 / Bug K): RunTaxi was previously dead

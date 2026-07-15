@@ -65,10 +65,22 @@ void TraceRecorder::record(double t, const AircraftState& as, const PilotInput& 
     }
 }
 
+void TraceRecorder::addSample(const std::string& key, double value, const std::string& unit) {
+    if (!trace_.frames.empty()) {
+        trace_.frames.back().samples.push_back({key, value, unit});
+    }
+}
+
+void TraceRecorder::addEvent(double t, const std::string& category,
+                              const std::string& message, const std::string& severity) {
+    trace_.events.push_back({t, category, message, severity});
+}
+
 void TraceRecorder::markPhase(const std::string& name, double start_s, double end_s,
                                bool passed, bool skipped, bool reinitializes,
-                               const std::string& criteria) {
-    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria});
+                               const std::string& criteria,
+                               const std::string& failureReason) {
+    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria, failureReason});
 }
 
 void TraceRecorder::setWaypoints(const std::vector<Waypoint>& wps) {
@@ -122,6 +134,8 @@ void traceToJson(const Trace& trace, std::string& out) {
         out += p.reinitializes ? "true" : "false";
         out += ",\"criteria\":";
         detail::writeJsonString(out, p.criteria);
+        out += ",\"failureReason\":";
+        detail::writeJsonString(out, p.failureReason);
         out += '}';
     }
     out += ']';
@@ -180,9 +194,43 @@ void traceToJson(const Trace& trace, std::string& out) {
             }
             out += ']';
         }
+        if (!f.samples.empty()) {
+            out += ",\"samples\":[";
+            for (size_t j = 0; j < f.samples.size(); ++j) {
+                if (j > 0) out += ',';
+                const auto& s = f.samples[j];
+                out += "{\"key\":";
+                detail::writeJsonString(out, s.key);
+                out += ",\"value\":";
+                out += std::to_string(s.value);
+                out += ",\"unit\":";
+                detail::writeJsonString(out, s.unit);
+                out += '}';
+            }
+            out += ']';
+        }
         out += '}';
     }
     out += ']';
+
+    // Events (discrete events: mode changes, weapon fires, etc.)
+    if (!trace.events.empty()) {
+        out += ",\"events\":[";
+        for (size_t i = 0; i < trace.events.size(); ++i) {
+            if (i > 0) out += ',';
+            const auto& ev = trace.events[i];
+            out += "{\"t\":";
+            out += std::to_string(ev.t);
+            out += ",\"category\":";
+            detail::writeJsonString(out, ev.category);
+            out += ",\"message\":";
+            detail::writeJsonString(out, ev.message);
+            out += ",\"severity\":";
+            detail::writeJsonString(out, ev.severity);
+            out += '}';
+        }
+        out += ']';
+    }
 
     // Waypoints (scenario-level navigation waypoints)
     if (!trace.waypoints.empty()) {
@@ -367,6 +415,8 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                         p = parseBool(p, pr.reinitializes);
                     } else if (pk == "criteria") {
                         p = parseString(p, pr.criteria);
+                    } else if (pk == "failureReason") {
+                        p = parseString(p, pr.failureReason);
                     } else {
                         // skip unknown value
                         if (*p == '"') { std::string s; p = parseString(p, s); }
@@ -458,6 +508,44 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                         if (*p != ']') { error_msg = "Expected ']' after threats"; return false; }
                         ++p;
                     }
+                    else if (fk == "samples") {
+                        if (*p != '[') { error_msg = "Expected '[' for samples"; return false; }
+                        ++p;
+                        p = skipWs(p);
+                        while (*p && *p != ']') {
+                            TraceSample sm{};
+                            if (*p != '{') { error_msg = "Expected '{' in sample"; return false; }
+                            ++p;
+                            while (*p && *p != '}') {
+                                p = skipWs(p);
+                                std::string sk;
+                                p = parseString(p, sk);
+                                if (!p) { error_msg = "Bad sample key"; return false; }
+                                p = skipWs(p);
+                                if (*p != ':') { error_msg = "Expected ':' in sample"; return false; }
+                                ++p;
+                                p = skipWs(p);
+                                if (sk == "key") p = parseString(p, sm.key);
+                                else if (sk == "value") p = parseNumber(p, sm.value);
+                                else if (sk == "unit") p = parseString(p, sm.unit);
+                                else {
+                                    if (*p == '"') { std::string s; p = parseString(p, s); }
+                                    else { double d; p = parseNumber(p, d); }
+                                }
+                                if (!p) { error_msg = "Bad sample value"; return false; }
+                                p = skipWs(p);
+                                if (*p == ',') ++p;
+                            }
+                            if (*p != '}') { error_msg = "Expected '}' in sample"; return false; }
+                            ++p;
+                            fr.samples.push_back(sm);
+                            p = skipWs(p);
+                            if (*p == ',') ++p;
+                            p = skipWs(p);
+                        }
+                        if (*p != ']') { error_msg = "Expected ']' after samples"; return false; }
+                        ++p;
+                    }
                     else {
                         // skip unknown value
                         if (*p == '"') { std::string s; p = parseString(p, s); }
@@ -475,6 +563,44 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                 p = skipWs(p);
             }
             if (*p != ']') { error_msg = "Expected ']' after frames"; return false; }
+            ++p;
+        } else if (key == "events") {
+            if (*p != '[') { error_msg = "Expected '[' for events"; return false; }
+            ++p;
+            p = skipWs(p);
+            while (*p && *p != ']') {
+                TraceEvent ev{};
+                if (*p != '{') { error_msg = "Expected '{' in event"; return false; }
+                ++p;
+                while (*p && *p != '}') {
+                    p = skipWs(p);
+                    std::string ek;
+                    p = parseString(p, ek);
+                    if (!p) { error_msg = "Bad event key"; return false; }
+                    p = skipWs(p);
+                    if (*p != ':') { error_msg = "Expected ':' in event"; return false; }
+                    ++p;
+                    p = skipWs(p);
+                    if (ek == "t") p = parseNumber(p, ev.t);
+                    else if (ek == "category") p = parseString(p, ev.category);
+                    else if (ek == "message") p = parseString(p, ev.message);
+                    else if (ek == "severity") p = parseString(p, ev.severity);
+                    else {
+                        if (*p == '"') { std::string s; p = parseString(p, s); }
+                        else { double d; p = parseNumber(p, d); }
+                    }
+                    if (!p) { error_msg = "Bad event value"; return false; }
+                    p = skipWs(p);
+                    if (*p == ',') ++p;
+                }
+                if (*p != '}') { error_msg = "Expected '}' in event"; return false; }
+                ++p;
+                out.events.push_back(ev);
+                p = skipWs(p);
+                if (*p == ',') ++p;
+                p = skipWs(p);
+            }
+            if (*p != ']') { error_msg = "Expected ']' after events"; return false; }
             ++p;
         } else if (key == "waypoints") {
             if (*p != '[') { error_msg = "Expected '[' for waypoints"; return false; }

@@ -151,11 +151,34 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     const double dt = 1.0 / 60.0;
 
-    // Clear any navigation state left over from a previous scenario. The
-    // SteeringController (and its DigiBrain) is initialized once in main()
-    // and shared across scenarios, so waypoints set by e.g. ai_flightplan
-    // would otherwise leak into digi_defensive and show up in its trace.
-    sc.setWaypoints({});
+    // FULL BRAIN RESET between scenarios.
+    //
+    // The SteeringController (and its DigiBrain) is initialized once in
+    // main() and shared across ALL scenarios. Without a reset, state from a
+    // previous scenario leaks into the next:
+    //
+    //   - digi_groundops leaves the brain in Landing mode with
+    //     groundOps.phase == Rollout. The addMode() interlock rule
+    //     "LandingMode can't be bumped by WVR-family engagements" then
+    //     prevents every subsequent offensive scenario (digi_guns,
+    //     digi_wvr, digi_sensors target phase, digi_tactics break) from
+    //     ever entering their intended mode — they all sit in Landing and
+    //     descend until they fail.
+    //   - digi_rtb leaves fuel.phase == Bingo and a divert airbase set.
+    //   - Waypoints from ai_flightplan leak into other scenarios.
+    //   - Threat/target pointers from injected entities dangle.
+    //
+    // sc.reset() calls DigiBrain::reset(), which:
+    //   - clears curMode_ → Waypoint, forcedMode_ → NoMode
+    //   - clears all threat/target pointers and auto-tracked entities
+    //   - clears frameInputs_ (truth, injected*, fuel, airbases)
+    //   - clears groundOps.phase → Parking (the "none" state)
+    //   - PRESERVES config (cornerSpeed, maxGs, maxRoll, maxGamma) so the
+    //     base tuning set in main() survives.
+    //
+    // Each phase's Init() re-configures what it needs (setMode, setCornerSpeed,
+    // setMaxGs, etc.), so a full reset here is safe.
+    sc.reset();
 
     if (rec) {
         rec->start(aircraftName, scenario.name());
@@ -222,6 +245,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         }
 
         const double phaseStartT = simT;
+        std::string lastModeName;  // for mode-change event detection
+        double lastFireEventT = -1.0;  // for gun-fire event throttling (per-phase)
 
         while (!test->IsFinished()) {
             PilotInput input;
@@ -266,6 +291,28 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                         ds.ag.groundTarget->x, ds.ag.groundTarget->y,
                         ds.ag.groundTarget->z, ds.ag.groundTarget->speed});
                 }
+                // Extract the RESOLVED offensive target (injected or auto-tracked
+                // via SensorFusion). Without this, targets detected autonomously
+                // (via truth/SensorFusion) never appear in the report — the old
+                // code only drew injected targets.
+                if (brain.resolvedTarget()) {
+                    const auto* tgt = brain.resolvedTarget();
+                    // Only add if not already covered by injectedTarget/groundTarget
+                    // to avoid duplicate rendering.
+                    bool alreadyHave = false;
+                    for (const auto& th : threats) {
+                        if (th.type == "target" &&
+                            std::fabs(th.x - tgt->x) < 1.0 &&
+                            std::fabs(th.y - tgt->y) < 1.0) {
+                            alreadyHave = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyHave) {
+                        threats.push_back({"target",
+                            tgt->x, tgt->y, tgt->z, tgt->speed});
+                    }
+                }
                 // Also extract the flight lead (if injected) so it shows up
                 // in the visualization as a green track.
                 if (brain.frameInputs().injectedLead) {
@@ -274,19 +321,51 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                         lead->x, lead->y, lead->z, lead->speed});
                 }
                 // Merge custom trace entities from the test (formation slots,
-                // ghost wingmen, etc.)
+                // ghost wingmen, airbases, etc.)
                 auto custom = test->traceEntities();
                 threats.insert(threats.end(), custom.begin(), custom.end());
                 rec->record(simT, fm.state(), input, modeName, test->name(), threats);
+
+                // Publish per-frame samples from the test (range, heading
+                // error, fuel, TTGO, etc.) for the frame readout + time-series.
+                for (const auto& s : test->traceSamples()) {
+                    rec->addSample(s.key, s.value, s.unit);
+                }
+
+                // Emit a mode-change event when the AI mode transitions.
+                // This gives the report an event log of what the brain did
+                // and when — critical for diagnosing "why didn't it enter
+                // GunsEngage?" type failures.
+                if (!lastModeName.empty() && modeName != lastModeName) {
+                    rec->addEvent(simT, "mode",
+                        "Mode: " + lastModeName + " -> " + modeName, "info");
+                }
+                lastModeName = modeName;
+
+                // Emit a weapon-fire event when the gun fires.
+                if (input.fireGun) {
+                    // Only log the first fire frame per burst to avoid spam.
+                    if (simT - lastFireEventT > 0.5) {
+                        rec->addEvent(simT, "weapon", "Gun fired", "info");
+                        lastFireEventT = simT;
+                    }
+                }
             }
             simT += dt;
         }
 
         const double phaseEndT = simT;
         if (rec) {
+            // Capture the failure reason (why the phase failed) for the report.
+            // This is the key field for "Any test that fails needs to clearly
+            // communicate what conditions were not met."
+            std::string failReason;
+            if (!test->IsPassed()) {
+                failReason = test->failureReason();
+            }
             rec->markPhase(test->name(), phaseStartT, phaseEndT,
                            test->IsPassed(), /*skipped=*/false,
-                           reinitializes, test->criteria());
+                           reinitializes, test->criteria(), failReason);
         }
 
         test->Finish();

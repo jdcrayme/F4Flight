@@ -67,6 +67,15 @@ public:
     // Get a mutable reference (for testing)
     SensorPicture& picture() { return picture_; }
 
+    // Reset all tracked contacts and the sticky missile track. Called by
+    // DigiBrain::reset() so stale contacts from a previous scenario (e.g.
+    // a guns target left in bestTarget) don't leak into the next scenario
+    // and trigger spurious WVREngage / GunsEngage entries.
+    void reset() {
+        picture_.clear();
+        stickyMissileId_ = kInvalidEntityId;
+    }
+
 private:
     std::vector<std::unique_ptr<Sensor>> sensors_;
     SensorPicture picture_;

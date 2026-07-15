@@ -23,11 +23,19 @@
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
 
 namespace f4flight_test {
+
+// Airbase position constants (used by both RTBPhase and the scenario's
+// sceneGeometry so the drawn runway matches the actual divert target).
+// Airbase is 20 NM north (+Y) of the origin, 5000 ft MSL field elevation.
+constexpr double kRtbAirbaseX = 0.0;
+constexpr double kRtbAirbaseY = 20.0 * 6076.0;  // 20 NM north
+constexpr double kRtbAirbaseZ = -5000.0;
 
 // ===========================================================================
 // RTBPhase — fuel-critical divert to nearest airbase
@@ -53,9 +61,9 @@ public:
         // --- Set up the friendly airbase 20 NM north ---
         // Coordinate convention: yaw=0 = +X = east. "North" = +Y.
         // Airbase at (0, 20NM) — 90° off the aircraft's current heading (east).
-        airbase_.x = 0.0;
-        airbase_.y = 20.0 * 6076.0;  // 20 NM north
-        airbase_.z = -5000.0;         // 5000 ft MSL field elevation
+        airbase_.x = kRtbAirbaseX;
+        airbase_.y = kRtbAirbaseY;  // 20 NM north
+        airbase_.z = kRtbAirbaseZ;   // 5000 ft MSL field elevation
         airbase_.runwayHeading = 0.0; // runway points east
         airbase_.id = 100;
 
@@ -102,6 +110,12 @@ public:
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         minAlt_ = std::min(minAlt_, -as.kin.z);
 
+        // Per-frame sample data (for trace)
+        curDistToAirbase_ = distToAirbase;
+        curHdgErr_ = std::fabs(dh) * RTD;  // heading error to airbase bearing
+        curFuelLbs_ = sc_brain_->state().fuel.fuelLbs;
+        curMode_ = currentMode_;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (Bingo fuel, airbase 20NM north)\n", testName_.c_str());
@@ -144,6 +158,49 @@ public:
                "Close distance to airbase (at least 0.5NM closer); No crash; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredRTB_) {
+            return "Never entered RTB mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; fuel was " + std::to_string(static_cast<int>(curFuelLbs_)) +
+                   "lbs but FuelCheck did not declare Bingo).";
+        }
+        if (minAbsHeadingToNorth_ > 60.0 * DTR) {
+            return "Closest heading to airbase bearing was " +
+                   std::to_string(minAbsHeadingToNorth_ * RTD) +
+                   "deg (needed <= 60deg) — aircraft did not turn toward the airbase.";
+        }
+        const double required = 121520.0 - 0.5 * 6076.0;
+        if (minDistToAirbase_ > required) {
+            return "Min distance to airbase was " +
+                   std::to_string(static_cast<int>(minDistToAirbase_)) +
+                   "ft (needed <= " + std::to_string(static_cast<int>(required)) +
+                   "ft) — aircraft did not close on the divert field.";
+        }
+        if (minAlt_ < 1000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 1000ft) — aircraft descended below the safe floor during RTB.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"dist_ab",  curDistToAirbase_, "ft"},
+            {"hdg_err",  curHdgErr_,        "deg"},
+            {"fuel",     curFuelLbs_,       "lb"},
+            {"in_rtb",   (enteredRTB_ && curMode_ == DigiMode::RTB) ? 1.0 : 0.0, ""},
+            {"in_landing", (curMode_ == DigiMode::Landing) ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // Publish the airbase as a trace entity so the HTML report shows the
+    // divert field as an amber square in both 2D and 3D views.
+    std::vector<ThreatEntity> traceEntities() const override {
+        return {{"airbase", airbase_.x, airbase_.y, airbase_.z, 0.0}};
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered RTB:          %s\n", enteredRTB_ ? "[PASS]" : "[FAIL]");
@@ -174,6 +231,12 @@ private:
     double minDistToAirbase_{1e9};
     double minAlt_{1e9};
     bool hasNaN_{false};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curDistToAirbase_{0.0};
+    double curHdgErr_{0.0};
+    double curFuelLbs_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 
 // ===========================================================================
@@ -189,6 +252,25 @@ public:
                "starts heading east with Bingo fuel and a friendly airbase 20NM "
                "north; it must enter RTB mode, turn toward the airbase, and "
                "close the distance.";
+    }
+
+    // Draw the divert runway at the airbase position so the visualization
+    // shows where the aircraft is trying to land. Runway points east (heading
+    // 0), 6000 ft long, drawn as a gold centerline.
+    std::vector<SceneLine> sceneGeometry() const override {
+        const double rwyLen = 6000.0;
+        const double halfLen = rwyLen / 2.0;
+        SceneLine runway;
+        runway.label = "Runway";
+        runway.x1 = kRtbAirbaseX - halfLen;
+        runway.y1 = kRtbAirbaseY;
+        runway.z1 = kRtbAirbaseZ;
+        runway.x2 = kRtbAirbaseX + halfLen;
+        runway.y2 = kRtbAirbaseY;
+        runway.z2 = kRtbAirbaseZ;
+        runway.color = "#FFD700";
+        runway.width = 100.0;  // 100 ft wide
+        return {runway};
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>

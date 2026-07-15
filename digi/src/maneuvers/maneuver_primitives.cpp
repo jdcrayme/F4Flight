@@ -187,6 +187,7 @@ bool ManeuverPrimitives::HeadingAndAltitudeHold(double desPsi, double desAlt,
                                                  DigiState& digi, const AircraftState& state,
                                                  const FlightControlSystem& fcs,
                                                  FcsState& fcsState, double maxGs) {
+    (void)fcs;  // reserved for FCS-aware gain scheduling (FF reads fcs limits)
     double psiErr = headingError(desPsi, state.kin.sigma);
 
     SetYpedal(0.0, digi);

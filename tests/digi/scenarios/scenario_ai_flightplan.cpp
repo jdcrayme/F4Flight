@@ -112,6 +112,23 @@ public:
         return "All waypoints captured; Altitude band within ±500ft of target; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (waypointsVisited_ < wps_.size()) {
+            return "Captured " + std::to_string(waypointsVisited_) +
+                   " of " + std::to_string(wps_.size()) +
+                   " waypoints — aircraft did not complete the circuit.";
+        }
+        if (std::fabs(maxAlt_ - alt_) >= 500.0 || std::fabs(minAlt_ - alt_) >= 500.0) {
+            return "Altitude band was " +
+                   std::to_string(static_cast<int>(minAlt_)) + ".." +
+                   std::to_string(static_cast<int>(maxAlt_)) +
+                   "ft (target " + std::to_string(static_cast<int>(alt_)) +
+                   "ft, tolerance ±500ft) — altitude hold deviated during waypoint turns.";
+        }
+        return "";
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Waypoints captured: %zu / %zu  %s\n",

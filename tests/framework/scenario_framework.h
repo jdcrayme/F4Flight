@@ -99,6 +99,18 @@ public:
     // source. Default: empty (phase has no explicit criteria text).
     virtual std::string criteria() const { return ""; }
 
+    // Human-readable explanation of WHY the phase failed. Shown in the HTML
+    // report alongside the criteria when the phase did not pass. Default:
+    // empty (phase passed, or no specific reason).
+    //
+    // This is the key field for "Any test that fails needs to clearly
+    // communicate what conditions were not met." Phases should override this
+    // to return a concise, specific reason, e.g.:
+    //   "Never entered GunsEngage mode (stayed in WVREngage for 30s)"
+    //   "Min dist to slot was 1200ft (needed < 800ft)"
+    //   "Max G was 1.08 (needed >= 2.0) — aircraft did not maneuver"
+    virtual std::string failureReason() const { return ""; }
+
     // Custom trace entities for visualization. Called each frame (when trace
     // recording is enabled) to let the test provide additional entities to draw
     // in the HTML report — e.g. the flight lead, formation slot positions,
@@ -110,9 +122,19 @@ public:
     //   "lead"                       — green moving point with trail (flight lead)
     //   "slot"                       — blue diamond marker (desired formation slot)
     //   "wingman"                    — cyan moving point with trail (other wingmen)
+    //   "airbase"                    — amber square marker (friendly airbase)
     //
     // Default: empty (no custom entities).
     virtual std::vector<ThreatEntity> traceEntities() const { return {}; }
+
+    // Per-frame sample data for the trace. Called each frame (when trace
+    // recording is enabled) to let the test publish additional numeric data
+    // (target range, heading error, fuel state, TTGO, etc.) that isn't in
+    // the standard TraceFrame. The HTML report renders these in the frame
+    // readout panel and can plot them in the time-series.
+    //
+    // Default: empty (no extra samples).
+    virtual std::vector<TraceSample> traceSamples() const { return {}; }
 
 protected:
     std::string testName_;

@@ -24,6 +24,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
@@ -103,6 +104,12 @@ public:
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         if (sc_brain_->activeMode() == DigiMode::WVREngage) enteredWVREngage_ = true;
 
+        // Per-frame sample data (for trace)
+        curRange_ = range;
+        curHdgErr_ = std::fabs(dh) * RTD;  // heading error to target bearing
+        curG_ = as.loads.nzcgs;
+        curMode_ = sc_brain_->activeMode();
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (target %.0f NM ahead, %.0f kts)\n",
@@ -151,6 +158,45 @@ public:
                "Min alt >= 5000ft; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredWVREngage_) {
+            return "Never entered WVREngage mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; final range to target " + std::to_string(static_cast<int>(curRange_)) +
+                   "ft — target was not classified as a WVR threat).";
+        }
+        if (minAbsHeadingToNorth_ > 35.0 * DTR) {
+            return "Closest heading to target bearing was " +
+                   std::to_string(minAbsHeadingToNorth_ * RTD) +
+                   "deg (needed <= 35deg) — aircraft did not turn toward the target.";
+        }
+        const double gThreshold = isHeavy_ ? 1.05 : 2.0;
+        if (maxG_ < gThreshold) {
+            return "Max G was " + std::to_string(maxG_) +
+                   " (needed >= " + std::to_string(gThreshold) +
+                   ") — aircraft did not maneuver aggressively enough for BFM.";
+        }
+        if (minAlt_ < 5000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 5000ft) — aircraft descended below the floor during the maneuver.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"range",   curRange_,  "ft"},
+            {"hdg_err", curHdgErr_, "deg"},
+            {"G",       curG_,      ""},
+            {"in_wvr",  (enteredWVREngage_ && curMode_ == DigiMode::WVREngage) ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The target is auto-extracted by the framework via brain.resolvedTarget()
+    // (set by sc.setTarget(&target_) in Init, populated in compute()). No
+    // need to publish here — that would duplicate the auto-extracted entity.
+
     void Finish() const override {
         const double gThreshold = isHeavy_ ? 1.05 : 2.0;
         std::printf("  --- Summary ---\n");
@@ -179,6 +225,12 @@ private:
     bool enteredWVREngage_{false};
     bool isHeavy_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curRange_{0.0};
+    double curHdgErr_{0.0};
+    double curG_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 
 // ===========================================================================
@@ -248,6 +300,12 @@ public:
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         if (sc_brain_->activeMode() == DigiMode::WVREngage) enteredWVREngage_ = true;
 
+        // Per-frame sample data (for trace)
+        curRange_ = range;
+        curHdgChg_ = std::fabs(as.kin.sigma) * RTD;
+        curG_ = as.loads.nzcgs;
+        curMode_ = sc_brain_->activeMode();
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (target %.0f NM head-on, %.0f kts)\n",
@@ -292,6 +350,46 @@ public:
                "Min range <= 50% of initial (80% heavy); Min alt >= 5000ft; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredWVREngage_) {
+            return "Never entered WVREngage mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; final range to target " + std::to_string(static_cast<int>(curRange_)) +
+                   "ft — head-on target was not classified as a WVR threat).";
+        }
+        const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
+        if (maxHeadingChange_ < hdgThreshold * DTR) {
+            return "Max heading change was " +
+                   std::to_string(maxHeadingChange_ * RTD) +
+                   "deg (needed >= " + std::to_string(hdgThreshold) +
+                   "deg) — aircraft did not track the target through its pass.";
+        }
+        const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
+        if (minRange_ > rangeFraction * initialRange_) {
+            return "Min range was " + std::to_string(static_cast<int>(minRange_)) +
+                   "ft (needed <= " +
+                   std::to_string(static_cast<int>(rangeFraction * initialRange_)) +
+                   "ft) — target never closed to engagement range.";
+        }
+        if (minAlt_ < 5000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 5000ft) — aircraft descended below the floor during the maneuver.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"range",   curRange_,  "ft"},
+            {"hdg_chg", curHdgChg_, "deg"},
+            {"G",       curG_,      ""},
+            {"in_wvr",  (enteredWVREngage_ && curMode_ == DigiMode::WVREngage) ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The target is auto-extracted by the framework via brain.resolvedTarget().
+
     void Finish() const override {
         const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
         const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
@@ -321,6 +419,12 @@ private:
     bool enteredWVREngage_{false};
     bool isHeavy_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curRange_{0.0};
+    double curHdgChg_{0.0};
+    double curG_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 // DigiWVRScenario
 // ===========================================================================

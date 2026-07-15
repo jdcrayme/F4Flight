@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
@@ -95,6 +96,14 @@ public:
         maxHeadingChange_ = std::max(maxHeadingChange_, std::fabs(as.kin.sigma));
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curMissileRange_ = std::sqrt(
+            (missile_.x - as.kin.x) * (missile_.x - as.kin.x) +
+            (missile_.y - as.kin.y) * (missile_.y - as.kin.y));
+        curTtgo_ = sc_brain_->state().missileDefeat.missileDefeatTtgo;
+        curMode_ = mode;
+        curSensorSaw_ = sensorSawMissile_;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (autonomous missile detection)\n", testName_.c_str());
@@ -135,6 +144,39 @@ public:
                "Sensor pipeline saw incomingMissile; Min alt >= 5000ft; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredMissileDefeat_) {
+            return "Never entered MissileDefeat mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; missile closed to " + std::to_string(static_cast<int>(curMissileRange_)) +
+                   "ft — sensor fusion did not classify the threat as a missile).";
+        }
+        if (!sensorSawMissile_) {
+            return "Entered MissileDefeat mode but sensor pipeline never populated "
+                   "state_.missileDefeat.incomingMissile (mode entry may have been "
+                   "a stale latch from a prior frame).";
+        }
+        if (minAlt_ < 5000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 5000ft) — defensive maneuver pulled the aircraft too low.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"msl_range",  curMissileRange_, "ft"},
+            {"msl_ttgo",   curTtgo_,         "s"},
+            {"in_defeat",  (enteredMissileDefeat_ && curMode_ == DigiMode::MissileDefeat) ? 1.0 : 0.0, ""},
+            {"sensor_saw", curSensorSaw_ ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The missile is auto-extracted by the framework via
+    // state_.missileDefeat.incomingMissile (populated by SensorFusion from
+    // the truth_ state). No need to publish here.
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Autonomous MissileDefeat: %s\n",
@@ -160,6 +202,12 @@ private:
     bool enteredMissileDefeat_{false};
     bool sensorSawMissile_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curMissileRange_{0.0};
+    double curTtgo_{-1.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    bool curSensorSaw_{false};
 };
 
 // ===========================================================================
@@ -224,6 +272,13 @@ public:
         minAlt_ = std::min(minAlt_, -as.kin.z);
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curTargetRange_ = std::sqrt(
+            (target_.x - as.kin.x) * (target_.x - as.kin.x) +
+            (target_.y - as.kin.y) * (target_.y - as.kin.y));
+        curMode_ = mode;
+        curSensorSaw_ = sensorSawTarget_;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (autonomous target detection)\n", testName_.c_str());
@@ -262,6 +317,37 @@ public:
                "Sensor pipeline saw bestTarget; Min alt >= 5000ft; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredWVREngage_) {
+            return "Never entered WVREngage mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; target was at " + std::to_string(static_cast<int>(curTargetRange_)) +
+                   "ft — sensor fusion did not classify it as a WVR threat).";
+        }
+        if (!sensorSawTarget_) {
+            return "Entered WVREngage mode but sensor pipeline never populated "
+                   "sensorPicture.bestTarget (mode entry may have been a stale "
+                   "latch from a prior frame).";
+        }
+        if (minAlt_ < 5000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 5000ft) — engagement maneuver pulled the aircraft too low.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"tgt_range",  curTargetRange_, "ft"},
+            {"in_wvr",     (enteredWVREngage_ && curMode_ == DigiMode::WVREngage) ? 1.0 : 0.0, ""},
+            {"sensor_saw", curSensorSaw_ ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The target is auto-extracted by the framework via brain.resolvedTarget()
+    // (populated by SensorFusion from the truth_ state). No need to publish.
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Autonomous WVREngage: %s\n",
@@ -283,6 +369,11 @@ private:
     bool enteredWVREngage_{false};
     bool sensorSawTarget_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curTargetRange_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    bool curSensorSaw_{false};
 };
 
 // ===========================================================================

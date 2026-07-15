@@ -203,6 +203,13 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .readout .cell .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .readout .cell .v{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:15px;font-weight:600}
 .readout .cell.mode .v,.readout .cell.phase .v{font-size:12px}
+/* per-frame samples (range, heading error, fuel, TTGO, etc.) — visually
+   distinct from the built-in telemetry cells: accent-tinted background +
+   left border to mark them as scenario-published extras. */
+.readout .cell.sample{background:rgba(96,165,250,0.06);border-color:rgba(96,165,250,0.4);
+  border-left:3px solid var(--accent)}
+.readout .cell.sample .l{color:var(--accent)}
+.readout .cell.sample .v{font-size:13px;color:var(--text)}
 
 /* SVG styles */
 .axis-text{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10px;fill:var(--dim)}
@@ -222,6 +229,36 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .criteria-table td.name{font-weight:600;white-space:nowrap}
 .criteria-table td.status{width:60px;text-align:center}
 .criteria-table td.criteria-text{color:var(--muted);font-size:11px}
+/* failure reason row inside criteria-text cell */
+.failure-reason{color:#ff6b6b;font-style:italic;font-size:11px;margin-top:3px;
+  padding:2px 6px;border-left:2px solid #ff6b6b;background:rgba(255,107,107,0.06);
+  border-radius:2px;line-height:1.4}
+.failure-reason span{color:#ffb3b3}
+
+/* event log panel */
+.event-log-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+  padding:14px;margin-bottom:14px}
+.event-log-panel h3{margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.5px;font-weight:600}
+.event-log{max-height:200px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);
+  border-radius:6px;padding:4px;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
+.event-row{display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid rgba(42,47,66,0.5);
+  align-items:baseline;transition:background .1s}
+.event-row:last-child{border-bottom:none}
+.event-row:hover{background:rgba(255,255,255,0.03)}
+.event-row.sev-info{color:var(--muted)}
+.event-row.sev-warn{color:var(--warn)}
+.event-row.sev-fail{color:var(--fail)}
+.event-row.current{background:rgba(96,165,250,0.15);box-shadow:inset 2px 0 0 var(--accent)}
+.ev-time{min-width:56px;color:var(--dim);font-size:11px}
+.ev-cat{min-width:64px;font-size:10px;text-transform:uppercase;letter-spacing:.3px;
+  padding:1px 5px;border-radius:8px;background:var(--panel2);color:var(--text);
+  text-align:center;font-weight:600}
+.event-row.sev-warn .ev-cat{background:rgba(251,191,36,0.18);color:var(--warn)}
+.event-row.sev-fail .ev-cat{background:rgba(248,113,113,0.18);color:var(--fail)}
+.event-row.sev-info .ev-cat{background:rgba(138,144,166,0.18);color:var(--muted)}
+.ev-msg{flex:1;word-break:break-word}
+.event-log-empty{color:var(--dim);text-align:center;padding:20px;font-style:italic}
 
 /* 3D view */
 #topdown-host svg,#threed-host svg{cursor:grab}
@@ -265,6 +302,10 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
     <div class="criteria-panel hidden" id="criteria-panel">
       <h3>Pass / Fail Criteria</h3>
       <table class="criteria-table" id="criteria-table"></table>
+    </div>
+    <div class="event-log-panel hidden" id="event-log-panel">
+      <h3>Event Log <span id="event-log-count" style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0"></span></h3>
+      <div class="event-log" id="event-log"></div>
     </div>
     <div class="phase-chips" id="phase-chips"></div>
     <div class="controls">
@@ -744,6 +785,7 @@ function threatsSvg(tr,sx,sy,currentT){
     slot:{color:'#2196f3',label:'slot',r:5},
     guns:{color:'#ff9800',label:'guns',r:5},
     target:{color:'#9c27b0',label:'target',r:5},
+    airbase:{color:'#ffc107',label:'airbase',r:6},
   };
   let svg='<g class="threats">';
   // Draw trails + current positions for moving entities (missile, lead, wingman)
@@ -762,7 +804,7 @@ function threatsSvg(tr,sx,sy,currentT){
       svg+=el('text',{x:sx(cur.x)+7,y:sy(cur.y)+4,fill:st.color,'font-size':10},st.label);
     }
   }
-  // Draw bearing lines (guns, target) + slot markers at current frame
+  // Draw bearing lines (guns, target) + slot markers + airbase squares at current frame
   if(acFrame&&acFrame.threats){
     for(const th of acFrame.threats){
       if(th.type==='guns'){
@@ -781,6 +823,18 @@ function threatsSvg(tr,sx,sy,currentT){
         svg+=el('polygon',{points:cx+','+(cy-6)+' '+(cx+6)+','+cy+' '+cx+','+(cy+6)+' '+(cx-6)+','+cy,
           fill:'none',stroke:'#2196f3','stroke-width':1.5,opacity:0.8});
         svg+=el('text',{x:cx+8,y:cy+4,fill:'#2196f3','font-size':9},'slot');
+      }else if(th.type==='airbase'){
+        // Amber square marker for a friendly airbase (runway box) — larger
+        // than the target square, with a hollow fill so multiple airbases
+        // in close proximity are distinguishable. No bearing line is drawn
+        // (airbases are not engagement targets).
+        const cx=sx(th.x),cy=sy(th.y),r=7;
+        svg+=el('rect',{x:cx-r,y:cy-r,width:r*2,height:r*2,
+          fill:'rgba(255,193,7,0.35)',stroke:'#ffc107','stroke-width':1.5,opacity:0.95});
+        // Inner runway strip (thin amber rectangle, rotated to suggest a runway)
+        svg+=el('rect',{x:cx-r*0.7,y:cy-1.5,width:r*1.4,height:3,
+          fill:'#ffc107',opacity:0.9});
+        svg+=el('text',{x:cx+r+3,y:cy+4,fill:'#ffc107','font-size':10,'font-weight':'bold'},'airbase');
       }
     }
   }
@@ -1032,6 +1086,29 @@ function renderTimeSeries(tr){
     }
     // Border
     svg+=el('rect',{x:padL,y:top,width:plotW,height:ph,fill:'none',stroke:'var(--border)','stroke-width':1});
+    // Event tick marks — small vertical lines at event times, colored by
+    // severity. Only events within the active segment's time window are
+    // shown. The tick spans the full panel height with low opacity so it
+    // reads as a faint marker, not a solid bar — the data line stays
+    // visible underneath.
+    if(tr.events){
+      for(const e of tr.events){
+        if(e.t<segMinT||e.t>segMaxT)continue;
+        const sev=e.severity||'info';
+        const col=sev==='fail'?'#f87171':sev==='warn'?'#fbbf24':'#94a3b8';
+        const ex=sx(e.t);
+        if(ex<padL||ex>padL+plotW)continue;
+        svg+=el('line',{x1:ex.toFixed(1),y1:top,x2:ex.toFixed(1),y2:bottom,
+          stroke:col,'stroke-width':1,opacity:0.55,'stroke-dasharray':'2,2'});
+        // Small triangle marker at the top of the panel so events are
+        // visible even when the panel's data line is far from the event.
+        svg+=el('polygon',{points:
+          ex.toFixed(1)+','+(top-1)+' '+
+          (ex-3).toFixed(1)+','+(top-6)+' '+
+          (ex+3).toFixed(1)+','+(top-6),
+          fill:col,opacity:0.8});
+      }
+    }
     // Playhead line (updated separately)
     svg+=el('line',{id:'ts-play-'+pi,x1:padL,y1:top,x2:padL,y2:bottom,stroke:'#fff','stroke-width':1,opacity:0.5});
   }
@@ -1271,6 +1348,17 @@ function updatePlayhead(){
   const alt=-f.z;
   const phaseIdx=phaseRanges(tr).findIndex(([s,e])=>fi>=s&&fi<=e);
   const phaseName=phaseIdx>=0&&tr.phases[phaseIdx]?tr.phases[phaseIdx].name:'—';
+  // Per-frame samples (range, heading error, fuel, TTGO, etc.) — appended
+  // after the standard cells. Rendered with the 'sample' class so they can
+  // be styled differently (lighter background, accent border) from the
+  // built-in telemetry cells.
+  let samplesHtml='';
+  if(f.samples&&f.samples.length){
+    for(const s of f.samples){
+      const v=fmt(s.value,1)+(s.unit?' '+s.unit:'');
+      samplesHtml+=cell(esc(s.key),v,'sample');
+    }
+  }
   ro.innerHTML=
     cell('Time',fmt(f.t,1)+'s')+
     cell('Altitude',fmtInt(alt)+' ft')+
@@ -1281,7 +1369,12 @@ function updatePlayhead(){
     cell('Heading',fmt(f.psi*180/Math.PI,0)+'\u00b0')+
     cell('Throttle',fmt(f.throttle,2))+
     cell('AI Mode',esc(f.mode||'—'),'mode')+
-    cell('Phase',esc(phaseName),'phase');
+    cell('Phase',esc(phaseName),'phase')+
+    samplesHtml;
+  // Update the event log panel (auto-scrolls to the event closest to the
+  // playhead). Skipped if the trace has no events — renderEventLog hides
+  // the panel in that case.
+  renderEventLog(tr);
 }
 function cell(l,v,cls){return '<div class="cell '+(cls||'')+'"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>';}
 
@@ -1540,6 +1633,69 @@ function render3D(tr){
       svg+=el('text',{x:pWp[0]+10,y:pWp[1]-8,fill:'#fff','font-weight':'bold','font-size':11},esc(w.name||('WP'+(i+1))));
     }
   }
+  // Threats — render the current frame's threats at their projected 3D
+  // position. Moving entities (missile, lead, wingman) get a sphere + a
+  // dashed tadpole drop-line to the ground (matching the waypoint tadpole).
+  // Static markers (slot, target, guns, airbase) get their own marker shape.
+  // The 3D view re-renders every frame during playback, so only the current
+  // frame's threats are projected — no trail collection across frames.
+  // Color scheme matches threatsSvg() (2D top-down) for consistency.
+  if(acFrame&&acFrame.threats&&acFrame.threats.length){
+    const tStyle={
+      missile:{color:'#f44336',r:6,label:'missile'},
+      lead:{color:'#4caf50',r:6,label:'lead'},
+      wingman:{color:'#00e5ff',r:5,label:'wingman'},
+      slot:{color:'#2196f3',r:5,label:'slot'},
+      guns:{color:'#ff9800',r:5,label:'guns'},
+      target:{color:'#9c27b0',r:5,label:'target'},
+      airbase:{color:'#ffc107',r:6,label:'airbase'},
+    };
+    for(const th of acFrame.threats){
+      const st=tStyle[th.type]; if(!st)continue;
+      const alt=-th.z; // NED z is negative for altitude
+      const pTh=project(th.x,th.y,alt);
+      const pGnd=project(th.x,th.y,0);
+      // Tadpole drop-line for all threats (so altitude is readable in 3D)
+      svg+=el('line',{x1:pTh[0].toFixed(1),y1:pTh[1].toFixed(1),
+        x2:pGnd[0].toFixed(1),y2:pGnd[1].toFixed(1),
+        stroke:st.color,'stroke-width':1,'stroke-dasharray':'3,2',opacity:0.5});
+      // Ground ring + dot (color-coded by threat type)
+      svg+=el('circle',{cx:pGnd[0].toFixed(1),cy:pGnd[1].toFixed(1),
+        r:4,fill:'none',stroke:st.color,'stroke-width':1.5,opacity:0.55});
+      svg+=el('circle',{cx:pGnd[0].toFixed(1),cy:pGnd[1].toFixed(1),
+        r:1.2,fill:st.color,opacity:0.7});
+      // Marker at the projected 3D position. Use distinct shapes per type
+      // so they're visually distinguishable even when colors overlap:
+      //   missile/lead/wingman → filled circle (moving entities)
+      //   target → square (target box)
+      //   slot  → diamond (formation slot)
+      //   guns  → inverted triangle (ground gun)
+      //   airbase → larger square (runway box)
+      if(th.type==='target'||th.type==='airbase'){
+        const s=st.r;
+        svg+=el('rect',{x:(pTh[0]-s).toFixed(1),y:(pTh[1]-s).toFixed(1),
+          width:(s*2).toFixed(1),height:(s*2).toFixed(1),
+          fill:st.color,stroke:'#fff','stroke-width':1,opacity:0.9});
+      }else if(th.type==='slot'){
+        svg+=el('polygon',{points:diamondPts(pTh[0],pTh[1],st.r),
+          fill:'none',stroke:st.color,'stroke-width':1.5,opacity:0.9});
+      }else if(th.type==='guns'){
+        const s=st.r;
+        svg+=el('polygon',{points:
+          (pTh[0]).toFixed(1)+','+(pTh[1]-s).toFixed(1)+' '+
+          (pTh[0]+s).toFixed(1)+','+(pTh[1]+s).toFixed(1)+' '+
+          (pTh[0]-s).toFixed(1)+','+(pTh[1]+s).toFixed(1),
+          fill:st.color,stroke:'#fff','stroke-width':1,opacity:0.9});
+      }else{
+        // missile, lead, wingman: filled circle
+        svg+=el('circle',{cx:pTh[0].toFixed(1),cy:pTh[1].toFixed(1),
+          r:st.r,fill:st.color,stroke:'#fff','stroke-width':1,opacity:0.9});
+      }
+      // Label (offset to the right of the marker)
+      svg+=el('text',{x:(pTh[0]+st.r+3).toFixed(1),y:(pTh[1]+4).toFixed(1),
+        fill:st.color,'font-size':10,'font-weight':'bold'},st.label);
+    }
+  }
   // Playhead marker (updated by updatePlayhead to include 3D aircraft model)
   svg+='<g id="td3-playhead"></g>';
   svg+=el('text',{x:12,y:H-8,fill:'#5a6076','font-size':11},'drag to orbit \u00b7 scroll to zoom \u00b7 centered on aircraft');
@@ -1588,10 +1744,18 @@ function renderCriteria(tr){
     let segOf=-1;
     for(let si=0;si<segs.length;si++){if(segs[si].indexOf(i)>=0){segOf=si;break;}}
     const inActiveSeg=segOf===state.segmentIdx;
+    // Failure reason — shown only for failed phases with a non-empty reason.
+    // Rendered as a second line inside the criteria-text cell with a red
+    // accent (left border + tinted background) so it stands out.
+    let critCell='<td class="criteria-text">'+esc(p.criteria||'\u2014');
+    if(!p.passed&&!p.skipped&&p.failureReason){
+      critCell+='<div class="failure-reason">\u26a0 <span>'+esc(p.failureReason)+'</span></div>';
+    }
+    critCell+='</td>';
     html+='<tr data-phase="'+i+'" data-seg="'+segOf+'" style="cursor:pointer;'+(inActiveSeg?'':'opacity:0.5')+'">'+
       '<td>'+(i+1)+'</td><td class="name">'+esc(p.name)+'</td>'+
       '<td class="status"><span class="badge '+cls+'">'+res+'</span></td>'+
-      '<td class="criteria-text">'+esc(p.criteria||'\u2014')+'</td></tr>';
+      critCell+'</tr>';
   }
   html+='</tbody>';
   tbl.innerHTML=segHtml+html;
@@ -1629,6 +1793,71 @@ function renderCriteria(tr){
 }
 
 // ---------------------------------------------------------------------------
+// Event log panel — shows discrete events (mode changes, weapon fires, etc.)
+// in the current segment as a scrollable list. Auto-scrolls to the event
+// closest to the current playhead time on each updatePlayhead().
+// ---------------------------------------------------------------------------
+function renderEventLog(tr){
+  const panel=document.getElementById('event-log-panel');
+  const host=document.getElementById('event-log');
+  const countEl=document.getElementById('event-log-count');
+  if(!panel||!host)return;
+  if(!tr.events||!tr.events.length){
+    panel.classList.add('hidden');
+    host.innerHTML='';
+    if(countEl)countEl.textContent='';
+    return;
+  }
+  panel.classList.remove('hidden');
+  // Filter events to the active segment's time window
+  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
+  const events=tr.events.filter(e=>e.t>=segMinT&&e.t<=segMaxT);
+  if(countEl)countEl.textContent='('+events.length+' in segment)';
+  if(!events.length){
+    host.innerHTML='<div class="event-log-empty">No events in this segment.</div>';
+    return;
+  }
+  // Render rows. Track which row index is closest to the playhead so we can
+  // auto-scroll to it (and highlight it).
+  let html='';
+  let bestIdx=-1, bestDt=Infinity;
+  for(let i=0;i<events.length;i++){
+    const e=events[i];
+    const sev=e.severity||'info';
+    const dt=Math.abs(e.t-state.t);
+    if(dt<bestDt){bestDt=dt;bestIdx=i;}
+    html+='<div class="event-row sev-'+sev+(i===bestIdx?' current':'')+'" data-t="'+e.t.toFixed(3)+'">'+
+      '<span class="ev-time">'+fmt(e.t,1)+'s</span>'+
+      '<span class="ev-cat">'+esc(e.category||'info')+'</span>'+
+      '<span class="ev-msg">'+esc(e.message||'')+'</span>'+
+      '</div>';
+  }
+  host.innerHTML=html;
+  // Auto-scroll to the current event row (closest to playhead)
+  if(bestIdx>=0){
+    const row=host.children[bestIdx];
+    if(row){
+      // Scroll into view only if not already visible (avoids fighting the
+      // user's manual scroll).
+      const cTop=host.scrollTop, cBot=cTop+host.clientHeight;
+      const rTop=row.offsetTop, rBot=rTop+row.offsetHeight;
+      if(rTop<cTop||rBot>cBot){
+        // Center the current row in the visible area
+        host.scrollTop=rTop-host.clientHeight/2+row.offsetHeight/2;
+      }
+    }
+  }
+  // Click an event row → jump the playhead to that event's time
+  host.querySelectorAll('.event-row').forEach(row=>{
+    row.addEventListener('click',()=>{
+      state.t=+row.dataset.t;
+      updatePlayhead();
+    });
+    row.style.cursor='pointer';
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Detail view assembly
 // ---------------------------------------------------------------------------
 function showDetail(i){
@@ -1652,6 +1881,7 @@ function showDetail(i){
     '<span>Aircraft: <b>'+esc(tr.aircraft)+'</b></span>';
   // Criteria panel (now includes clickable rows + segment tabs)
   renderCriteria(tr);
+  renderEventLog(tr);
   // Hide the old phase-chips bar (replaced by clickable criteria rows)
   document.getElementById('phase-chips').classList.add('hidden');
   document.getElementById('time-end').textContent=fmt(traceDuration(tr),1)+'s';

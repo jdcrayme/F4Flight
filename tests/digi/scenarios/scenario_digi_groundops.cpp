@@ -22,6 +22,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
@@ -82,6 +83,13 @@ public:
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curAlt_ = altAGL;
+        curVcas_ = as.vcas;
+        curThrottle_ = input.throttle;
+        curMode_ = sc_brain_->activeMode();
+        curPhase_ = sc_brain_->state().ag.groundOps.phase;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (takeoff from runway 27)\n", testName_.c_str());
@@ -136,6 +144,50 @@ public:
                "Heavy: speed >= 80kts; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredTakeoff_) {
+            return "Never entered Takeoff mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   ") — brain did not latch Takeoff despite commandTakeoff().";
+        }
+        if (!appliedTakeoffThrottle_) {
+            return "Takeoff throttle never advanced (max throttle seen: " +
+                   std::to_string(curThrottle_) +
+                   ", needed > 0.9) — throttle schedule did not engage.";
+        }
+        if (isHeavy_) {
+            if (maxSpeed_ < 80.0) {
+                return "Heavy aircraft max speed was " + std::to_string(maxSpeed_) +
+                       "kts (needed >= 80kts) — insufficient acceleration for heavy T/W.";
+            }
+            return "";
+        }
+        if (!becameAirborne_) {
+            return "Never became airborne (max alt " +
+                   std::to_string(static_cast<int>(maxAlt_)) +
+                   "ft, needed > 10ft) — rotation/lift-off did not occur.";
+        }
+        if (maxAlt_ < 500.0) {
+            return "Max altitude was " + std::to_string(static_cast<int>(maxAlt_)) +
+                   "ft (needed >= 500ft) — climb-out was insufficient.";
+        }
+        if (maxSpeed_ < 200.0) {
+            return "Max speed was " + std::to_string(maxSpeed_) +
+                   "kts (needed >= 200kts) — acceleration was insufficient for rotation.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"alt",      curAlt_,      "ft"},
+            {"vcas",     curVcas_,     "kts"},
+            {"throttle", curThrottle_, ""},
+            {"in_takeoff", (enteredTakeoff_ && curMode_ == DigiMode::Takeoff) ? 1.0 : 0.0, ""},
+        };
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Takeoff mode:    %s\n", enteredTakeoff_ ? "[PASS]" : "[FAIL]");
@@ -164,6 +216,13 @@ private:
     bool enteredTakeoff_{false};
     bool appliedTakeoffThrottle_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curAlt_{0.0};
+    double curVcas_{0.0};
+    double curThrottle_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    GroundOpsPhase curPhase_{GroundOpsPhase::Parking};
 };
 
 // ===========================================================================
@@ -267,6 +326,13 @@ public:
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curAlt_ = altAGL;
+        curVcas_ = as.vcas;
+        curThrottle_ = input.throttle;
+        curMode_ = sc_brain_->activeMode();
+        curPhase_ = sc_brain_->state().ag.groundOps.phase;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (landing on runway 27, 3NM final)\n", testName_.c_str());
@@ -333,6 +399,51 @@ public:
                "Touch down; Min alt >= -500ft; Decel >= 20kts after touchdown; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredLanding_) {
+            return "Never entered Landing mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   ") — brain did not latch Landing despite commandLanding().";
+        }
+        if (minAlt_ > initialAlt_ - 500.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed <= " + std::to_string(static_cast<int>(initialAlt_ - 500.0)) +
+                   "ft) — aircraft did not descend (level-flight noise only).";
+        }
+        if (maxAlt_ > initialAlt_ + 400.0) {
+            return "Max altitude was " + std::to_string(static_cast<int>(maxAlt_)) +
+                   "ft (needed <= " + std::to_string(static_cast<int>(initialAlt_ + 400.0)) +
+                   "ft) — landing tracker climbed excessively (Phugoid transient or go-around).";
+        }
+        if (!touchedDown_) {
+            return "Never touched down (min alt " +
+                   std::to_string(static_cast<int>(minAlt_)) +
+                   "ft, needed <= 10ft) — flare did not bring the aircraft to ground.";
+        }
+        if (minAlt_ < -500.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= -500ft) — ground reaction bug let the aircraft sink underground.";
+        }
+        if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 20.0) {
+            return "Deceleration after touchdown was insufficient (touchdown " +
+                   std::to_string(static_cast<int>(touchdownSpeed_)) + "kts -> min " +
+                   std::to_string(static_cast<int>(minSpeed_)) +
+                   "kts, needed >= 20kts decel) — rollout phase did not engage brakes/idle.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"alt",      curAlt_,      "ft"},
+            {"vcas",     curVcas_,     "kts"},
+            {"throttle", curThrottle_, ""},
+            {"in_landing", (enteredLanding_ && curMode_ == DigiMode::Landing) ? 1.0 : 0.0, ""},
+            {"touched_down", touchedDown_ ? 1.0 : 0.0, ""},
+        };
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Landing mode: %s\n", enteredLanding_ ? "[PASS]" : "[FAIL]");
@@ -366,6 +477,13 @@ private:
     bool hasNaN_{false};
     bool enteredLanding_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curAlt_{0.0};
+    double curVcas_{0.0};
+    double curThrottle_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    GroundOpsPhase curPhase_{GroundOpsPhase::Parking};
 };
 
 // ===========================================================================
@@ -433,6 +551,12 @@ public:
 
         if (std::isnan(as.kin.x) || std::isnan(as.kin.vt)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curDist_ = dist;
+        curVcas_ = as.vcas;
+        curMode_ = sc_brain_->activeMode();
+        curPhase_ = sc_brain_->state().ag.groundOps.phase;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (taxi 500ft east → threshold)\n", testName_.c_str());
@@ -470,6 +594,33 @@ public:
         return "Enter TaxiToRunway; Reach threshold (<50ft); Speed <= 35kts; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredTaxi_) {
+            return "Never entered TaxiToRunway phase (final ground ops phase id: " +
+                   std::to_string(static_cast<int>(curPhase_)) +
+                   ") — RunTaxi code path did not engage.";
+        }
+        if (!reachedThreshold_) {
+            return "Never reached the runway threshold (min dist " +
+                   std::to_string(static_cast<int>(minDist_)) +
+                   "ft, needed < 50ft) — taxi steering did not converge to origin.";
+        }
+        if (maxSpeed_ > 35.0) {
+            return "Max taxi speed was " + std::to_string(maxSpeed_) +
+                   "kts (needed <= 35kts) — speed governor did not hold taxi speed.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"d_thresh", curDist_, "ft"},
+            {"vcas",     curVcas_, "kts"},
+            {"in_taxi",  (enteredTaxi_ && curPhase_ == GroundOpsPhase::TaxiToRunway) ? 1.0 : 0.0, ""},
+        };
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Taxi mode: %s\n", enteredTaxi_ ? "[PASS]" : "[FAIL]");
@@ -489,6 +640,12 @@ private:
     bool enteredTaxi_{false};
     bool hasNaN_{false};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curDist_{0.0};
+    double curVcas_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    GroundOpsPhase curPhase_{GroundOpsPhase::Parking};
 };
 
 // ===========================================================================

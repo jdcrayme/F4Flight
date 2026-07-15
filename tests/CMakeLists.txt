@@ -139,6 +139,16 @@ set(F4FLIGHT_DIGI_SCENARIOS
     digi_formation
     digi_rtb
     digi_tactics
+    # New scenarios (Task 5): cover untested digi modes.
+    digi_bvr              # BVREngage (8-35 NM target)
+    digi_missile_engage   # MissileEngage (SMS with AIM-9, 5 NM)
+    digi_merge            # Merge (close nose-to-nose)
+    digi_collision        # CollisionAvoid (head-on collision course)
+    digi_separate         # Separate / RTB / Bugout (damage + fuel-low)
+    digi_guns_rear        # GunsEngage rear-aspect (stern conversion)
+    digi_wvr_defensive    # WVR defensive (bandit on tail)
+    digi_formation_types  # Trail / Echelon / Spread formations
+    digi_loiter_orbit     # Loiter full orbit verification (180s)
 )
 
 foreach(fixture ${F4FLIGHT_FIXTURES})

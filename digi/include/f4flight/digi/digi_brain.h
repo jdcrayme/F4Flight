@@ -363,6 +363,12 @@ public:
     bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
     const std::vector<Vec3>& waypoints() const { return wps_; }
 
+    /// The resolved offensive target for THIS frame (injected or auto-tracked
+    /// from SensorFusion). Non-null when the brain has a target to engage.
+    /// Used by the test framework / visualization to draw the target in the
+    /// report even when the target was detected autonomously (not injected).
+    const DigiEntity* resolvedTarget() const { return wvrTarget_; }
+
     /// TESTING ONLY — mutable state access. Production code should never
     /// write to DigiState directly; use configure() / setFrameInputs() /
     /// commandXxx() instead.
@@ -405,6 +411,17 @@ public:
         selfEntityExplicit_ = false;
         wvrTarget_ = nullptr;
         lastInjectedMissilePtr_ = nullptr;  // so next injection is detected as new
+        // Clear the SensorFusion picture so stale contacts (bestTarget,
+        // incomingMissile, gunsThreat) from a previous scenario don't leak
+        // into the next one and trigger spurious mode entries. Without this,
+        // a guns scenario that populates bestTarget would cause the next
+        // scenario (e.g. digi_rtb) to enter WVREngage instead of RTB.
+        sensorFusion_.reset();
+        // Clear the SMS pointer — the host owns the SMS object and may
+        // destroy it between scenarios. Without this, a stale pointer
+        // causes a use-after-free when the next scenario's compute() calls
+        // sms_->hasWeaponClass().
+        sms_ = nullptr;
     }
 
     // =======================================================================

@@ -54,6 +54,26 @@ struct SceneLine {
     double width{0.0};           // stroke width in ft (0 = default 2)
 };
 
+// TraceSample — a single key-value sample for a frame (e.g. "range"=5000ft).
+// These let scenarios publish additional per-frame data (target range, heading
+// error, fuel state, TTGO, etc.) that isn't in the standard TraceFrame.
+// The HTML report renders these in the frame readout panel.
+struct TraceSample {
+    std::string key;
+    double      value{0.0};
+    std::string unit;   // "ft", "kts", "deg", "s", "" — for display
+};
+
+// TraceEvent — a discrete event at a point in time (mode transition, weapon
+// fire, sensor detection, test milestone, assertion hit/miss, etc.).
+// Events are rendered as markers on the time-series and in an event log.
+struct TraceEvent {
+    double      t{0.0};          // simulation time (s)
+    std::string category;        // "mode", "weapon", "sensor", "test", "info"
+    std::string message;         // human-readable description
+    std::string severity;        // "info", "warn", "fail" — for color coding
+};
+
 // TraceFrame — one frame of the trace.
 struct TraceFrame {
     double t{0.0};              // simulation time (s)
@@ -83,6 +103,9 @@ struct TraceFrame {
 
     // Threats/targets active this frame
     std::vector<ThreatEntity> threats;
+
+    // Additional per-frame samples (range, heading error, fuel, TTGO, etc.)
+    std::vector<TraceSample> samples;
 };
 
 // PhaseResult — result of one phase in the scenario.
@@ -95,6 +118,9 @@ struct PhaseResult {
     bool reinitializes{false};  // true if the phase called fm.init() (flight
                                 // model re-initialized → discontinuity)
     std::string criteria;       // human-readable pass/fail criteria (what's checked)
+    std::string failureReason;  // human-readable explanation of WHY the phase
+                                // failed (empty if passed). e.g. "Never entered
+                                // GunsEngage mode (stayed in WVREngage)"
 };
 
 // Trace — a complete maneuver trace.
@@ -106,6 +132,7 @@ struct Trace {
     std::vector<TraceFrame> frames;
     std::vector<Waypoint> waypoints;    // navigation waypoints (scenario-level)
     std::vector<SceneLine> sceneLines;  // static geometry (runway, taxiways, etc.)
+    std::vector<TraceEvent> events;     // discrete events (mode changes, fires, etc.)
 };
 
 // TraceRecorder — collects frames during a scenario run.
@@ -118,8 +145,13 @@ struct Trace {
 //   rec.addSceneLine(runwayLine);
 //   // each frame:
 //   rec.record(t, state, input, modeName, phaseName, threats);
+//   rec.addSample("range", rangeFt, "ft");  // additional per-frame data
+//   // discrete events:
+//   rec.addEvent(t, "mode", "Entered GunsEngage", "info");
+//   rec.addEvent(t, "weapon", "Gun fired", "info");
 //   // at phase boundaries:
 //   rec.markPhase("Takeoff", startT, endT, passed, skipped, criteria);
+//   rec.setPhaseFailureReason("Never reached rotation speed");
 //   // at end:
 //   rec.finish(duration);
 //   rec.write("trace.json");
@@ -137,6 +169,15 @@ public:
                 const std::string& modeName, const std::string& phaseName,
                 const std::vector<ThreatEntity>& threats);
 
+    // Add a per-frame sample to the LAST recorded frame. Call AFTER record().
+    // Used for scenario-specific data (target range, heading error, fuel, etc.).
+    void addSample(const std::string& key, double value, const std::string& unit = "");
+
+    // Add a discrete event at time t. Events are rendered as markers on the
+    // time-series and in an event log in the HTML report.
+    void addEvent(double t, const std::string& category,
+                  const std::string& message, const std::string& severity = "info");
+
     // Set navigation waypoints (scenario-level, called once after Init).
     void setWaypoints(const std::vector<Waypoint>& wps);
 
@@ -146,7 +187,8 @@ public:
     // Mark a phase boundary (called at the end of each phase).
     void markPhase(const std::string& name, double start_s, double end_s,
                    bool passed, bool skipped, bool reinitializes,
-                   const std::string& criteria = "");
+                   const std::string& criteria = "",
+                   const std::string& failureReason = "");
 
     void finish(double duration_s);
 

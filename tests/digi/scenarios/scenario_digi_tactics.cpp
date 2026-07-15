@@ -27,6 +27,7 @@
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
@@ -81,6 +82,10 @@ public:
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
 
+        // Per-frame sample data (for trace)
+        curHdgChg_ = maxAbsHeadingChange_ * RTD;
+        curMode_ = currentMode_;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (no waypoints → Loiter orbit)\n", testName_.c_str());
@@ -115,6 +120,32 @@ public:
                "No crash; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredLoiter_) {
+            return "Never entered Loiter mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   ") — brain did not latch Loiter despite the mode being forced.";
+        }
+        if (maxAbsHeadingChange_ < 20.0 * DTR) {
+            return "Max heading change was " + std::to_string(curHdgChg_) +
+                   "deg (needed > 20deg) — aircraft is not orbiting (flying straight).";
+        }
+        if (minAlt_ < alt_ - 2000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= " + std::to_string(static_cast<int>(alt_ - 2000.0)) +
+                   "ft) — orbit descended too low.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"hdg_chg",  curHdgChg_, "deg"},
+            {"in_loiter", (enteredLoiter_ && curMode_ == DigiMode::Loiter) ? 1.0 : 0.0, ""},
+        };
+    }
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Loiter:       %s\n", enteredLoiter_ ? "[PASS]" : "[FAIL]");
@@ -140,6 +171,10 @@ private:
     double minAlt_{1e9};
     double maxG_{0.0};
     bool hasNaN_{false};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curHdgChg_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 
 // ===========================================================================
@@ -202,6 +237,10 @@ public:
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         minAlt_ = std::min(minAlt_, -as.kin.z);
 
+        // Per-frame sample data (for trace)
+        curRstick_ = input.rstick;
+        curMode_ = currentMode_;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (wingman break-right order)\n", testName_.c_str());
@@ -237,6 +276,42 @@ public:
                "Maneuver clears (exits FollowOrders); No crash; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredFollowOrders_) {
+            return "Never entered FollowOrders mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   ") — break order was not dispatched/accepted by the brain.";
+        }
+        if (!rolledRight_) {
+            return "Entered FollowOrders but never rolled right (max rstick was " +
+                   std::to_string(curRstick_) +
+                   ", needed > 0.05) — break turn direction was wrong or absent.";
+        }
+        if (!maneuverCleared_) {
+            return "Break maneuver never cleared (still in FollowOrders at end of phase) — "
+                   "wingman did not return to Wingy fallback after the break turn.";
+        }
+        if (minAlt_ < alt_ - 2000.0) {
+            return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= " + std::to_string(static_cast<int>(alt_ - 2000.0)) +
+                   "ft) — break turn pulled the aircraft too low.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"rstick",     curRstick_, "deg"},
+            {"in_orders",  (enteredFollowOrders_ && curMode_ == DigiMode::FollowOrders) ? 1.0 : 0.0, ""},
+            {"cleared",    maneuverCleared_ ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The flight lead is auto-extracted by the framework via
+    // frameInputs().injectedLead (set by sc.setLead(&lead_) in Init).
+    // No need to publish here — that would duplicate the auto-extracted entity.
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered FollowOrders: %s\n", enteredFollowOrders_ ? "[PASS]" : "[FAIL]");
@@ -261,6 +336,10 @@ private:
     bool maneuverCleared_{false};
     double minAlt_{1e9};
     bool hasNaN_{false};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curRstick_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 
 // ===========================================================================

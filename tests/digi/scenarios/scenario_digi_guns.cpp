@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace f4flight;
 using namespace f4flight::digi;
@@ -96,6 +97,23 @@ public:
         minAlt_ = std::min(minAlt_, -as.kin.z);
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
+        // Per-frame sample data (for trace)
+        curRange_ = std::fabs(target_.x - as.kin.x);
+        // Target aspect: angle between target's velocity and line-of-sight from
+        // target to aircraft (0 = head-on, 180 = tail-chase).
+        const double losX = as.kin.x - target_.x;
+        const double losY = as.kin.y - target_.y;
+        const double losMag = std::sqrt(losX * losX + losY * losY);
+        if (losMag > 1.0 && target_.speed > 1.0) {
+            const double tvx = target_.vx;
+            const double tvy = target_.vy;
+            const double dot = (tvx * losX + tvy * losY) /
+                               (target_.speed * losMag);
+            curTargetAspect_ = std::acos(dot < -1.0 ? -1.0 : (dot > 1.0 ? 1.0 : dot)) * RTD;
+        }
+        curMode_ = mode;
+        curFire_ = input.fireGun;
+
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
                 std::printf("\n%s (head-on gun engagement)\n", testName_.c_str());
@@ -146,6 +164,47 @@ public:
                "Fighter: fireGun true in GunsEngage for >= 6 frames; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredGunsEngage_) {
+            return "Never entered GunsEngage mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   "; target closed to " + std::to_string(static_cast<int>(curRange_)) +
+                   "ft but GunsEngage transition criteria not met).";
+        }
+        if (minAlt_ < 100.0) {
+            return "Aircraft descended to " + std::to_string(static_cast<int>(minAlt_)) +
+                   "ft (needed >= 100ft) — guns tracking pulled the aircraft too low.";
+        }
+        if (isHeavy_) return "";  // heavy: only mode+alt required, both passed
+        if (!firedGunInGunsEngage_) {
+            return "Entered GunsEngage but never fired the gun while in that mode "
+                   "(final range " + std::to_string(static_cast<int>(curRange_)) +
+                   "ft, target aspect " + std::to_string(static_cast<int>(curTargetAspect_)) +
+                   "deg — pipper never settled on target).";
+        }
+        if (fireFrames_ < 6) {
+            return "Fired the gun in GunsEngage for only " + std::to_string(fireFrames_) +
+                   " frame(s) (needed >= 6 frames = 0.1s sustained fire) — "
+                   "fire was not sustained.";
+        }
+        return "";
+    }
+
+    // Per-frame samples for the trace readout + time-series plots.
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"range",       curRange_,        "ft"},
+            {"tgt_aspect",  curTargetAspect_, "deg"},
+            {"in_guns",     (enteredGunsEngage_ && curMode_ == DigiMode::GunsEngage) ? 1.0 : 0.0, ""},
+            {"fire",        curFire_ ? 1.0 : 0.0, ""},
+        };
+    }
+
+    // The target is auto-extracted by the framework via brain.resolvedTarget()
+    // (populated by SensorFusion from the truth_ state). No need to publish it
+    // here — that would duplicate the auto-extracted entity each frame.
+
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered GunsEngage:        %s\n", enteredGunsEngage_ ? "[PASS]" : "[FAIL]");
@@ -178,6 +237,12 @@ private:
     bool isHeavy_{false};
     int  fireFrames_{0};
     const DigiBrain* sc_brain_{nullptr};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curRange_{0.0};
+    double curTargetAspect_{0.0};
+    DigiMode curMode_{DigiMode::NoMode};
+    bool curFire_{false};
 };
 
 // ===========================================================================

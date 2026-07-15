@@ -144,6 +144,11 @@ public:
         curSlotX_ = desX;
         curSlotY_ = desY;
         curSlotZ_ = desZ;
+        // Per-frame sample data (for trace)
+        curDistToSlot_ = distToSlot;
+        curSpeedErr_ = std::fabs(as.vcas - speed_);
+        curInPosition_ = sc_brain_->state().formation.wingman.inPosition;
+        curMode_ = sc_brain_->activeMode();
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
@@ -163,12 +168,14 @@ public:
     }
 
     // Provide custom trace entities for visualization:
-    //   - "lead" (green): the flight lead
+    //   - "lead" (green): the flight lead — auto-extracted by the framework
+    //     via frameInputs().injectedLead (set by sc.setLead(&lead_) in Init).
+    //     Not duplicated here.
     //   - "slot" (blue diamond): the AI wingman's desired formation slot
     //   - "wingman" (cyan): the two ghost wingmen
     std::vector<ThreatEntity> traceEntities() const override {
         return {
-            {"slot", curSlotX_, curSlotY_, curSlotZ_, 0.0},
+            {"slot",    curSlotX_, curSlotY_, curSlotZ_, 0.0},
             {"wingman", ghost2_.x, ghost2_.y, ghost2_.z, ghost2_.speed},
             {"wingman", ghost3_.x, ghost3_.y, ghost3_.z, ghost3_.speed},
         };
@@ -190,6 +197,39 @@ public:
     std::string criteria() const override {
         return "Enter Wingy mode; Get within 800ft of slot; "
                "Reach in-position (< 800ft); Speed error < 90kts; No NaN";
+    }
+
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (!enteredWingy_) {
+            return "Never entered Wingy mode (final mode: " +
+                   std::string(digiModeName(curMode_)) +
+                   ") — formation role was not activated.";
+        }
+        if (minDistToSlot_ > 800.0) {
+            return "Min distance to slot was " +
+                   std::to_string(static_cast<int>(minDistToSlot_)) +
+                   "ft (needed < 800ft) — wingman never closed to formation position.";
+        }
+        if (!inPosition_) {
+            return "Never reached in-position flag (got within " +
+                   std::to_string(static_cast<int>(minDistToSlot_)) +
+                   "ft of slot, but brain never set inPosition=true).";
+        }
+        if (maxSpeedErr_ > 90.0) {
+            return "Max speed error was " + std::to_string(maxSpeedErr_) +
+                   "kts (needed < 90kts) — wingman did not match lead's speed.";
+        }
+        return "";
+    }
+
+    std::vector<TraceSample> traceSamples() const override {
+        return {
+            {"d_slot",     curDistToSlot_, "ft"},
+            {"spd_err",    curSpeedErr_,   "kts"},
+            {"in_pos",     curInPosition_ ? 1.0 : 0.0, ""},
+            {"in_wingy",   (enteredWingy_ && curMode_ == DigiMode::Wingy) ? 1.0 : 0.0, ""},
+        };
     }
 
     void Finish() const override {
@@ -221,6 +261,12 @@ private:
 
     // Current desired slot position (for traceEntities)
     mutable double curSlotX_{0.0}, curSlotY_{0.0}, curSlotZ_{0.0};
+
+    // Per-frame sample data (updated in Evaluate, read in traceSamples)
+    double curDistToSlot_{0.0};
+    double curSpeedErr_{0.0};
+    bool curInPosition_{false};
+    DigiMode curMode_{DigiMode::NoMode};
 };
 
 // ===========================================================================

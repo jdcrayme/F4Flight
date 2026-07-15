@@ -149,6 +149,51 @@ public:
                "over last 30s; Heading ±10° over last 30s; Alt+Spd capture achieved; No NaN";
     }
 
+    std::string failureReason() const override {
+        if (hasNaN_) return "NaN detected in aircraft state (kinematic divergence).";
+        if (altCaptureTime_ == 0.0) {
+            return "Altitude capture never achieved (target " +
+                   std::to_string(static_cast<int>(targetAlt_)) +
+                   "ft, start " + std::to_string(static_cast<int>(startAlt_)) +
+                   "ft) — GammaHold did not bring the aircraft to target altitude.";
+        }
+        if (speedCaptureTime_ == 0.0) {
+            return "Speed capture never achieved (target " +
+                   std::to_string(static_cast<int>(targetSpd_)) +
+                   "kts) — MachHold did not bring the aircraft to target speed after altitude capture.";
+        }
+        if (!checkAltPass()) {
+            double mn, mx;
+            windowMinMax(altSamples_, phaseTime_, kSettle, mn, mx);
+            return "Altitude band over last " + std::to_string(static_cast<int>(kSettle)) +
+                   "s was " + std::to_string(static_cast<int>(mn)) + ".." +
+                   std::to_string(static_cast<int>(mx)) +
+                   "ft (target " + std::to_string(static_cast<int>(targetAlt_)) +
+                   "ft, tolerance ±" + std::to_string(static_cast<int>(ALT_TOL)) +
+                   "ft) — altitude hold not stable.";
+        }
+        if (!checkSpdPass()) {
+            double mn, mx;
+            windowMinMax(spdSamples_, phaseTime_, kSettle, mn, mx);
+            return "Speed band over last " + std::to_string(static_cast<int>(kSettle)) +
+                   "s was " + std::to_string(static_cast<int>(mn)) + ".." +
+                   std::to_string(static_cast<int>(mx)) +
+                   "kts (target " + std::to_string(static_cast<int>(targetSpd_)) +
+                   "kts, tolerance ±" + std::to_string(static_cast<int>(SPD_TOL)) +
+                   "kts) — speed hold not stable.";
+        }
+        if (!checkHdgPass()) {
+            double mn, mx;
+            windowMinMax(hdgSamples_, phaseTime_, kSettle, mn, mx);
+            return "Heading band over last " + std::to_string(static_cast<int>(kSettle)) +
+                   "s was " + std::to_string(mn) + ".." + std::to_string(mx) +
+                   "deg (target " + std::to_string(targetHdg_) +
+                   "deg, tolerance ±" + std::to_string(static_cast<int>(HDG_TOL)) +
+                   "deg) — heading hold not stable.";
+        }
+        return "";
+    }
+
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
         ManeuverTest::Evaluate(as, input, dt);
 
