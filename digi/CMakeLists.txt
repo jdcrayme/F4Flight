@@ -25,6 +25,7 @@ set(F4FLIGHT_DIGI_SOURCES
     src/defensive/missile_defeat.cpp
     src/defensive/guns_jink.cpp
     src/defensive/collision_avoid.cpp
+    src/defensive/handle_threat.cpp
     # offensive
     src/offensive/roll_and_pull.cpp
     src/offensive/guns_engage.cpp
@@ -42,6 +43,9 @@ set(F4FLIGHT_DIGI_SOURCES
     # wingman
     src/wingman/wingman_state.cpp
     src/wingman/wingman_ai.cpp
+    src/wingman/wingman_maneuvers.cpp
+    # decision (Round 6: AirbaseCheck, SeparateCheck, CommandFlight)
+    src/decision/decision_routines.cpp
 )
 
 set(F4FLIGHT_DIGI_HEADERS
@@ -64,10 +68,14 @@ set(F4FLIGHT_DIGI_HEADERS
     # wingman
     include/f4flight/digi/wingman/wingman_state.h
     include/f4flight/digi/wingman/wingman_ai.h
+    include/f4flight/digi/wingman/wingman_maneuvers.h
+    # decision (Round 6)
+    include/f4flight/digi/decision/decision_routines.h
     # defensive
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h
     include/f4flight/digi/defensive/collision_avoid.h
+    include/f4flight/digi/defensive/handle_threat.h
     # offensive
     include/f4flight/digi/offensive/roll_and_pull.h
     include/f4flight/digi/offensive/guns_engage.h

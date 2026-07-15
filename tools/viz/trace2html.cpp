@@ -170,8 +170,9 @@ int main(int argc, char** argv) {
 
     // Report file size.
     std::ifstream sz(outPath, std::ios::ate | std::ios::binary);
-    long bytes = sz ? (long)sz.tellg() : 0;
-    std::printf("\nHTML report written to %s (%.1f KB)\n", outPath.c_str(), bytes / 1024.0);
+    const long bytes = sz ? static_cast<long>(sz.tellg()) : 0;
+    std::printf("\nHTML report written to %s (%.1f KB)\n", outPath.c_str(),
+                static_cast<double>(bytes) / 1024.0);
 
     if (doOpen) {
         openInBrowser(outPath);

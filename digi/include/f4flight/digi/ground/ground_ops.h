@@ -116,16 +116,34 @@ struct GroundOpsState {
     bool hasLandingClearance{false};
 
     void reset() {
+        // BUG FIX: previously only 10 of 22 fields were reset. Stale runway
+        // heading, taxi graph pointer, takeoff roll start time, flare start
+        // altitude etc. leaked across phases — e.g. a Takeoff test followed
+        // by a Landing test would inherit the previous runway's heading
+        // because runwayHeading wasn't zeroed. Reset every field so reset()
+        // actually means "back to fresh state".
         phase = GroundOpsPhase::Idle;
         assignedRunway = 0;
+        runwayHeading = 0.0;
+        runwayThresholdX = 0.0;
+        runwayThresholdY = 0.0;
+        runwayAltitude = 0.0;
+        currentTaxiNode = -1;
+        targetTaxiNode = -1;
+        taxiSpeed = 0.0;
+        taxiGraph = nullptr;
+        taxiPath.clear();
+        taxiPathIdx = 0;
+        takeoffRollStart = 0.0;
+        rotationSpeed = 0.0;
         gearRetracted = false;
+        approachStartAlt = 0.0;
+        flareStartAlt = 0.0;
+        touchdownSpeed = 0.0;
+        touchdownTimer = 0.0;
         gearDeployed = false;
         hasTakeoffClearance = false;
         hasLandingClearance = false;
-        currentTaxiNode = -1;
-        targetTaxiNode = -1;
-        touchdownTimer = 0.0;
-        touchdownSpeed = 0.0;
     }
 };
 

@@ -24,12 +24,15 @@
 #include "f4flight/digi/defensive/missile_defeat.h"
 #include "f4flight/digi/defensive/guns_jink.h"
 #include "f4flight/digi/defensive/collision_avoid.h"
+#include "f4flight/digi/defensive/handle_threat.h"
 #include "f4flight/digi/offensive/roll_and_pull.h"
 #include "f4flight/digi/offensive/guns_engage.h"
 #include "f4flight/digi/offensive/missile_engage.h"
 #include "f4flight/digi/offensive/bvr_engage.h"
 #include "f4flight/digi/offensive/merge.h"
 #include "f4flight/digi/wingman/wingman_ai.h"
+#include "f4flight/digi/wingman/wingman_maneuvers.h"
+#include "f4flight/digi/decision/decision_routines.h"
 #include "f4flight/digi/weapons/weapon_spec.h"
 #include "f4flight/digi/weapons/sms.h"
 #include "f4flight/digi/comms/message_bus.h"
@@ -232,7 +235,18 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
 
     // --- 3. Actions ---
     if (!pullingUp) {
-        switch (curMode_) {
+        // HandleThreat overlay (port of FF digimain.cpp Actions() at 635+).
+        // FF: "if (threatPtr && curMode != MissileDefeatMode) HandleThreat();"
+        // HandleThreat returns true when it engaged the threat this frame —
+        // in that case we skip the normal per-mode switch (the threat IS
+        // the action for this frame). MissileDefeat pre-empts HandleThreat
+        // because an incoming missile is more urgent than a secondary threat.
+        const bool threatHandled =
+            (curMode_ != DigiMode::MissileDefeat) &&
+            HandleThreat(state_, *selfEntity, as, fcs, fcsState, dt);
+
+        if (!threatHandled) {
+            switch (curMode_) {
             case DigiMode::Waypoint:
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
@@ -330,10 +344,23 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 ManeuverPrimitives::WvrBugOut(state_, as, fcs, fcsState, dt);
                 break;
             case DigiMode::Refueling:
-            case DigiMode::FollowOrders:
-            case DigiMode::RTB:
                 // Not yet ported — fall through to Waypoint navigation.
                 runWaypoint(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::FollowOrders:
+                // PORTED (basic): execute the wingman's current tactical
+                // maneuver (BreakLeft/Right, ClearSix, Posthole, Chainsaw)
+                // via AiPerformManeuver. If no maneuver is active, falls
+                // back to Wingy (formation following).
+                runFollowOrders(as, dt, fcs, fcsState);
+                break;
+            case DigiMode::RTB:
+                // PORTED (basic): navigate to the divert airbase via
+                // HeadingAndAltitudeHold + MachHold. Falls back to waypoint
+                // nav if the host hasn't set a divert airbase. Full RTB
+                // (AirbaseCheck + landing clearance request) lands with the
+                // landme.cpp pattern-work port.
+                runRTB(as, dt, fcs, fcsState);
                 break;
             case DigiMode::Wingy:
                 // Wingman formation following — delegates to AiFollowLead.
@@ -343,7 +370,8 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 // Not yet ported — fall through to Waypoint navigation.
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
-        }
+            }
+        }  // end if (!threatHandled)
     }
 
     // --- 4. Clamp outputs + map fire flags ---
@@ -551,6 +579,115 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     }
 
     // ===================================================================
+    // --- Fuel state → RTB (port of FF separate.cpp FuelCheck + AirbaseCheck) ---
+    // ===================================================================
+    // Without this, AI fly until flameout. We transition fuel.phase each
+    // frame based on fuelLbs vs the bingo/joker/fumes thresholds, then queue
+    // RTB when fuel <= bingo (or when winchester AND we're not actively
+    // engaging).
+    //
+    // RTB priority is between Landing (sticky) and MissileEngage — i.e. RTB
+    // pre-empts offensive modes (we're going home, not fighting) but NOT
+    // defensive modes (still have to defeat missiles / jink guns / avoid
+    // terrain) and NOT landing (the landing state machine owns the approach).
+    //
+    // addMode() priority resolution means: if MissileDefeat/GunsJink/Collision
+    // is already queued, RTB loses (correct — survive first, RTB second). If
+    // no defensive mode is queued, RTB pre-empts Waypoint/WVR/BVR.
+    {
+        // Transition fuel state machine.
+        if (state_.fuel.fumesFuelLbs > 0.0 && state_.fuel.fuelLbs <= state_.fuel.fumesFuelLbs) {
+            state_.fuel.phase = DigiFuelState::Phase::Fumes;
+            state_.damage.saidFumes = true;
+        } else if (state_.fuel.bingoFuelLbs > 0.0 && state_.fuel.fuelLbs <= state_.fuel.bingoFuelLbs) {
+            state_.fuel.phase = DigiFuelState::Phase::Bingo;
+            state_.damage.saidBingo = true;
+        } else if (state_.fuel.jokerFuelLbs > 0.0 && state_.fuel.fuelLbs <= state_.fuel.jokerFuelLbs) {
+            state_.fuel.phase = DigiFuelState::Phase::Joker;
+        } else {
+            state_.fuel.phase = DigiFuelState::Phase::Normal;
+        }
+
+        const bool fuelCritical =
+            (state_.fuel.phase == DigiFuelState::Phase::Bingo ||
+             state_.fuel.phase == DigiFuelState::Phase::Fumes ||
+             state_.fuel.phase == DigiFuelState::Phase::Flameout);
+        // Winchester: out of A/A weapons. RTB if we're not actively
+        // defending (no missile / guns threat) — there's nothing to fight
+        // with anyway.
+        const bool winchesterRTB =
+            state_.fuel.winchester &&
+            !state_.missileDefeat.incomingMissile &&
+            !state_.gunsJink.gunsThreat;
+
+        if (fuelCritical || winchesterRTB) {
+            // Round 6: AirbaseCheck auto-picks the nearest friendly airbase
+            // and transitions RTB → Landing when within range. If the host
+            // hasn't provided an airbase list, AirbaseCheck returns None
+            // and we fall back to plain RTB (waypoint-based).
+            if (selfEntity) {
+                const AirbaseAction abAction = AirbaseCheck(state_, *selfEntity,
+                                                             frameInputs_, simTime_);
+                if (abAction == AirbaseAction::Landing) {
+                    addMode(DigiMode::Landing);
+                } else if (abAction == AirbaseAction::RTB || fuelCritical || winchesterRTB) {
+                    addMode(DigiMode::RTB);
+                }
+            } else {
+                addMode(DigiMode::RTB);
+            }
+        }
+    }
+
+    // ===================================================================
+    // --- SeparateCheck + Bugout (Round 6: port of FF separate.cpp) ---
+    // ===================================================================
+    // Disengage logic: damage abort, deep-six bugout, lateral separation.
+    // Runs AFTER fuel check (so RTB from fuel pre-empts Separate) and
+    // BEFORE offensive checks (so disengage pre-empts engage).
+    //
+    // Separate (14) and Bugout (21) are lower priority than RTB (19) in the
+    // enum, but we queue them conditionally — only when SeparateCheck
+    // recommends them AND fuel isn't already driving RTB. addMode() priority
+    // resolution handles the rest.
+    {
+        const DigiEntity* sepTarget = wvrTarget_;
+        if (!sepTarget) sepTarget = frameInputs_.injectedTarget;
+        if (selfEntity) {
+            const SeparateAction sepAction = SeparateCheck(state_, *selfEntity,
+                                                             sepTarget, dt);
+            switch (sepAction) {
+                case SeparateAction::RTB:
+                    // Damage abort → RTB (may already be queued by fuel check;
+                    // addMode priority resolution handles the dedup).
+                    addMode(DigiMode::RTB);
+                    break;
+                case SeparateAction::Separate:
+                    addMode(DigiMode::Separate);
+                    break;
+                case SeparateAction::Bugout:
+                    addMode(DigiMode::Bugout);
+                    break;
+                case SeparateAction::None:
+                    break;
+            }
+        }
+    }
+
+    // ===================================================================
+    // --- CommandFlight (Round 6: flight-lead issues orders to wingmen) ---
+    // ===================================================================
+    // If this aircraft is a flight lead (not a wingman), issue engage/rejoin
+    // orders to its wingmen via the MessageBus. This is a side-effecting
+    // call (it publishes messages); it doesn't queue any mode for this brain.
+    // Throttled to one order per 5 seconds (matches FF).
+    {
+        const DigiEntity* cmdTarget = wvrTarget_;
+        if (!cmdTarget) cmdTarget = frameInputs_.injectedTarget;
+        CommandFlight(state_, cmdTarget, bus_, state_.comm.selfId, simTime_);
+    }
+
+    // ===================================================================
     // --- WVR target (offensive) ---
     // ===================================================================
     // Priority: injected target > SensorPicture bestTarget
@@ -649,6 +786,32 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         }
     }
 
+    // --- Wingman tactical maneuver (FollowOrders mode) ---
+    // If this aircraft is a wingman AND has an active maneuver (set by
+    // receiveOrders in response to a FlightCmdBreak / FlightCmdClearSix etc.
+    // message), queue FollowOrders mode. FollowOrders (18) is lower priority
+    // than Wingy (20) in the enum, but we queue it BEFORE Wingy so it wins
+    // when both could apply (the wingman executes the maneuver instead of
+    // holding formation). When the maneuver completes (mnverTime <= 0 or
+    // AiExec* returns false), AiClearManeuver sets currentManeuver=None and
+    // the brain naturally falls back to Wingy on the next frame.
+    //
+    // FreeFalcon winglogic.cpp: AiCheckManeuvers queues FollowOrdersMode
+    // when mpActionFlags[AI_EXECUTE_MANEUVER] is set and currentManeuver
+    // is not WMSNone.
+    const bool followOrdersActive =
+        state_.formation.isWing &&
+        state_.formation.wingman.currentManeuver != WingmanManeuver::None;
+    if (followOrdersActive) {
+        // If mnverTime is 0 (maneuver just initiated), arm it to the default.
+        // The host (or receiveOrders) can set a custom duration by writing
+        // nav.mnverTime directly before the maneuver starts.
+        if (state_.nav.mnverTime <= 0.0) {
+            state_.nav.mnverTime = kDefaultManeuverTimeSec;
+        }
+        addMode(DigiMode::FollowOrders);
+    }
+
     // --- Wingman formation following (Wingy mode) ---
     // If this aircraft is a wingman with an assigned lead and an injected
     // lead entity, queue Wingy mode. Wingy (20) is lower priority than
@@ -707,6 +870,24 @@ void DigiBrain::addMode(DigiMode newMode) {
     // (Without this, ResolveModeConflicts would send noATC when entering
     //  WvrEngage, alternating between Landing and WvrEngage each frame.)
     if (curMode_ == DigiMode::Landing && newMode == DigiMode::WVREngage) {
+        return;
+    }
+
+    // BUG FIX: Waypoint is the lowest-priority fallback — it must NEVER
+    // pre-empt any other queued mode. The Round-2 structural additions
+    // (Refueling=13 ... GroundMnvr=22) were placed AFTER Waypoint=12 in the
+    // enum, so a naive `newMode < nextMode_` check would let Waypoint (12)
+    // incorrectly pre-empt RTB (19), Wingy (20), etc. — modes that should
+    // always win over Waypoint. Without this special-case, fuel-critical
+    // RTB and formation Wingy are silently overridden by Waypoint nav every
+    // frame, leaving the AI to fly past its divert airbase and out of
+    // formation indefinitely.
+    //
+    // FreeFalcon's AddMode avoids this by giving Waypoint the highest
+    // numerical value (lowest priority) in its mode enum. We preserve the
+    // existing enum ordering for backward compatibility with tests that
+    // assert `WVREngage < Waypoint`, and instead special-case Waypoint here.
+    if (newMode == DigiMode::Waypoint && nextMode_ != DigiMode::NoMode) {
         return;
     }
 
@@ -923,6 +1104,88 @@ void DigiBrain::runWingy(const AircraftState& as, double dt,
     }
 
     AiFollowLead(state_, *selfEntity, lead, as, fcs, fcsState, dt);
+}
+
+void DigiBrain::runRTB(const AircraftState& as, double dt,
+                        const FlightControlSystem& fcs, FcsState& fcsState) {
+    // If the host hasn't set a divert airbase, fall back to waypoint nav
+    // (the host may have set up waypoints back to base).
+    if (!state_.fuel.hasDivertAirbase) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    // Steer toward the divert airbase. Climb to a safe altitude if we're low
+    // (RTB at 200 ft AGL is asking for a CFIT). The "safe altitude" is set
+    // to the greater of 10000 ft MSL or current altitude + 1000 ft — this
+    // keeps the AI out of terrain during RTB without forcing an unnecessary
+    // climb if already cruising high.
+    const double desAlt = std::max(10000.0, -as.kin.z + 1000.0);
+    const double dx = state_.fuel.divertAirbaseX - as.kin.x;
+    const double dy = state_.fuel.divertAirbaseY - as.kin.y;
+    const double desHeading = std::atan2(dy, dx);
+
+    ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+                                                state_, as, fcs, fcsState, state_.config.maxGs);
+    // RTB cruise speed: corner speed (best range for most fighters).
+    ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
+                                  state_, as, 200.0, 800.0, dt, 700.0);
+
+    // TODO (future): when within ~10 NM of the airbase, transition to
+    // Landing mode and request landing clearance via the MessageBus. This
+    // requires the AirbaseCheck port from FF separate.cpp / landme.cpp.
+}
+
+void DigiBrain::runFollowOrders(const AircraftState& as, double dt,
+                                const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Build the self entity for AiPerformManeuver.
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) {
+        selfEntityAuto_ = buildSelfEntity(as);
+        selfEntity = &selfEntityAuto_;
+    }
+    if (!selfEntity) {
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    // Resolve the target for engage-style maneuvers (Posthole, Chainsaw).
+    // Priority: injected target > SensorPicture bestTarget > wvrTarget_.
+    // If WingmanState.designatedTargetId is set, a future enhancement would
+    // look it up in the SensorPicture; for now we use wvrTarget_ (which the
+    // brain's resolveMode already populated from injectedTarget or auto-track).
+    const DigiEntity* target = wvrTarget_;
+    if (!target) target = frameInputs_.injectedTarget;
+
+    // Round 6: initialize multi-point maneuvers on their first frame.
+    // AiInitPince / AiInitFlex set up the maneuverPoints array; the
+    // maneuverPointCounter starts at 0. We detect "first frame" by checking
+    // if maneuverPointCounter is 0 AND mnverTime is 0 (the brain's
+    // resolveMode arms mnverTime for timer-based maneuvers but not for
+    // multi-point maneuvers — those use maneuverPointCounter instead).
+    const auto maneuver = state_.formation.wingman.currentManeuver;
+    if (maneuver == WingmanManeuver::Pince && state_.formation.maneuverPointCounter == 0
+        && state_.nav.mnverTime <= 0.0) {
+        AiInitPince(state_, *selfEntity, target, frameInputs_.injectedLead);
+        // Set mnverTime to a non-zero sentinel so we don't re-init next frame.
+        // The actual completion is driven by maneuverPointCounter, not mnverTime.
+        state_.nav.mnverTime = -1.0;  // sentinel: "already initialized"
+    } else if (maneuver == WingmanManeuver::Flex && state_.formation.maneuverPointCounter == 0
+               && state_.nav.mnverTime <= 0.0) {
+        AiInitFlex(state_, *selfEntity, target, frameInputs_.injectedLead);
+        state_.nav.mnverTime = -1.0;  // sentinel
+    }
+
+    // Dispatch to the active maneuver. AiPerformManeuver returns true while
+    // the maneuver is still active; false when it completes (and clears it).
+    const bool stillActive = AiPerformManeuver(state_, *selfEntity, target, sms_,
+                                                as, fcs, fcsState, dt);
+    if (!stillActive) {
+        // Maneuver complete — fall back to Wingy (formation following) for
+        // this frame so the wingman doesn't drift while the brain re-resolves
+        // mode next frame.
+        runWingy(as, dt, fcs, fcsState);
+    }
 }
 
 } // namespace digi

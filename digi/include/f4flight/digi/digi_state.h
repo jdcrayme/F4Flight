@@ -231,6 +231,20 @@ struct DigiFormationState {
     double   formRange{500.0};                 // desired range from lead (ft)
     WingmanState wingman;                      // wingman command state
 
+    // Multi-point maneuver trackpoints (port of FF mpManeuverPoints).
+    // Used by AiExecPince (2 points) and AiExecFlex (3 points). Each point
+    // is a world (x, y) position; the altitude comes from altitudeOrdered.
+    // Indexed by maneuverPointCounter. FF uses a fixed [4][2] float array;
+    // we use a small fixed-size array of Vec2-like pairs.
+    //
+    // The counter advances when the wingman reaches a point (within 5000 ft
+    // for Pince, 900 ft for Flex — matching FF's thresholds). When the
+    // counter exceeds the number of points, the maneuver completes.
+    static constexpr int kMaxManeuverPoints = 4;
+    struct ManeuverPoint { double x{0.0}, y{0.0}; };
+    ManeuverPoint maneuverPoints[kMaxManeuverPoints];
+    int maneuverPointCounter{0};
+
     void reset() noexcept {
         flightLeadId = kInvalidEntityId;
         isWing = false;
@@ -240,6 +254,10 @@ struct DigiFormationState {
         formRelEl = 0.0;
         formRange = 500.0;
         wingman.reset();
+        for (int i = 0; i < kMaxManeuverPoints; ++i) {
+            maneuverPoints[i] = ManeuverPoint{};
+        }
+        maneuverPointCounter = 0;
     }
 };
 
@@ -247,10 +265,132 @@ struct DigiFormationState {
 struct DigiCommState {
     Mailbox mailbox;
     EntityId selfId{kInvalidEntityId};
+    // Round 6: last CommandFlight order time (for 5 s throttle). Stored here
+    // so it's per-brain (not global). CommandFlight reads/writes this.
+    double lastOrderTime{-1e9};  // -1e9 = "never ordered" sentinel
 
     void reset() noexcept {
         mailbox.clear();
         // selfId is NOT reset — it's set once at init
+        lastOrderTime = -1e9;
+    }
+};
+
+// Secondary threat state — HandleThreat (port of FF handlethreat.cpp).
+// A "secondary threat" is an aircraft that has spiked us, fired a missile at
+// us, or been called out by a wingman/RWR — but is NOT the primary offensive
+// target, NOT the incoming missile (that's DigiMissileDefeatState), and NOT
+// the guns threat (that's DigiGunsJinkState).
+//
+// When threatPtr is non-null and the brain is NOT already in MissileDefeat,
+// HandleThreat() runs instead of the per-mode switch and engages the threat
+// via RollAndPull. threatTimer counts down from 10 s; when it expires,
+// HandleThreat re-evaluates whether the threat is still worth chasing.
+struct DigiThreatState {
+    const DigiEntity* threatPtr{nullptr};
+    double threatTimer{0.0};
+
+    // Threat-call bearing: when a ThreatCallSpike/Missile/SAM message
+    // arrives, the bearing (relative to self heading, radians) is stored
+    // here. The host or SensorFusion can then resolve it to an entity by
+    // looking up contacts at that bearing. This is a one-shot value —
+    // processMessages sets it and the host reads + clears it.
+    //
+    // -999.0 = no pending threat call (sentinel).
+    double threatCallBearing{-999.0};
+    // The type of the most recent threat call (mirrors MessageType:
+    // ThreatCallSpike / ThreatCallMissile / ThreatCallSAM / ThreatCallBuddySpike).
+    // 0 = none. The host reads this to decide how to react.
+    int threatCallType{0};
+
+    void reset() noexcept {
+        // NOTE: threatPtr is NOT cleared by reset() — the host manages it.
+        // DigiBrain::reset() clears it explicitly.
+        threatTimer = 0.0;
+        threatCallBearing = -999.0;
+        threatCallType = 0;
+    }
+};
+
+// Fuel / RTB state — port of FF separate.cpp FuelCheck + actions.cpp AirbaseCheck.
+// Without these fields the AI has no fuel-state awareness — it flies until
+// flameout. FuelCheck() (called from resolveMode) transitions fuelState based
+// on fuelLbs each frame; resolveMode reads fuelState to decide whether to
+// enter RTB mode.
+//
+// The host sets fuelLbs each frame from AircraftState.fuel.fuel_lbs and
+// configures bingoLbs / jokerLbs / fumesLbs once at mission start.
+// Winchester (out of A/A weapons) is set by the host when SMS reports zero
+// A/A weapons remaining.
+struct DigiFuelState {
+    enum class Phase : int {
+        Normal = 0,    // > joker
+        Joker  = 1,    // joker .. bingo (time to start thinking about RTB)
+        Bingo  = 2,    // bingo .. fumes (commit to RTB / nearest airbase)
+        Fumes  = 3,    // < fumes (fuel-critical — direct divert)
+        Flameout = 4,  // engine out (host sets this; brain can't detect it)
+    };
+    Phase  phase{Phase::Normal};
+    double fuelLbs{0.0};          // current fuel (lb) — set each frame by host
+    double bingoFuelLbs{0.0};     // bingo fuel (lb) — set at mission start
+    double jokerFuelLbs{0.0};     // joker fuel (lb) — set at mission start
+    double fumesFuelLbs{0.0};     // fumes fuel (lb) — set at mission start
+    bool   winchester{false};     // true = out of A/A weapons (host sets)
+
+    // Divert airbase: set by the host when AirbaseCheck picks the nearest
+    // friendly field (a future port will auto-pick from a host-provided list).
+    // RTB mode reads these to navigate.
+    double divertAirbaseX{0.0};
+    double divertAirbaseY{0.0};
+    double divertAirbaseZ{0.0};        // world Z (negative = MSL altitude)
+    double divertAirbaseHeading{0.0};  // runway heading (rad)
+    bool   hasDivertAirbase{false};
+
+    void reset() noexcept {
+        phase = Phase::Normal;
+        fuelLbs = 0.0;
+        bingoFuelLbs = 0.0;
+        jokerFuelLbs = 0.0;
+        fumesFuelLbs = 0.0;
+        winchester = false;
+        divertAirbaseX = 0.0;
+        divertAirbaseY = 0.0;
+        divertAirbaseZ = 0.0;
+        divertAirbaseHeading = 0.0;
+        hasDivertAirbase = false;
+    }
+};
+
+// Damage / disengage state — port of FF separate.cpp SeparateCheck.
+// Tracks airframe damage + bugout timer for the disengage decision.
+// The host sets pctStrength each frame (1.0 = pristine, 0.0 = destroyed);
+// SeparateCheck reads it to decide whether to abort the mission.
+struct DigiDamageState {
+    // Airframe strength fraction (1.0 = pristine, 0.0 = destroyed).
+    // Set by the host each frame from the damage model.
+    // FF uses self->pctStrength; we mirror that here.
+    double pctStrength{1.0};
+
+    // Bugout timer (port of FF bugoutTimer). When the AI is "deep six"
+    // (target ataFrom > 135° for > 90 seconds), it disengages via BugoutMode.
+    // The timer is in seconds of sim time; 0.0 = not running.
+    // FF uses absolute SimLibElapsedTime + 90s; we use a countdown from 90.
+    double bugoutTimer{0.0};
+    bool   bugoutTimerActive{false};
+
+    // RTB flags (port of FF ATC flags SaidBingo / SaidFumes / SaidRTB).
+    // These are sticky once set — the brain doesn't un-say them.
+    bool   saidBingo{false};
+    bool   saidFumes{false};
+    bool   saidRTB{false};
+
+    void reset() noexcept {
+        pctStrength = 1.0;
+        bugoutTimer = 0.0;
+        bugoutTimerActive = false;
+        saidBingo = false;
+        saidFumes = false;
+        saidRTB = false;
     }
 };
 
@@ -268,6 +408,9 @@ struct DigiState {
     DigiGroundState      ag;
     DigiFormationState   formation;
     DigiCommState        comm;
+    DigiThreatState      threat;   // HandleThreat (FF handlethreat.cpp)
+    DigiFuelState        fuel;     // FuelCheck / RTB (FF separate.cpp + AirbaseCheck)
+    DigiDamageState      damage;   // SeparateCheck / BugoutMode (FF separate.cpp)
 
     void reset() noexcept {
         commands.reset();
@@ -280,6 +423,9 @@ struct DigiState {
         ag.reset();
         formation.reset();
         comm.reset();
+        threat.reset();
+        fuel.reset();
+        damage.reset();
     }
 };
 

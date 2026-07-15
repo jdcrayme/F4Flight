@@ -10,6 +10,7 @@
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/atc/atc_messages.h"
 #include "f4flight/digi/atc/taxi_graph.h"  // Round-2 fix: RunTaxi uses TaxiGraph
+#include "f4flight/digi/wingman/wingman_state.h"  // receiveOrders (Flight* msg dispatch)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 #include "f4flight/digi/steering.h"  // for headingError
@@ -30,8 +31,15 @@ static constexpr double kApproachSpeedFraction = 1.3; // V_approach = 1.3 * stal
 static constexpr double kRolloutBrakeSpeed = 80.0;    // kts — start braking below this
 
 void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
+    // Process ALL incoming messages: ATC clearances, flight commands (lead →
+    // wingman), and threat calls (between flight members). The function name
+    // is historical — it originally only handled ATC, but the brain's mailbox
+    // receives every message type and silently dropping non-ATC messages was
+    // a real bug (Flight commands from the lead were lost, ThreatCall spikes
+    // were never acted on). Now all message types are handled in one pass.
     while (auto msg = mailbox.pop()) {
         switch (msg->type) {
+            // --- ATC messages (existing) ---
             case MessageType::ATCClearedTakeoff:
                 digi.ag.groundOps.hasTakeoffClearance = true;
                 digi.ag.groundOps.assignedRunway = atc::runwayFromMessage(*msg);
@@ -61,6 +69,86 @@ void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
                 digi.ag.groundOps.phase = GroundOpsPhase::TaxiToRunway;
                 break;
             }
+
+            // --- Flight commands (lead → wingman) ---
+            // Delegate to receiveOrders(), which maps each command to
+            // WingmanState field updates. receiveOrders returns false for
+            // non-wingman messages, so we use the return value to decide
+            // whether to fall through to the ThreatCall handler below.
+            //
+            // BUG FIX: previously, ProcessATCMessages had a `default: break;`
+            // that silently dropped ALL Flight* and ThreatCall* messages.
+            // Flight commands from the lead were lost, so wingmen never
+            // received break/engage/rejoin/formation orders. Now all
+            // FlightCmd* messages are routed to receiveOrders().
+            case MessageType::FlightCmdEngage:
+            case MessageType::FlightCmdEngageMyTarget:
+            case MessageType::FlightCmdBreak:
+            case MessageType::FlightCmdRejoin:
+            case MessageType::FlightCmdWedge:
+            case MessageType::FlightCmdTrail:
+            case MessageType::FlightCmdSpread:
+            case MessageType::FlightCmdEchelon:
+            case MessageType::FlightCmdFingerFour:
+            case MessageType::FlightCmdRTB:
+            case MessageType::FlightCmdJettison:
+            case MessageType::FlightCmdECMOn:
+            case MessageType::FlightCmdECMOff:
+            case MessageType::FlightCmdRadarOn:
+            case MessageType::FlightCmdRadarOff:
+            case MessageType::FlightCmdWeaponsHold:
+            case MessageType::FlightCmdWeaponsFree:
+            case MessageType::FlightCmdPromote:
+            // Round-5 additions: tactical maneuver commands.
+            case MessageType::FlightCmdClearSix:
+            case MessageType::FlightCmdPosthole:
+            case MessageType::FlightCmdChainsaw:
+            case MessageType::FlightCmdSSOffset:
+            case MessageType::FlightCmdFlex:
+            case MessageType::FlightCmdPince:
+            // Round-5 additions: formation spacing commands.
+            case MessageType::FlightCmdKickout:
+            case MessageType::FlightCmdCloseup:
+            case MessageType::FlightCmdToggleSide:
+            case MessageType::FlightCmdIncreaseRelAlt:
+            case MessageType::FlightCmdDecreaseRelAlt:
+                receiveOrders(digi.formation.wingman, *msg);
+                break;
+
+            // --- Threat calls (between flight members) ---
+            // Store the bearing + type so the host/SensorFusion can resolve
+            // it to an entity. The brain itself doesn't resolve threat calls
+            // to entities (it would need to search the SensorPicture by
+            // bearing, which is a host-side concern). The host reads
+            // digi.threat.threatCallBearing + threatCallType each frame and
+            // injects the resolved entity via FrameInputs.injectedThreat.
+            //
+            // The bearing is in msg->payload.heading (radians, relative to
+            // self heading). The type is stored as the int cast of MessageType
+            // so the host can distinguish Spike/Missile/SAM/BuddySpike.
+            case MessageType::ThreatCallSpike:
+            case MessageType::ThreatCallMissile:
+            case MessageType::ThreatCallSAM:
+            case MessageType::ThreatCallBuddySpike:
+                digi.threat.threatCallBearing = msg->payload.heading;
+                digi.threat.threatCallType = static_cast<int>(msg->type);
+                break;
+
+            // --- Flight reports (wingman → lead) ---
+            // These are informational — the lead brain can read them to
+            // track wingman status. For now, we don't act on them (a future
+            // CommandFlight port will use them for lead decision-making).
+            case MessageType::FlightReportBingo:
+            case MessageType::FlightReportWinchester:
+            case MessageType::FlightReportSplash:
+            case MessageType::FlightReportBandit:
+            case MessageType::FlightReportTally:
+            case MessageType::FlightReportNoJoy:
+            case MessageType::FlightReportFlameout:
+            case MessageType::FlightReportRequestHelp:
+                // Informational — no action yet. A future CommandFlight port
+                // will consume these for lead decision-making.
+                break;
 
             default:
                 break;
@@ -394,9 +482,15 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             //   2. Steer toward the runway threshold (heading)
             //   3. Hold approach speed (throttle + speed brakes)
             // This produces a stable, smooth 3° descent.
+            //
+            // NOTE: only dx/dy are needed — the runway-threshold range
+            // (distToThreshold) was previously computed but never read, which
+            // both -Wunused-variable flagged and was a real sign that the
+            // glideslope math had been simplified away. If a future tuning
+            // pass wants to gate the gear/speed-brake extension on distance
+            // to threshold, re-introduce `distToThreshold` here and use it.
             const double dx = go.runwayThresholdX - as.kin.x;
             const double dy = go.runwayThresholdY - as.kin.y;
-            const double distToThreshold = std::sqrt(dx * dx + dy * dy);
 
             // Approach speed
             const double approachSpeed = kApproachSpeedFraction *

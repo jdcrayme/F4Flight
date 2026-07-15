@@ -4,6 +4,8 @@
 
 #include "f4flight/digi/wingman/wingman_state.h"
 
+#include <algorithm>
+
 namespace f4flight {
 namespace digi {
 
@@ -60,6 +62,68 @@ bool receiveOrders(WingmanState& ws, const Message& msg) {
             ws.currentManeuver = (msg.payload.heading < 0.0)
                 ? WingmanManeuver::BreakLeft
                 : WingmanManeuver::BreakRight;
+            // Store the ordered heading for AiExecBreakRL. payload.heading
+            // is the break direction (positive = right, negative = left).
+            // The actual target heading is set by the brain when it arms
+            // mnverTime (it adds the break angle to the current heading).
+            ws.headingOrdered = msg.payload.heading;
+            return true;
+        // --- Tactical maneuvers (Round-5 additions) ---
+        // Each sets currentManeuver + arms ExecuteManeuver. The brain's
+        // resolveMode queues FollowOrders mode when currentManeuver != None.
+        // AiPerformManeuver then dispatches to the appropriate AiExec*.
+        case MessageType::FlightCmdClearSix:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::ClearSix;
+            // ClearSix = 180° turn. The brain sets headingOrdered to
+            // (self.yaw + PI) when it arms the maneuver.
+            return true;
+        case MessageType::FlightCmdPosthole:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::Posthole;
+            // Posthole = descend to ordered altitude + engage. The host
+            // sets altitudeOrdered + speedOrdered before sending the command
+            // (or the brain defaults them).
+            return true;
+        case MessageType::FlightCmdChainsaw:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::Chainsaw;
+            return true;
+        case MessageType::FlightCmdSSOffset:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::SSOffset;
+            return true;
+        case MessageType::FlightCmdFlex:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::Flex;
+            return true;
+        case MessageType::FlightCmdPince:
+            ws.actionFlags[static_cast<int>(WingmanAction::ExecuteManeuver)] = 1;
+            ws.currentManeuver = WingmanManeuver::Pince;
+            return true;
+
+        // --- Formation spacing commands (Round-5 additions) ---
+        // These adjust the formation geometry without entering a maneuver.
+        // They're consumed immediately by AiFollowLead on the next frame.
+        case MessageType::FlightCmdKickout:
+            // Double the lateral spacing (e.g. 1000 ft → 2000 ft).
+            ws.formLateralSpaceFactor = std::min(4.0, ws.formLateralSpaceFactor * 2.0);
+            return true;
+        case MessageType::FlightCmdCloseup:
+            // Halve the lateral spacing (e.g. 1000 ft → 500 ft).
+            ws.formLateralSpaceFactor = std::max(0.25, ws.formLateralSpaceFactor * 0.5);
+            return true;
+        case MessageType::FlightCmdToggleSide:
+            // Mirror the formation side (+1 → -1, or -1 → +1, 0 → +1).
+            ws.formSide = (ws.formSide >= 0) ? -1 : 1;
+            return true;
+        case MessageType::FlightCmdIncreaseRelAlt:
+            // +1000 ft relative altitude (wingman climbs relative to lead).
+            ws.formRelativeAltitude += 1000.0;
+            return true;
+        case MessageType::FlightCmdDecreaseRelAlt:
+            // -1000 ft relative altitude (wingman descends relative to lead).
+            ws.formRelativeAltitude -= 1000.0;
             return true;
         case MessageType::FlightCmdWeaponsHold:
             ws.weaponsAction = WeaponsAction::Hold;

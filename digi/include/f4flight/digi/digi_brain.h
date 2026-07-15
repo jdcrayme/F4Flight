@@ -127,6 +127,52 @@ struct FrameInputs {
     // the brain enters Wingy mode and calls AiFollowLead to fly to the
     // wingman's formation slot relative to this lead.
     const DigiEntity* injectedLead {nullptr};
+
+    // --- Secondary threat injection (HandleThreat port) ---
+    // A "secondary threat" is an aircraft that has spiked us, fired a missile
+    // at us, or been called out by a wingman/RWR. Distinct from
+    // injectedMissile (the actual incoming missile) and injectedGunsThreat
+    // (a guns threat). When non-null, the brain engages the threat via
+    // HandleThreat() / RollAndPull for up to 10 s before re-evaluating.
+    const DigiEntity* injectedThreat {nullptr};
+
+    // --- Fuel state (FuelCheck port) ---
+    // The host provides fuel state each frame so FuelCheck() can transition
+    // fuel.phase. Set bingoFuelLbs/jokerFuelLbs/fumesFuelLbs once at mission
+    // start; fuelLbs is updated every frame from AircraftState.fuel.fuel_lbs.
+    double fuelLbs       {0.0};
+    double bingoFuelLbs  {0.0};
+    double jokerFuelLbs  {0.0};
+    double fumesFuelLbs  {0.0};
+    bool   winchester    {false};  // true = out of A/A weapons (host sets)
+
+    // --- Damage state (SeparateCheck port — Round 6) ---
+    // Airframe strength fraction (1.0 = pristine, 0.0 = destroyed).
+    // Set by the host each frame from the damage model. When pctStrength
+    // drops below 0.50, SeparateCheck enters RTB/Bugout mode.
+    double pctStrength  {1.0};
+
+    // --- Friendly airbase list (AirbaseCheck port — Round 6) ---
+    // The host provides a list of friendly airbases so AirbaseCheck can
+    // auto-pick the nearest one when fuel goes bingo/fumes. Each entry
+    // is a divert candidate. The list is read-only; the brain doesn't
+    // modify it. Nullptr/0 = no airbases available (brain falls back to
+    // waypoint-based RTB).
+    //
+    // The airbase positions are in world frame (ft, NED). The brain
+    // computes distance to each and picks the nearest.
+    //
+    // DESIGN NOTE: we use a raw pointer + count (not std::vector) because
+    // FrameInputs is a plain aggregate copied by value each frame — a
+    // vector would force a heap allocation per frame. The host owns the
+    // array and ensures it outlives the compute() call.
+    struct AirbaseInfo {
+        double x{0.0}, y{0.0}, z{0.0};        // world position (ft, NED)
+        double runwayHeading{0.0};             // runway heading (rad)
+        EntityId id{kInvalidEntityId};          // for addressing (ATC clearance)
+    };
+    const AirbaseInfo* airbases{nullptr};
+    std::size_t        airbaseCount{0};
 };
 
 // ===========================================================================
@@ -205,6 +251,13 @@ public:
                 state_.ag.groundTarget = nullptr;
                 state_.ag.groundTargetId = kInvalidEntityId;
             }
+            // HandleThreat: clear stale secondary threat pointer. The host
+            // owns the entity lifetime; if it doesn't re-inject, we must not
+            // hold a dangling pointer across frames.
+            if (!inputs.injectedThreat) {
+                state_.threat.threatPtr = nullptr;
+                state_.threat.threatTimer = 0.0;
+            }
         }
         // Commit injected ground target immediately (the future GroundMnvr
         // mode will read state_.ag.groundTarget; the host's injection is the
@@ -212,6 +265,26 @@ public:
         if (inputs.injectedGroundTarget) {
             state_.ag.groundTarget = inputs.injectedGroundTarget;
         }
+        // Commit injected secondary threat. HandleThreat will read threatPtr
+        // each frame and re-evaluate every 10 s.
+        if (inputs.injectedThreat) {
+            // If this is a new threat (different pointer), arm the 10 s
+            // re-eval timer so HandleThreat runs at least one full window
+            // before dropping it.
+            if (state_.threat.threatPtr != inputs.injectedThreat) {
+                state_.threat.threatTimer = 0.0;  // 0 → re-eval next frame, then arm
+            }
+            state_.threat.threatPtr = inputs.injectedThreat;
+        }
+        // Commit fuel state. The host provides these each frame; FuelCheck()
+        // (called from resolveMode) transitions state_.fuel.phase based on them.
+        state_.fuel.fuelLbs       = inputs.fuelLbs;
+        state_.fuel.bingoFuelLbs  = inputs.bingoFuelLbs;
+        state_.fuel.jokerFuelLbs  = inputs.jokerFuelLbs;
+        state_.fuel.fumesFuelLbs  = inputs.fumesFuelLbs;
+        state_.fuel.winchester    = inputs.winchester;
+        // Commit damage state (Round 6: SeparateCheck reads pctStrength).
+        state_.damage.pctStrength = inputs.pctStrength;
         frameInputs_ = inputs;
     }
 
@@ -318,6 +391,8 @@ public:
         // persist across reset().
         state_.missileDefeat.incomingMissile = nullptr;
         state_.gunsJink.gunsThreat = nullptr;
+        state_.threat.threatPtr = nullptr;
+        state_.threat.threatTimer = 0.0;
         curWp_ = 0;
         curMode_ = DigiMode::Waypoint;
         nextMode_ = DigiMode::NoMode;
@@ -529,6 +604,19 @@ private:
     // to the injected lead entity.
     void runWingy(const AircraftState& as, double dt,
                   const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // RTB: navigate toward the divert airbase (set by host via
+    // FrameInputs.fuel.* or directly via stateMutable()). Falls back to
+    // waypoint nav if no divert airbase is set.
+    void runRTB(const AircraftState& as, double dt,
+                const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // FollowOrders: execute the wingman's current tactical maneuver
+    // (BreakLeft/Right, ClearSix, Posthole, Chainsaw). Dispatches to
+    // AiPerformManeuver. If no maneuver is active, falls back to Wingy
+    // (formation following).
+    void runFollowOrders(const AircraftState& as, double dt,
+                         const FlightControlSystem& fcs, FcsState& fcsState);
 
     // Resolve the active mode based on priority + threats.
     void resolveMode(const AircraftState& as, double groundZ, double dt);

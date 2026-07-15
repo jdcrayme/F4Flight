@@ -91,6 +91,19 @@ enum class MessageType : uint16_t {
     FlightCmdWeaponsHold,     // weapons hold (don't fire)
     FlightCmdWeaponsFree,     // weapons free (cleared to fire)
     FlightCmdPromote,         // promote wingman to lead
+    // Tactical maneuvers (Round-5 additions — port of FF WMClearSix etc.)
+    FlightCmdClearSix,        // 180° turn to check six
+    FlightCmdPosthole,        // descend + engage (low-altitude missile/guns)
+    FlightCmdChainsaw,        // missile-only engage (standoff)
+    FlightCmdSSOffset,        // shelter-in-place offset (not yet ported)
+    FlightCmdFlex,            // flex maneuver (not yet ported)
+    FlightCmdPince,           // pince bracket maneuver (not yet ported)
+    // Formation spacing commands (Round-5 additions — port of FF WMKickout etc.)
+    FlightCmdKickout,         // increase lateral spacing (formLateralSpaceFactor *= 2)
+    FlightCmdCloseup,         // decrease lateral spacing (formLateralSpaceFactor *= 0.5)
+    FlightCmdToggleSide,      // mirror formation side (formSide = -formSide)
+    FlightCmdIncreaseRelAlt,  // +1000 ft relative altitude
+    FlightCmdDecreaseRelAlt,  // -1000 ft relative altitude
 
     // --- Flight reports (wingman → lead, or anyone → flight) ---
     FlightReportBingo,        // bingo fuel

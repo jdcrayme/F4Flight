@@ -136,7 +136,13 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
         if (range > kDragRangeThreshold || closure < kDragClosureThreshold) {
             MissileDragManeuver(digi, self, as, fcs, fcsState, dt);
         } else {
-            MissileBeamManeuver(digi, self, as, fcs, fcsState, dt);
+            // Wire up the previously-discarded return value: when the beam
+            // maneuver reports we've arrived at the beam trackpoint, latch
+            // missileFinishedBeam so a future expansion (e.g. re-evaluating
+            // beam vs drag, or signalling the wingman) can read it. The flag
+            // is cleared on new-missile init above.
+            digi.missileDefeat.missileFinishedBeam =
+                MissileBeamManeuver(digi, self, as, fcs, fcsState, dt);
         }
 
         // IR missile throttle cut for skill > 2

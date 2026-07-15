@@ -455,8 +455,12 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
         }
 
         // Centered label with alternating vertical offset
-        int yOffset = (pi % 2) * 16;  // alternate up/down
-        int labelY = spTop - 5 + yOffset;
+        const int yOffset = (pi % 2) * 16;  // alternate up/down
+        // spTop is a double (panel geometry); round to nearest pixel so the
+        // SVG text baseline lands on an integer y. Previously the implicit
+        // double→int truncation triggered -Wfloat-conversion and also nudged
+        // labels half a pixel low on sub-pixel panel margins.
+        const int labelY = static_cast<int>(std::round(spTop - 5.0)) + yOffset;
         const char* res = p.skipped ? "SKIP" : (p.passed ? "PASS" : "FAIL");
         std::string label = std::to_string(pi + 1) + ". " + p.name + " [" + res + "]";
         svg += "<text x=\"" + std::to_string(midX) + "\" y=\"" +

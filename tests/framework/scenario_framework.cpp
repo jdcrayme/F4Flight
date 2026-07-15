@@ -456,9 +456,9 @@ int main(int argc, char** argv) {
             hf.close();
             // Report file size.
             std::ifstream sz(opt.htmlPath, std::ios::ate | std::ios::binary);
-            long bytes = sz ? (long)sz.tellg() : 0;
+            const long bytes = sz ? static_cast<long>(sz.tellg()) : 0;
             std::printf("HTML report written: %s (%.1f KB, %zu trace%s)\n",
-                        opt.htmlPath.c_str(), bytes / 1024.0,
+                        opt.htmlPath.c_str(), static_cast<double>(bytes) / 1024.0,
                         traces.size(), traces.size() == 1 ? "" : "s");
             if (opt.doOpen) {
                 // Build a file:// URL and launch the default browser.
