@@ -29,6 +29,7 @@
 #include "f4flight/digi/offensive/missile_engage.h"
 #include "f4flight/digi/offensive/bvr_engage.h"
 #include "f4flight/digi/offensive/merge.h"
+#include "f4flight/digi/wingman/wingman_ai.h"
 #include "f4flight/digi/weapons/weapon_spec.h"
 #include "f4flight/digi/weapons/sms.h"
 #include "f4flight/digi/comms/message_bus.h"
@@ -47,29 +48,29 @@ namespace digi {
 // ===========================================================================
 DigiBrain::DigiBrain() {
     state_.reset();
-    state_.skill = makeSkillParams(SkillLevel::Veteran);
+    state_.config.skill = makeSkillParams(SkillLevel::Veteran);
 }
 
 // ===========================================================================
 // Configuration
 // ===========================================================================
 void DigiBrain::configure(const DigiConfig& cfg) {
-    state_.skill          = makeSkillParams(cfg.skillLevel);
-    state_.cornerSpeed    = cfg.cornerSpeedKts;
-    state_.maxGs          = cfg.maxGs;
-    state_.maxRoll        = cfg.maxBankDeg;
-    state_.maxGammaDeg    = cfg.maxGammaDeg;
-    state_.turnLoadFactor = cfg.turnLoadFactor;
+    state_.config.skill          = makeSkillParams(cfg.skillLevel);
+    state_.config.cornerSpeed    = cfg.cornerSpeedKts;
+    state_.config.maxGs          = cfg.maxGs;
+    state_.config.maxRoll        = cfg.maxBankDeg;
+    state_.config.maxGammaDeg    = cfg.maxGammaDeg;
+    state_.config.turnLoadFactor = cfg.turnLoadFactor;
 }
 
 DigiConfig DigiBrain::config() const {
     DigiConfig cfg;
-    cfg.skillLevel     = state_.skill.level;
-    cfg.cornerSpeedKts = state_.cornerSpeed;
-    cfg.maxGs          = state_.maxGs;
-    cfg.maxBankDeg     = state_.maxRoll;
-    cfg.maxGammaDeg    = state_.maxGammaDeg;
-    cfg.turnLoadFactor = state_.turnLoadFactor;
+    cfg.skillLevel     = state_.config.skill.level;
+    cfg.cornerSpeedKts = state_.config.cornerSpeed;
+    cfg.maxGs          = state_.config.maxGs;
+    cfg.maxBankDeg     = state_.config.maxRoll;
+    cfg.maxGammaDeg    = state_.config.maxGammaDeg;
+    cfg.turnLoadFactor = state_.config.turnLoadFactor;
     return cfg;
 }
 
@@ -98,7 +99,7 @@ DigiEntity DigiBrain::buildSelfEntity(const AircraftState& as) {
 void DigiBrain::commandTakeoff(RunwayId rwy, double rwyHeading,
                                 double rwyThresholdX, double rwyThresholdY,
                                 double rwyAlt) {
-    auto& go = state_.groundOps;
+    auto& go = state_.ag.groundOps;
     go.assignedRunway = rwy;
     go.runwayHeading = rwyHeading;
     go.runwayThresholdX = rwyThresholdX;
@@ -112,7 +113,7 @@ void DigiBrain::commandTakeoff(RunwayId rwy, double rwyHeading,
 void DigiBrain::commandLanding(RunwayId rwy, double rwyHeading,
                                 double rwyThresholdX, double rwyThresholdY,
                                 double rwyAlt) {
-    auto& go = state_.groundOps;
+    auto& go = state_.ag.groundOps;
     go.assignedRunway = rwy;
     go.runwayHeading = rwyHeading;
     go.runwayThresholdX = rwyThresholdX;
@@ -129,12 +130,12 @@ void DigiBrain::commandLanding(RunwayId rwy, double rwyHeading,
 PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ,
                                const FlightControlSystem& fcs, FcsState& fcsState) {
     PilotInput out;
-    state_.dt = dt;
+    state_.nav.dt = dt;
     simTime_ += dt;
 
     // --- Clear fire flags at frame start (FF digimain.cpp:599) ---
-    state_.gunFireFlag = false;
-    state_.mslFireFlag = false;
+    state_.weapon.gunFireFlag = false;
+    state_.weapon.mslFireFlag = false;
 
     // --- Resolve self entity for this frame ---
     // Use host-injected selfEntity if provided; otherwise auto-build from
@@ -159,10 +160,10 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
         // force this reset. Now the brain handles it here, so the
         // SteeringController can be a pure facade.
         const bool is_new_missile = (frameInputs_.injectedMissile != lastInjectedMissilePtr_);
-        state_.incomingMissile = frameInputs_.injectedMissile;
+        state_.missileDefeat.incomingMissile = frameInputs_.injectedMissile;
         if (is_new_missile) {
-            state_.missileDefeatTtgo = -1.0;
-            state_.incomingMissileEvadeTimer = 0.0;
+            state_.missileDefeat.missileDefeatTtgo = -1.0;
+            state_.missileDefeat.incomingMissileEvadeTimer = 0.0;
             // Clear the auto-tracked missile entity (if any) so the brain
             // doesn't confuse injected with auto-tracked.
             missileEntityAuto_.reset();
@@ -175,7 +176,7 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     }
 
     if (frameInputs_.injectedGunsThreat) {
-        state_.gunsThreat = frameInputs_.injectedGunsThreat;
+        state_.gunsJink.gunsThreat = frameInputs_.injectedGunsThreat;
     }
 
     // --- Run sensor fusion if truth state is provided ---
@@ -183,11 +184,11 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     // If injected threats are also set, resolveMode() gives them priority.
     const TruthState* truth = frameInputs_.truth;
     if (truth && selfEntity) {
-        sensorFusion_.update(*selfEntity, *truth, state_.skill, dt);
+        sensorFusion_.update(*selfEntity, *truth, state_.config.skill, dt);
     }
 
     // Process incoming messages (ATC clearances, flight commands)
-    ProcessATCMessages(state_, state_.mailbox);
+    ProcessATCMessages(state_, state_.comm.mailbox);
 
     // --- 1. Ground avoidance ---
     // FreeFalcon explicitly disables GroundCheck during LandingMode AND
@@ -198,31 +199,31 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     // frame, fighting the takeoff roll with max-G pitch commands and
     // producing the erratic pitch/yaw seen at takeoff start.
     //
-    // We check state_.groundOps.phase (set by commandTakeoff/commandLanding)
+    // We check state_.ag.groundOps.phase (set by commandTakeoff/commandLanding)
     // rather than curMode_ (which hasn't been resolved yet this frame).
-    const bool isGroundOps = (state_.groundOps.phase == GroundOpsPhase::Parking ||
-                              state_.groundOps.phase == GroundOpsPhase::RequestTaxi ||
-                              state_.groundOps.phase == GroundOpsPhase::TaxiToRunway ||
-                              state_.groundOps.phase == GroundOpsPhase::HoldingShort ||
-                              state_.groundOps.phase == GroundOpsPhase::LiningUp ||
-                              state_.groundOps.phase == GroundOpsPhase::TakeoffRoll ||
-                              state_.groundOps.phase == GroundOpsPhase::Rotation ||
-                              state_.groundOps.phase == GroundOpsPhase::AfterTakeoff ||
-                              state_.groundOps.phase == GroundOpsPhase::Approach ||
-                              state_.groundOps.phase == GroundOpsPhase::Flare ||
-                              state_.groundOps.phase == GroundOpsPhase::Touchdown ||
-                              state_.groundOps.phase == GroundOpsPhase::Rollout ||
-                              state_.groundOps.phase == GroundOpsPhase::VacatingRunway);
+    const bool isGroundOps = (state_.ag.groundOps.phase == GroundOpsPhase::Parking ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::RequestTaxi ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::TaxiToRunway ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::HoldingShort ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::LiningUp ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::TakeoffRoll ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::Rotation ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::AfterTakeoff ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::Approach ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::Flare ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::Touchdown ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::Rollout ||
+                              state_.ag.groundOps.phase == GroundOpsPhase::VacatingRunway);
 
     bool pullingUp = false;
     if (isGroundOps) {
         // Ground ops owns terrain logic — suppress ground avoid.
-        state_.groundAvoidNeeded = false;
-        state_.pullupTimer = 0.0;
+        state_.groundAvoid.groundAvoidNeeded = false;
+        state_.groundAvoid.pullupTimer = 0.0;
     } else {
         pullingUp = RunGroundAvoid(state_, as, groundZ,
-                                   state_.cornerSpeed, dt,
-                                   fcsState, state_.maxGs);
+                                   state_.config.cornerSpeed, dt,
+                                   fcsState, state_.config.maxGs);
     }
 
     // --- 2. Resolve mode ---
@@ -317,8 +318,8 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             }
             case DigiMode::Loiter:
                 // Loiter already exists as a ManeuverPrimitives method — use it.
-                ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.maxGs);
-                ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
+                ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.config.maxGs);
+                ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
                                               state_, as, 200.0, 800.0, dt, 700.0);
                 break;
             case DigiMode::Bugout:
@@ -331,36 +332,40 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             case DigiMode::Refueling:
             case DigiMode::FollowOrders:
             case DigiMode::RTB:
+                // Not yet ported — fall through to Waypoint navigation.
+                runWaypoint(as, dt, fcs, fcsState);
+                break;
             case DigiMode::Wingy:
+                // Wingman formation following — delegates to AiFollowLead.
+                runWingy(as, dt, fcs, fcsState);
+                break;
             case DigiMode::GroundMnvr:
                 // Not yet ported — fall through to Waypoint navigation.
-                // (Each of these needs a substantial port: refuel.cpp,
-                // wingman system, AirbaseCheck, formdata.cpp, gndattck.cpp.)
                 runWaypoint(as, dt, fcs, fcsState);
                 break;
         }
     }
 
     // --- 4. Clamp outputs + map fire flags ---
-    out.pstick = limit(state_.pStick, -1.0, 1.0);
-    out.rstick = limit(state_.rStick, -1.0, 1.0);
-    out.ypedal = limit(state_.yPedal, -1.0, 1.0);
-    out.throttle = limit(state_.throttle, 0.0, 1.5);
+    out.pstick = limit(state_.commands.pStick, -1.0, 1.0);
+    out.rstick = limit(state_.commands.rStick, -1.0, 1.0);
+    out.ypedal = limit(state_.commands.yPedal, -1.0, 1.0);
+    out.throttle = limit(state_.commands.throttle, 0.0, 1.5);
     // Round-2 structural fix (Rec 7): map digi brake / speed-brake / gear
     // commands to PilotInput. Previously the brain wrote only pStick/
     // rStick/yPedal/throttle — PilotInput.wheelBrakes / speedBrake /
     // gearHandle were dead fields. Now RunLanding::Rollout can actually
     // command wheel brakes, and a future A/G dive-bomb mode can command
     // speed brakes.
-    out.wheelBrakes  = state_.wheelBrakes;
-    out.parkingBrake = state_.parkingBrake;
-    out.speedBrake   = state_.speedBrakeCmd;
-    out.gearHandle   = state_.gearHandleCmd;
+    out.wheelBrakes  = state_.commands.wheelBrakes;
+    out.parkingBrake = state_.commands.parkingBrake;
+    out.speedBrake   = state_.commands.speedBrakeCmd;
+    out.gearHandle   = state_.commands.gearHandleCmd;
     out.refueling = false;
     // Map digi fire flags to PilotInput (host reads these to fire weapons)
-    out.fireGun        = state_.gunFireFlag;
-    out.releaseConsent = state_.mslFireFlag;
-    out.weaponStation  = state_.fireStation;
+    out.fireGun        = state_.weapon.gunFireFlag;
+    out.releaseConsent = state_.weapon.mslFireFlag;
+    out.weaponStation  = state_.weapon.fireStation;
     return out;
 }
 
@@ -423,16 +428,16 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     //      use it directly. The host manages its lifetime.
     //   b. Otherwise, if SensorFusion is active, auto-track the missile
     //      from pic.incomingMissile (sticky-track by entityId).
-    //   c. Otherwise, fall back to whatever state_.incomingMissile points
+    //   c. Otherwise, fall back to whatever state_.missileDefeat.incomingMissile points
     //      to (set by deprecated shim or prior frame).
     //
-    // We COMMIT the pointer to state_.incomingMissile so that
+    // We COMMIT the pointer to state_.missileDefeat.incomingMissile so that
     // runMissileDefeat sees it, and MissileDefeatCheck's clearing
     // side-effect persists.
 
     // Step a: host-injected missile
     if (frameInputs_.injectedMissile) {
-        state_.incomingMissile = frameInputs_.injectedMissile;
+        state_.missileDefeat.incomingMissile = frameInputs_.injectedMissile;
         // Clear auto-track so we don't fight the injection.
         missileEntityAuto_.reset();
         // Don't update incomingMissileId for injected missiles — the host
@@ -443,42 +448,42 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     else {
         const bool autoTracking =
             missileEntityAuto_.has_value() &&
-            state_.incomingMissile == &(*missileEntityAuto_);
+            state_.missileDefeat.incomingMissile == &(*missileEntityAuto_);
 
         // Clear auto-tracked missile if SensorFusion no longer sees one.
         if (sensorFusionActive && autoTracking && !pic.incomingMissile) {
-            state_.incomingMissile = nullptr;
-            state_.incomingMissileId = kInvalidEntityId;
+            state_.missileDefeat.incomingMissile = nullptr;
+            state_.missileDefeat.incomingMissileId = kInvalidEntityId;
             missileEntityAuto_.reset();
         }
         // SensorFusion sees a missile we're not tracking (or a different one).
         else if (sensorFusionActive && pic.incomingMissile &&
                  (!autoTracking ||
-                  pic.incomingMissile->entityId != state_.incomingMissileId)) {
+                  pic.incomingMissile->entityId != state_.missileDefeat.incomingMissileId)) {
             // BUG FIX: use the toDigiEntity helper instead of inline
             // field-by-field copy. The previous code copied 9 fields and
             // hardcoded seekerType=Radar, missing pitch/roll/isFiring.
             missileEntityAuto_ = toDigiEntity(*pic.incomingMissile);
-            state_.incomingMissile = &(*missileEntityAuto_);
+            state_.missileDefeat.incomingMissile = &(*missileEntityAuto_);
 
             // Reset per-missile state on identity change.
             const EntityId newId = pic.incomingMissile->entityId;
-            if (newId != state_.incomingMissileId) {
-                state_.incomingMissileId = newId;
-                state_.missileDefeatTtgo = -1.0;
-                state_.incomingMissileEvadeTimer = 0.0;
+            if (newId != state_.missileDefeat.incomingMissileId) {
+                state_.missileDefeat.incomingMissileId = newId;
+                state_.missileDefeat.missileDefeatTtgo = -1.0;
+                state_.missileDefeat.incomingMissileEvadeTimer = 0.0;
             }
         }
         // Same missile — refresh position/velocity.
         else if (sensorFusionActive && autoTracking && pic.incomingMissile &&
-                 pic.incomingMissile->entityId == state_.incomingMissileId) {
+                 pic.incomingMissile->entityId == state_.missileDefeat.incomingMissileId) {
             // BUG FIX: use the helper here too, so pitch/roll/isFiring stay
             // current (the previous code only refreshed 8 fields).
             missileEntityAuto_ = toDigiEntity(*pic.incomingMissile);
         }
     }
 
-    if (selfEntity && state_.incomingMissile) {
+    if (selfEntity && state_.missileDefeat.incomingMissile) {
         if (MissileDefeatCheck(state_, *selfEntity, dt)) {
             addMode(DigiMode::MissileDefeat);
         }
@@ -488,26 +493,26 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     // --- Guns threat ---
     // ===================================================================
     if (frameInputs_.injectedGunsThreat) {
-        state_.gunsThreat = frameInputs_.injectedGunsThreat;
+        state_.gunsJink.gunsThreat = frameInputs_.injectedGunsThreat;
         gunsEntityAuto_.reset();
     } else {
         // Clear auto-tracked guns threat if SensorFusion no longer sees one.
         if (sensorFusionActive && gunsEntityAuto_.has_value() &&
-            state_.gunsThreat == &(*gunsEntityAuto_) &&
+            state_.gunsJink.gunsThreat == &(*gunsEntityAuto_) &&
             !pic.gunsThreat) {
-            state_.gunsThreat = nullptr;
+            state_.gunsJink.gunsThreat = nullptr;
             gunsEntityAuto_.reset();
         }
 
-        if (!state_.gunsThreat && pic.gunsThreat) {
+        if (!state_.gunsJink.gunsThreat && pic.gunsThreat) {
             // BUG FIX: use toDigiEntity helper instead of inline copy that
             // hardcoded isFiring=true and missed pitch/roll/seekerType.
             gunsEntityAuto_ = toDigiEntity(*pic.gunsThreat);
-            state_.gunsThreat = &(*gunsEntityAuto_);
+            state_.gunsJink.gunsThreat = &(*gunsEntityAuto_);
         }
     }
 
-    if (selfEntity && state_.gunsThreat) {
+    if (selfEntity && state_.gunsJink.gunsThreat) {
         if (GunsJinkCheck(state_, *selfEntity)) {
             addMode(DigiMode::GunsJink);
         }
@@ -532,7 +537,7 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
     // ===================================================================
     // --- Ground ops (takeoff/landing) ---
     // ===================================================================
-    const auto gp = state_.groundOps.phase;
+    const auto gp = state_.ag.groundOps.phase;
     if (gp == GroundOpsPhase::TakeoffRoll || gp == GroundOpsPhase::Rotation ||
         gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp ||
         gp == GroundOpsPhase::TaxiToRunway || gp == GroundOpsPhase::HoldingShort ||
@@ -580,8 +585,8 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         // (6000 ft) if the host hasn't set up an SMS; if missiles are
         // available, use the AIM-120 RMax (35 NM) as the BVR gate.
         // TODO: read from SMS when host provides one
-        const double maxAAWpnRangeFt = state_.maxAAWpnRange > 0
-            ? state_.maxAAWpnRange
+        const double maxAAWpnRangeFt = state_.weapon.maxAAWpnRange > 0
+            ? state_.weapon.maxAAWpnRange
             : 35.0 * 6076.0;  // default: AIM-120 RMax (35 NM)
 
         // --- BVR engagement (8 NM .. engageRange) ---
@@ -644,11 +649,29 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         }
     }
 
-    // --- Waypoint (lowest-priority fallback) ---
-    // FF RunDecisionRoutines ends by queuing WaypointMode as the default.
-    // addMode() priority resolution ensures any higher-priority mode queued
-    // above wins; if nothing matched, Waypoint wins.
-    addMode(DigiMode::Waypoint);
+    // --- Wingman formation following (Wingy mode) ---
+    // If this aircraft is a wingman with an assigned lead and an injected
+    // lead entity, queue Wingy mode. Wingy (20) is lower priority than
+    // Waypoint (12) in the enum, so we queue it BEFORE Waypoint — that way
+    // Waypoint won't replace it (12 < 20 would replace, but we skip the
+    // Waypoint addMode entirely when Wingy is queued).
+    //
+    // FreeFalcon winglogic.cpp:919: AiCheckFormation queues WingyMode when
+    // mpActionFlags[AI_FOLLOW_FORMATION] is set and no engage/RTB/landing
+    // mode is active.
+    const bool wingyActive =
+        state_.formation.isWing &&
+        state_.formation.flightLeadId != kInvalidEntityId &&
+        frameInputs_.injectedLead != nullptr;
+    if (wingyActive) {
+        addMode(DigiMode::Wingy);
+    } else {
+        // --- Waypoint (lowest-priority fallback) ---
+        // FF RunDecisionRoutines ends by queuing WaypointMode as the default.
+        // addMode() priority resolution ensures any higher-priority mode queued
+        // above wins; if nothing matched, Waypoint wins.
+        addMode(DigiMode::Waypoint);
+    }
 
     // --- Resolve queued mode → curMode_ for this frame ---
     resolveModeConflicts();
@@ -715,9 +738,9 @@ void DigiBrain::resolveModeConflicts() {
 void DigiBrain::runWaypoint(const AircraftState& as, double dt,
                              const FlightControlSystem& fcs, FcsState& fcsState) {
     if (curWp_ >= wps_.size()) {
-        ManeuverPrimitives::HeadingAndAltitudeHold(state_.holdPsi, state_.holdAlt,
-                                                    state_, as, fcs, fcsState, state_.maxGs);
-        ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
+        ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
+                                                    state_, as, fcs, fcsState, state_.config.maxGs);
+        ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
                                       state_, as, 200.0, 800.0, dt, 700.0);
         return;
     }
@@ -730,9 +753,9 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     if (dist < captureRadius_) {
         ++curWp_;
         if (curWp_ >= wps_.size()) {
-            ManeuverPrimitives::HeadingAndAltitudeHold(state_.holdPsi, state_.holdAlt,
-                                                        state_, as, fcs, fcsState, state_.maxGs);
-            ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
+            ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
+                                                        state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
                                           state_, as, 200.0, 800.0, dt, 700.0);
             return;
         }
@@ -741,8 +764,8 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     const double desHeading = std::atan2(dy, dx);
     const double desAlt = -wp.z;
     ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
-                                                state_, as, fcs, fcsState, state_.maxGs);
-    ManeuverPrimitives::MachHold(state_.cornerSpeed, as.vcas, true,
+                                                state_, as, fcs, fcsState, state_.config.maxGs);
+    ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
                                   state_, as, 200.0, 800.0, dt, 700.0);
 }
 
@@ -750,7 +773,7 @@ void DigiBrain::runMissileDefeat(const AircraftState& as, double dt,
                                   const FlightControlSystem& fcs, FcsState& fcsState) {
     const DigiEntity* selfEntity = frameInputs_.selfEntity;
     if (!selfEntity) selfEntity = &selfEntityAuto_;
-    if (!selfEntity || !state_.incomingMissile) {
+    if (!selfEntity || !state_.missileDefeat.incomingMissile) {
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
@@ -761,7 +784,7 @@ void DigiBrain::runGunsJink(const AircraftState& as, double dt,
                               const FlightControlSystem& fcs, FcsState& fcsState) {
     const DigiEntity* selfEntity = frameInputs_.selfEntity;
     if (!selfEntity) selfEntity = &selfEntityAuto_;
-    if (!selfEntity || !state_.gunsThreat) {
+    if (!selfEntity || !state_.gunsJink.gunsThreat) {
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
@@ -839,7 +862,7 @@ void DigiBrain::runBVREngage(const AircraftState& as, double dt,
         return;
     }
     // Resolve max A/A weapon range
-    double maxAAWpnRangeFt = state_.maxAAWpnRange;
+    double maxAAWpnRangeFt = state_.weapon.maxAAWpnRange;
     if (maxAAWpnRangeFt <= 0.0) maxAAWpnRangeFt = 35.0 * 6076.0;
 
     BvrEngage(state_, *selfEntity, *tgt, as, fcs, fcsState, dt);
@@ -876,6 +899,30 @@ void DigiBrain::runTakeoff(const AircraftState& as, double dt,
 void DigiBrain::runLanding(const AircraftState& as, double dt,
                             FcsState& fcsState, double groundZ) {
     RunLanding(state_, as, fcsState, dt, simTime_, groundZ);
+}
+
+void DigiBrain::runWingy(const AircraftState& as, double dt,
+                          const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Build the self entity for AiFollowLead.
+    const DigiEntity* selfEntity = frameInputs_.selfEntity;
+    if (!selfEntity) {
+        selfEntityAuto_ = buildSelfEntity(as);
+        selfEntity = &selfEntityAuto_;
+    }
+
+    // Get the lead entity. Priority: injected lead > none.
+    // (A future enhancement: look up the lead in the SensorPicture by
+    // formation.flightLeadId — but for now, the host must inject the lead
+    // entity directly via FrameInputs.injectedLead.)
+    const DigiEntity* lead = frameInputs_.injectedLead;
+
+    if (!selfEntity) {
+        // Can't fly formation without a self entity — fall back to waypoint.
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    AiFollowLead(state_, *selfEntity, lead, as, fcs, fcsState, dt);
 }
 
 } // namespace digi

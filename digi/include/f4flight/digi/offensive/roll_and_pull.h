@@ -66,7 +66,7 @@ constexpr double kOvershootClosure = 70.0;          // kts
 //   fcsState: FCS state (written)
 //   dt      : frame time (seconds)
 //
-// Updates: digi.pStick, digi.rStick, digi.yPedal, digi.throttle
+// Updates: digi.commands.pStick, digi.commands.rStick, digi.commands.yPedal, digi.commands.throttle
 // Calls: ManeuverPrimitives::TrackPoint, AutoTrack, MachHold, SetPstick
 void RollAndPull(DigiState& digi, const DigiEntity& self,
                  const DigiEntity& target, const AircraftState& as,

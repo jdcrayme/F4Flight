@@ -41,6 +41,7 @@ set(F4FLIGHT_DIGI_SOURCES
     # Note: formation/ and comms/ and weapons/ are header-only — no .cpp
     # wingman
     src/wingman/wingman_state.cpp
+    src/wingman/wingman_ai.cpp
 )
 
 set(F4FLIGHT_DIGI_HEADERS
@@ -62,6 +63,7 @@ set(F4FLIGHT_DIGI_HEADERS
     include/f4flight/digi/formation/formation_geometry.h
     # wingman
     include/f4flight/digi/wingman/wingman_state.h
+    include/f4flight/digi/wingman/wingman_ai.h
     # defensive
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h

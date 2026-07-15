@@ -62,13 +62,13 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
-        digi.maxGs = 9.0;
-        digi.cornerSpeed = 330.0;
-        digi.maxRoll = 190.0;
-        digi.maxGammaDeg = 15.0;
-        digi.turnLoadFactor = 2.0;
-        digi.dt = 1.0 / 60.0;
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.maxGs = 9.0;
+        digi.config.cornerSpeed = 330.0;
+        digi.config.maxRoll = 190.0;
+        digi.config.maxGammaDeg = 15.0;
+        digi.config.turnLoadFactor = 2.0;
+        digi.nav.dt = 1.0 / 60.0;
 
         // Self at origin, heading east (yaw=0), level, 350 kts
         self.x = 0.0; self.y = 0.0; self.z = -10000.0;
@@ -105,9 +105,9 @@ TEST_F(RollAndPullTest, OffensiveHeadOnCommandsTrackpoint) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Should produce some stick/throttle commands
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
 }
 
@@ -121,16 +121,16 @@ TEST_F(RollAndPullTest, OffsetTargetCommandsTurn) {
 
     // Warm up the smoothing by running several frames.
     for (int i = 0; i < 30; ++i) {
-        digi.pStick = 0.0; digi.rStick = 0.0;
+        digi.commands.pStick = 0.0; digi.commands.rStick = 0.0;
         RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
     }
 
     // Target is to the right (positive y, positive bearing from self at
     // origin heading north). The brain should command a right turn —
     // positive rstick (roll right) or at least a non-trivial roll command.
-    EXPECT_GT(std::fabs(digi.rStick), 0.01)
+    EXPECT_GT(std::fabs(digi.commands.rStick), 0.01)
         << "Offset target should produce a roll command, got rstick="
-        << digi.rStick;
+        << digi.commands.rStick;
 }
 
 TEST_F(RollAndPullTest, OffensiveChaseCommandsTrackpoint) {
@@ -142,9 +142,9 @@ TEST_F(RollAndPullTest, OffensiveChaseCommandsTrackpoint) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Should produce commands to chase
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
 }
 
@@ -157,9 +157,9 @@ TEST_F(RollAndPullTest, NeutralBeamCommandsTrackpoint) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Should produce commands
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
 }
 
@@ -172,14 +172,14 @@ TEST_F(RollAndPullTest, DefensiveBehindUsCommandsTrackpoint) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Should produce commands (defensive — turn to track)
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
 }
 
 TEST_F(RollAndPullTest, GroundAvoidSkipsBFM) {
-    digi.groundAvoidNeeded = true;
+    digi.groundAvoid.groundAvoidNeeded = true;
 
     target.x = 0.0; target.y = 3000.0; target.z = -10000.0;
     target.yaw = PI;
@@ -188,8 +188,8 @@ TEST_F(RollAndPullTest, GroundAvoidSkipsBFM) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Should NOT produce any BFM commands (ground avoid pre-empts)
-    EXPECT_NEAR(digi.pStick, 0.0, 1e-9);
-    EXPECT_NEAR(digi.rStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.commands.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.commands.rStick, 0.0, 1e-9);
 }
 
 TEST_F(RollAndPullTest, FarTargetAccelerates) {
@@ -201,7 +201,7 @@ TEST_F(RollAndPullTest, FarTargetAccelerates) {
     RollAndPull(digi, self, target, as, fcs, fcsState, 1.0/60.0);
 
     // Throttle should be set (MachHold with adjustPitch=true)
-    EXPECT_GT(digi.throttle, 0.0);
+    EXPECT_GT(digi.commands.throttle, 0.0);
 }
 
 // ===========================================================================

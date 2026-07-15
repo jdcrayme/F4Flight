@@ -25,7 +25,7 @@ bool CollisionCheck(DigiState& digi, const DigiEntity& self,
 
     // Reaction time: function of G available + aggression factor
     // (FF cavoid.cpp:34)
-    const double maxGs = std::max(digi.maxGs, 1.0);
+    const double maxGs = std::max(digi.config.maxGs, 1.0);
     const double reactTime = (kGSLimit / maxGs) * kReactFact;
 
     // Time to impact
@@ -94,9 +94,9 @@ bool CollisionCheck(DigiState& digi, const DigiEntity& self,
             const double wy = self.dcm.m[1][0] * bx + self.dcm.m[1][1] * by + self.dcm.m[1][2] * bz;
             const double wz = self.dcm.m[2][0] * bx + self.dcm.m[2][1] * by + self.dcm.m[2][2] * bz;
 
-            digi.trackX = self.x + range * wx;
-            digi.trackY = self.y + range * wy;
-            digi.trackZ = self.z + range * wz;  // NED: +wz (wz already accounts for body Z down)
+            digi.nav.trackX = self.x + range * wx;
+            digi.nav.trackY = self.y + range * wy;
+            digi.nav.trackZ = self.z + range * wz;  // NED: +wz (wz already accounts for body Z down)
 
             return true;
         }
@@ -116,11 +116,11 @@ void CollisionAvoid(DigiState& digi, const DigiEntity& self,
     (void)self;
     // FF cavoid.cpp:136-139: TrackPoint(maxGs, cornerSpeed)
     // TrackPoint calls AutoTrack internally.
-    ManeuverPrimitives::TrackPoint(digi.trackX, digi.trackY, -digi.trackZ,
-                                    digi, as, fcs, fcsState, digi.maxGs);
-    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, true,
+    ManeuverPrimitives::TrackPoint(digi.nav.trackX, digi.nav.trackY, -digi.nav.trackZ,
+                                    digi, as, fcs, fcsState, digi.config.maxGs);
+    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
                                   digi, as, 200.0, 800.0,
-                                  digi.dt, 700.0);
+                                  digi.nav.dt, 700.0);
 }
 
 } // namespace digi

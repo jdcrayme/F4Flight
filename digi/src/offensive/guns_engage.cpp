@@ -76,11 +76,11 @@ double CoarseGunsTrack(DigiState& digi, const DigiEntity& self,
     const double tz = target.z + target.vz * gunFactor
                     - 0.5 * GRAVITY * gunFactor * gunFactor * 4.0;
 
-    digi.trackX = tx;
-    digi.trackY = ty;
-    digi.trackZ = tz;
+    digi.nav.trackX = tx;
+    digi.nav.trackY = ty;
+    digi.nav.trackZ = tz;
 
-    return ManeuverPrimitives::GunsAutoTrack(digi, as, fcsState, digi.maxGs);
+    return ManeuverPrimitives::GunsAutoTrack(digi, as, fcsState, digi.config.maxGs);
 }
 
 // ===========================================================================
@@ -127,8 +127,8 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
     const double pipperAta = std::sqrt(pipperEl * pipperEl + pipperAz * pipperAz);
 
     // Pipper rate (for fire decision)
-    const double pipperRate = (pipperAta - digi.pastPipperAta) / std::max(dt, 0.001);
-    digi.pastPipperAta = pipperAta;
+    const double pipperRate = (pipperAta - digi.weapon.pastPipperAta) / std::max(dt, 0.001);
+    digi.weapon.pastPipperAta = pipperAta;
     lagAngle = pipperEl;
 
     // Error between pipper and target az/el
@@ -137,11 +137,11 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
     const double ata = std::sqrt(azerr * azerr + elerr * elerr);
 
     // ATA rate (for fire decision)
-    digi.ataDot = (ata - digi.pastAta) / std::max(dt, 0.001);
-    digi.pastAta = ata;
+    digi.weapon.ataDot = (ata - digi.weapon.pastAta) / std::max(dt, 0.001);
+    digi.weapon.pastAta = ata;
 
     // --- Phase A: coarse track until pipper near target ---
-    if (!digi.waitingForShot) {
+    if (!digi.weapon.waitingForShot) {
         const double leadTime = 2.0 + 2.0 * std::sin(rg.ataFrom);
         // CoarseGunsTrack sets trackX/Y/Z and writes pStick/rStick via
         // GunsAutoTrack. (FF gengage.cpp:308 returns ata from CoarseGunsTrack
@@ -150,15 +150,15 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
         // to corner speed to give the tracking loop more time.
         CoarseGunsTrack(digi, self, target, as, gun, fcsState, leadTime);
         if (ata > 60.0 * DTR) {
-            speed = digi.cornerSpeed;
+            speed = digi.config.cornerSpeed;
         }
 
         // Transition to fine track when pipper near target
         // (FF gengage.cpp:319)
         if (std::fabs(azerr) < 2.0 * DTR &&
             elerr < 0.5 * DTR && elerr > -2.0 * DTR) {
-            digi.waitingForShot = true;
-            digi.pastPstick = as.loads.nzcgb;  // current G
+            digi.weapon.waitingForShot = true;
+            digi.weapon.pastPstick = as.loads.nzcgb;  // current G
         }
 
         // Close-range fallback: if the target is very close (< 1500 ft) and
@@ -168,7 +168,7 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
         // (FF doesn't have this because its pipper geometry is more precise;
         // F4Flight's simplified DCM + bullet model needs a bit more margin.)
         if (rg.range < 1500.0 && std::fabs(rg.ata) < 5.0 * DTR) {
-            digi.gunFireFlag = true;
+            digi.weapon.gunFireFlag = true;
         }
     }
     // --- Phase B: fine track + fire decision ---
@@ -177,14 +177,14 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
         // (FF gengage.cpp:331-337)
         if (std::fabs(azerr) < 1.5 * DTR &&
             elerr < 0.5 * DTR && elerr > -1.5 * DTR &&
-            std::fabs(digi.ataDot) < 50.0 * DTR &&
+            std::fabs(digi.weapon.ataDot) < 50.0 * DTR &&
             rg.range < 2.0 * gun.muzzleVelFtps) {
-            digi.gunFireFlag = true;
+            digi.weapon.gunFireFlag = true;
         }
 
         // Relax stick — hold the G we had when entering fine track
-        ManeuverPrimitives::SetPstick(std::max(digi.pastPstick - 1.0, 0.0),
-                                       digi.maxGs, CommandType::GCommand,
+        ManeuverPrimitives::SetPstick(std::max(digi.weapon.pastPstick - 1.0, 0.0),
+                                       digi.config.maxGs, CommandType::GCommand,
                                        digi, as);
         ManeuverPrimitives::SetRstick(0.0, digi, FlightControlSystem{}, fcsState);
 
@@ -193,9 +193,9 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
             elerr < 0.5 * DTR && elerr > -1.5 * DTR &&
             std::fabs(pipperRate) < 10.0 * DTR &&
             rg.range < 3000.0) {
-            digi.waitingForShot = (std::fabs(digi.ataDot) < 0.01);
+            digi.weapon.waitingForShot = (std::fabs(digi.weapon.ataDot) < 0.01);
         } else {
-            digi.waitingForShot = false;
+            digi.weapon.waitingForShot = false;
         }
     }
 
@@ -222,7 +222,7 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
         // Ahead of 3/9 — look for a shot
         double lagAngle = 0.0;
         FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                      digi.cornerSpeed, dt, lagAngle);
+                      digi.config.cornerSpeed, dt, lagAngle);
     } else {
         // Behind 3/9 — closure control BFM
         const double CONTROL_POINT_DISTANCE = 1400.0;

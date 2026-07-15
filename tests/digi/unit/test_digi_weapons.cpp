@@ -308,13 +308,13 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
-        digi.maxGs = 9.0;
-        digi.cornerSpeed = 330.0;
-        digi.maxRoll = 190.0;
-        digi.maxGammaDeg = 15.0;
-        digi.turnLoadFactor = 2.0;
-        digi.dt = 1.0 / 60.0;
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.maxGs = 9.0;
+        digi.config.cornerSpeed = 330.0;
+        digi.config.maxRoll = 190.0;
+        digi.config.maxGammaDeg = 15.0;
+        digi.config.turnLoadFactor = 2.0;
+        digi.nav.dt = 1.0 / 60.0;
 
         gun = gunSpec(510);
 
@@ -346,16 +346,16 @@ TEST_F(GunsEngageTest, ProducesStickCommands) {
     GunsEngage(digi, self, target, as, gun, fcs, fcsState, 1.0/60.0);
 
     // Should produce some stick/throttle commands
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
 }
 
 TEST_F(GunsEngageTest, DoesNotFireImmediately) {
     // On the first frame, the AI should be in coarse track (not firing)
     GunsEngage(digi, self, target, as, gun, fcs, fcsState, 1.0/60.0);
-    EXPECT_FALSE(digi.gunFireFlag)
+    EXPECT_FALSE(digi.weapon.gunFireFlag)
         << "AI should not fire on the first frame (needs to track first)";
 }
 
@@ -369,7 +369,7 @@ TEST_F(GunsEngageTest, CanFireAfterTracking) {
         target.x -= 400.0 * (1.0/60.0);
         as.kin.x = self.x;
         GunsEngage(digi, self, target, as, gun, fcs, fcsState, 1.0/60.0);
-        if (digi.gunFireFlag) {
+        if (digi.weapon.gunFireFlag) {
             fired = true;
             break;
         }

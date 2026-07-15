@@ -251,20 +251,20 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 // state() is [[deprecated]] — see digi_brain.h).
                 const auto& brain = sc.brain();
                 const auto& ds = brain.state();
-                if (ds.incomingMissile) {
+                if (ds.missileDefeat.incomingMissile) {
                     threats.push_back({"missile",
-                        ds.incomingMissile->x, ds.incomingMissile->y,
-                        ds.incomingMissile->z, ds.incomingMissile->speed});
+                        ds.missileDefeat.incomingMissile->x, ds.missileDefeat.incomingMissile->y,
+                        ds.missileDefeat.incomingMissile->z, ds.missileDefeat.incomingMissile->speed});
                 }
-                if (ds.gunsThreat) {
+                if (ds.gunsJink.gunsThreat) {
                     threats.push_back({"guns",
-                        ds.gunsThreat->x, ds.gunsThreat->y,
-                        ds.gunsThreat->z, ds.gunsThreat->speed});
+                        ds.gunsJink.gunsThreat->x, ds.gunsJink.gunsThreat->y,
+                        ds.gunsJink.gunsThreat->z, ds.gunsJink.gunsThreat->speed});
                 }
-                if (ds.groundTarget) {
+                if (ds.ag.groundTarget) {
                     threats.push_back({"target",
-                        ds.groundTarget->x, ds.groundTarget->y,
-                        ds.groundTarget->z, ds.groundTarget->speed});
+                        ds.ag.groundTarget->x, ds.ag.groundTarget->y,
+                        ds.ag.groundTarget->z, ds.ag.groundTarget->speed});
                 }
                 rec->record(simT, fm.state(), input, modeName, test->name(), threats);
             }

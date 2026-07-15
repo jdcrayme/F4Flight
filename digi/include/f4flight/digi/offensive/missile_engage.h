@@ -63,8 +63,8 @@ WeaponType WeaponSelection(const StoresManagementSystem& sms,
 // Port of FreeFalcon dlogic.cpp:792-933.
 //
 // Checks firing envelope (range in WEZ, ata within seeker limit), then
-// applies shoot-shoot / shoot-look doctrine. Sets digi.mslFireFlag and
-// digi.fireStation when firing.
+// applies shoot-shoot / shoot-look doctrine. Sets digi.weapon.mslFireFlag and
+// digi.weapon.fireStation when firing.
 // ===========================================================================
 void FireControlMissile(DigiState& digi, const DigiEntity& self,
                         const DigiEntity& target,

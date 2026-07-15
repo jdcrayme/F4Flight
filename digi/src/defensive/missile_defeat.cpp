@@ -7,7 +7,7 @@
 //
 // Key simplifications vs. FreeFalcon:
 //   - No RWR / visual sensor simulation (the host decides whether the AI
-//     "knows" about the missile by setting digi.incomingMissile)
+//     "knows" about the missile by setting digi.missileDefeat.incomingMissile)
 //   - No SARH guidance delay (the host handles missileFiredEntity logic)
 //   - No radio calls (rcENGDEFENSIVEC)
 //   - No emergency jettison (no SMS model yet)
@@ -36,15 +36,15 @@ bool MissileDefeatCheck(DigiState& digi, const DigiEntity& self, double dt) {
     (void)self;  // position used in MissileDefeat, not here
     (void)dt;
 
-    const DigiEntity* missile = digi.incomingMissile;
+    const DigiEntity* missile = digi.missileDefeat.incomingMissile;
     if (!missile) return false;
 
     // Missile is dead → clear and exit
     if (missile->isDead) {
-        digi.incomingMissile = nullptr;
-        digi.incomingMissileId = kInvalidEntityId;
-        digi.incomingMissileRange = 500.0 * 6076.0;
-        digi.missileDefeatTtgo = -1.0;
+        digi.missileDefeat.incomingMissile = nullptr;
+        digi.missileDefeat.incomingMissileId = kInvalidEntityId;
+        digi.missileDefeat.incomingMissileRange = 500.0 * 6076.0;
+        digi.missileDefeat.missileDefeatTtgo = -1.0;
         return false;
     }
 
@@ -58,26 +58,26 @@ bool MissileDefeatCheck(DigiState& digi, const DigiEntity& self, double dt) {
     // the evade timer long enough, spoof the missile and exit.
     // FF mdefeat.cpp:111-144: evade hold = (6 - skill) seconds.
     // SkillParameters::evadeHoldSec centralizes this — keep it authoritative.
-    if (digi.incomingMissileRange > 0.0 &&
-        missileRange > digi.incomingMissileRange) {
+    if (digi.missileDefeat.incomingMissileRange > 0.0 &&
+        missileRange > digi.missileDefeat.incomingMissileRange) {
         // Missile is moving away — start/continue evade timer
-        digi.incomingMissileEvadeTimer += dt;
-        const double evadeHold = digi.skill.evadeHoldSec;
-        if (digi.incomingMissileEvadeTimer > evadeHold) {
+        digi.missileDefeat.incomingMissileEvadeTimer += dt;
+        const double evadeHold = digi.config.skill.evadeHoldSec;
+        if (digi.missileDefeat.incomingMissileEvadeTimer > evadeHold) {
             // Spoofed — forget about the missile
-            digi.incomingMissile = nullptr;
-            digi.incomingMissileId = kInvalidEntityId;
-            digi.incomingMissileRange = 500.0 * 6076.0;
-            digi.missileDefeatTtgo = -1.0;
-            digi.incomingMissileEvadeTimer = 0.0;
+            digi.missileDefeat.incomingMissile = nullptr;
+            digi.missileDefeat.incomingMissileId = kInvalidEntityId;
+            digi.missileDefeat.incomingMissileRange = 500.0 * 6076.0;
+            digi.missileDefeat.missileDefeatTtgo = -1.0;
+            digi.missileDefeat.incomingMissileEvadeTimer = 0.0;
             return false;
         }
     } else {
         // Missile still closing — reset evade timer
-        digi.incomingMissileEvadeTimer = 0.0;
+        digi.missileDefeat.incomingMissileEvadeTimer = 0.0;
     }
 
-    digi.incomingMissileRange = missileRange;
+    digi.missileDefeat.incomingMissileRange = missileRange;
     return true;
 }
 
@@ -88,7 +88,7 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
                    const AircraftState& as,
                    const FlightControlSystem& fcs, FcsState& fcsState,
                    double dt) {
-    const DigiEntity* missile = digi.incomingMissile;
+    const DigiEntity* missile = digi.missileDefeat.incomingMissile;
     if (!missile || missile->isDead) return;
 
     // --- Initialize on new missile ---
@@ -96,11 +96,11 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
     // `missileDefeatTtgo < 0`. DigiBrain::resolveMode is responsible for
     // resetting missileDefeatTtgo to -1 when the missile identity changes
     // (see incomingMissileId tracking in DigiState).
-    if (digi.missileDefeatTtgo < 0.0) {
-        digi.missileDefeatTtgo = 1000.0;
-        digi.missileFindDragPt = true;
-        digi.missileFinishedBeam = false;
-        digi.missileShouldDrag = false;
+    if (digi.missileDefeat.missileDefeatTtgo < 0.0) {
+        digi.missileDefeat.missileDefeatTtgo = 1000.0;
+        digi.missileDefeat.missileFindDragPt = true;
+        digi.missileDefeat.missileFinishedBeam = false;
+        digi.missileDefeat.missileShouldDrag = false;
     }
 
     // --- Compute range and threat time ---
@@ -113,15 +113,15 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
     const double threatTime = range / kAveAim9Vel;
 
     if (threatTime < kMaxThreatTime) {
-        digi.missileDefeatTtgo = threatTime;
+        digi.missileDefeat.missileDefeatTtgo = threatTime;
     } else {
-        digi.missileDefeatTtgo -= dt;
+        digi.missileDefeat.missileDefeatTtgo -= dt;
     }
-    if (digi.missileDefeatTtgo < 0.0) digi.missileDefeatTtgo = 0.0;
+    if (digi.missileDefeat.missileDefeatTtgo < 0.0) digi.missileDefeat.missileDefeatTtgo = 0.0;
 
     // --- Maneuver selection ---
     // FreeFalcon mdefeat.cpp:482-523
-    if (digi.missileDefeatTtgo > kLDTime) {
+    if (digi.missileDefeat.missileDefeatTtgo > kLDTime) {
         // We have time — beam or drag
         // FreeFalcon mdefeat.cpp:497-510:
         //   closure = self_speed - missile_speed
@@ -142,8 +142,8 @@ void MissileDefeat(DigiState& digi, const DigiEntity& self,
         // IR missile throttle cut for skill > 2
         // FreeFalcon mdefeat.cpp:514-516
         if (missile->seekerType == DigiEntity::SeekerType::IR &&
-            digi.skill.irMissileThrottleCut) {
-            digi.throttle = std::min(digi.throttle, 0.99);
+            digi.config.skill.irMissileThrottleCut) {
+            digi.commands.throttle = std::min(digi.commands.throttle, 0.99);
         }
     } else {
         // Last ditch!
@@ -161,7 +161,7 @@ bool MissileBeamManeuver(DigiState& digi, const DigiEntity& self,
     // FreeFalcon mdefeat.cpp:526-592
 
     // Missile heading
-    const double missileYaw = digi.incomingMissile->yaw;
+    const double missileYaw = digi.missileDefeat.incomingMissile->yaw;
 
     // Pick the perpendicular heading closest to our current heading
     // FreeFalcon mdefeat.cpp:541-554
@@ -191,11 +191,11 @@ bool MissileBeamManeuver(DigiState& digi, const DigiEntity& self,
     // FreeFalcon uses AutoTrack(maxGs); we use TrackPoint which delegates
     // to HeadingAndAltitudeHold.
     ManeuverPrimitives::TrackPoint(tpX, tpY, tpAlt,
-                                    digi, as, fcs, fcsState, digi.maxGs);
+                                    digi, as, fcs, fcsState, digi.config.maxGs);
 
     // Hold corner speed
     // FreeFalcon mdefeat.cpp:586
-    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, true,
+    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
                                   digi, as, 200.0, 800.0, dt, 100.0);
 
     // Return true when "close" to trackpoint (FreeFalcon uses at < 5.0)
@@ -216,9 +216,9 @@ void MissileDragManeuver(DigiState& digi, const DigiEntity& self,
 
     // Missile heading — drag = turn to match missile heading (cold = missile
     // has to chase us from behind)
-    const double missileYaw = digi.incomingMissile->yaw;
+    const double missileYaw = digi.missileDefeat.incomingMissile->yaw;
 
-    // BUG FIX: removed dead `if (digi.missileFindDragPt)` block. The block
+    // BUG FIX: removed dead `if (digi.missileDefeat.missileFindDragPt)` block. The block
     // computed tpX/tpY/tpAlt, then immediately discarded them with
     // `(void)tpX; (void)tpY; (void)tpAlt;` and recomputed the same values
     // below. The `missileFindDragPt` flag was set to false but never read
@@ -231,7 +231,7 @@ void MissileDragManeuver(DigiState& digi, const DigiEntity& self,
     const double tpAlt = -self.z;
 
     ManeuverPrimitives::TrackPoint(tpX, tpY, tpAlt,
-                                    digi, as, fcs, fcsState, digi.maxGs);
+                                    digi, as, fcs, fcsState, digi.config.maxGs);
 
     // Hold 3× corner speed (burn through the missile's energy)
     // FreeFalcon mdefeat.cpp:634
@@ -239,7 +239,7 @@ void MissileDragManeuver(DigiState& digi, const DigiEntity& self,
     // FreeFalcon uses a more nuanced speed schedule. For now we preserve the
     // existing behavior; a future tuning pass should reduce this to ~1.5×
     // corner speed to match what most aircraft can sustain.
-    const double dragSpeed = 3.0 * digi.cornerSpeed;
+    const double dragSpeed = 3.0 * digi.config.cornerSpeed;
     ManeuverPrimitives::MachHold(dragSpeed, as.vcas, true,
                                   digi, as, 200.0, 800.0, dt, 100.0);
 }
@@ -257,7 +257,7 @@ void MissileLastDitch(DigiState& digi, const DigiEntity& self,
 
     // Max pitch — pull like hell
     // FreeFalcon mdefeat.cpp:695
-    ManeuverPrimitives::SetPstick(digi.maxGs, digi.maxGs,
+    ManeuverPrimitives::SetPstick(digi.config.maxGs, digi.config.maxGs,
                                    CommandType::GCommand, digi, as);
 
     // Center rudder pedals
@@ -266,7 +266,7 @@ void MissileLastDitch(DigiState& digi, const DigiEntity& self,
 
     // Hold corner speed
     // FreeFalcon mdefeat.cpp:705
-    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, true,
+    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
                                   digi, as, 200.0, 800.0, dt, 100.0);
 
     // Drop chaff/flare in the 0.25-0.8 TTGO window
@@ -274,7 +274,7 @@ void MissileLastDitch(DigiState& digi, const DigiEntity& self,
     // We expose these as flags on digi state for the host to read.
     // (The host maps these to its own EWS/SMS model.)
     // For now, we don't have dedicated flare/chaff fields — the host can
-    // check (digi.missileDefeatTtgo > kLDTime * 0.25 && < kLDTime * 0.8)
+    // check (digi.missileDefeat.missileDefeatTtgo > kLDTime * 0.25 && < kLDTime * 0.8)
     // to decide when to drop. This matches FreeFalcon's timing.
     (void)fcsState;
 }

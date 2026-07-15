@@ -33,32 +33,32 @@ void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
     while (auto msg = mailbox.pop()) {
         switch (msg->type) {
             case MessageType::ATCClearedTakeoff:
-                digi.groundOps.hasTakeoffClearance = true;
-                digi.groundOps.assignedRunway = atc::runwayFromMessage(*msg);
-                digi.groundOps.phase = GroundOpsPhase::LiningUp;
+                digi.ag.groundOps.hasTakeoffClearance = true;
+                digi.ag.groundOps.assignedRunway = atc::runwayFromMessage(*msg);
+                digi.ag.groundOps.phase = GroundOpsPhase::LiningUp;
                 break;
 
             case MessageType::ATCClearedLanding:
-                digi.groundOps.hasLandingClearance = true;
-                digi.groundOps.assignedRunway = atc::runwayFromMessage(*msg);
+                digi.ag.groundOps.hasLandingClearance = true;
+                digi.ag.groundOps.assignedRunway = atc::runwayFromMessage(*msg);
                 break;
 
             case MessageType::ATCHoldShort:
-                digi.groundOps.hasTakeoffClearance = false;
-                digi.groundOps.phase = GroundOpsPhase::HoldingShort;
+                digi.ag.groundOps.hasTakeoffClearance = false;
+                digi.ag.groundOps.phase = GroundOpsPhase::HoldingShort;
                 break;
 
             case MessageType::ATCGoAround:
-                digi.groundOps.hasLandingClearance = false;
-                digi.groundOps.phase = GroundOpsPhase::Approach;
+                digi.ag.groundOps.hasLandingClearance = false;
+                digi.ag.groundOps.phase = GroundOpsPhase::Approach;
                 break;
 
             case MessageType::ATCTaxiInstruction: {
                 double tx, ty;
                 atc::taxiPointFromMessage(*msg, tx, ty);
-                digi.groundOps.runwayThresholdX = tx;
-                digi.groundOps.runwayThresholdY = ty;
-                digi.groundOps.phase = GroundOpsPhase::TaxiToRunway;
+                digi.ag.groundOps.runwayThresholdX = tx;
+                digi.ag.groundOps.runwayThresholdY = ty;
+                digi.ag.groundOps.phase = GroundOpsPhase::TaxiToRunway;
                 break;
             }
 
@@ -70,7 +70,7 @@ void ProcessATCMessages(DigiState& digi, Mailbox& mailbox) {
 
 void RunTaxi(DigiState& digi, const AircraftState& as,
              FcsState& fcsState, double dt) {
-    auto& go = digi.groundOps;
+    auto& go = digi.ag.groundOps;
 
     // Round-2 structural fix (Rec 4 / Bug K): RunTaxi was previously dead
     // code — it always steered toward (runwayThresholdX, runwayThresholdY)
@@ -118,13 +118,13 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
 
     if (dist < 50.0) {
         // Reached target — stop
-        digi.throttle = 0.0;
-        digi.pStick = 0.0;
-        digi.yPedal = 0.0;
-        digi.wheelBrakes = true;  // hold position with brakes
+        digi.commands.throttle = 0.0;
+        digi.commands.pStick = 0.0;
+        digi.commands.yPedal = 0.0;
+        digi.commands.wheelBrakes = true;  // hold position with brakes
         return;
     }
-    digi.wheelBrakes = false;
+    digi.commands.wheelBrakes = false;
 
     // Steer toward target. Use body yaw (psi) for the heading error —
     // sigma (velocity heading) is unreliable at low speed. The EOM ground
@@ -146,8 +146,8 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
     // (per PilotInput convention: -1 = full left, +1 = full right).
     // The EOM uses `psi -= ypedal * rate`, so ypedal < 0 → psi increases →
     // left turn. Hence the negation: `yPedal = -headingErr * scale`.
-    digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 30.0));
-    digi.rStick = 0.0;  // no aileron on the ground
+    digi.commands.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 30.0));
+    digi.commands.rStick = 0.0;  // no aileron on the ground
 
     // Throttle for taxi speed — simple proportional controller.
     // MachHold's sqrt mapping and integral windup are ill-suited for
@@ -155,23 +155,23 @@ void RunTaxi(DigiState& digi, const AircraftState& as,
     // to the speed error, and cut to zero when at taxi speed.
     const double speedErr = kTaxiSpeedKts - as.vcas;
     if (speedErr > 5.0) {
-        digi.throttle = std::min(0.3, speedErr * 0.01);
+        digi.commands.throttle = std::min(0.3, speedErr * 0.01);
     } else if (speedErr < -5.0) {
-        digi.throttle = 0.0;
-        digi.wheelBrakes = true;  // brake if too fast
+        digi.commands.throttle = 0.0;
+        digi.commands.wheelBrakes = true;  // brake if too fast
     } else {
-        digi.throttle = std::max(0.0, speedErr * 0.02);
+        digi.commands.throttle = std::max(0.0, speedErr * 0.02);
     }
 
     // Wings level, hold altitude (on ground)
     fcsState.maxRoll = 0.0;
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
 }
 
 void RunTakeoff(DigiState& digi, const AircraftState& as,
                 FcsState& fcsState, double dt, double simTime, double groundZ) {
     (void)dt;  // takeoff uses discrete phase transitions, not dt
-    auto& go = digi.groundOps;
+    auto& go = digi.ag.groundOps;
 
     switch (go.phase) {
         case GroundOpsPhase::Idle:
@@ -207,11 +207,11 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
 
         case GroundOpsPhase::HoldingShort:
             // Hold position and wait for takeoff clearance
-            digi.throttle = 0.0;
-            digi.pStick = 0.0;
-            digi.yPedal = 0.0;
-            digi.rStick = 0.0;
-            digi.wheelBrakes = true;
+            digi.commands.throttle = 0.0;
+            digi.commands.pStick = 0.0;
+            digi.commands.yPedal = 0.0;
+            digi.commands.rStick = 0.0;
+            digi.commands.wheelBrakes = true;
             // Auto-grant clearance after 2 seconds (simplified — real ATC
             // would send an ATCClearedTakeoff message via the MessageBus)
             if (simTime > 2.0) {
@@ -240,7 +240,7 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
 
         case GroundOpsPhase::TakeoffRoll: {
             // Full throttle (1.5 = AB if available, 1.0 = MIL otherwise)
-            digi.throttle = 1.5;
+            digi.commands.throttle = 1.5;
 
             // Keep straight on runway heading. Below 30 kts the velocity
             // heading (sigma) is unreliable (EOM singularity at 0 speed),
@@ -257,14 +257,14 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
                 const double headingErr = headingError(go.runwayHeading, as.kin.psi);
                 // Sign: headingErr > 0 = need left turn = left pedal (yPedal < 0).
                 // See RunTaxi for the full sign-convention note.
-                digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
+                digi.commands.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
             } else {
-                digi.yPedal = 0.0;
+                digi.commands.yPedal = 0.0;
             }
-            digi.rStick = 0.0;  // no aileron during takeoff roll
+            digi.commands.rStick = 0.0;  // no aileron during takeoff roll
 
             // Hold attitude neutral on the ground.
-            digi.pStick = 0.0;
+            digi.commands.pStick = 0.0;
             fcsState.maxRoll = 0.0;
 
             // Check for rotation speed
@@ -292,8 +292,8 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
             //
             // Fix: set pStick directly to 0.8 (strong but not max deflection).
             // This produces enough elevator authority to rotate at V_R.
-            digi.throttle = 1.5;
-            digi.pStick = 0.8;
+            digi.commands.throttle = 1.5;
+            digi.commands.pStick = 0.8;
             fcsState.maxRoll = 0.0;
 
             // Check if airborne (altitude > groundZ + 10ft)
@@ -325,13 +325,13 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
                 go.gearRetracted = true;
             }
 
-            digi.throttle = 1.5;  // full throttle for climb
+            digi.commands.throttle = 1.5;  // full throttle for climb
 
             if (altAGL_takeoff < 50.0) {
                 // Below 50 ft AGL: hold wings level + runway heading.
                 // Direct commands (no FCS gain dependency) for stability.
                 fcsState.maxRoll = 0.0;
-                digi.rStick = std::max(-0.3, std::min(0.3,
+                digi.commands.rStick = std::max(-0.3, std::min(0.3,
                     -as.kin.phi * RTD * 2.0 * DTR));
                 // Pitch: for the first few seconds after liftoff, command a
                 // strong pitch-up (pStick=0.6) to establish a climb attitude.
@@ -342,19 +342,19 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
                 // to maintain the attitude.
                 if (as.kin.theta < 8.0 * DTR) {
                     // Build pitch attitude aggressively
-                    digi.pStick = 0.6;
+                    digi.commands.pStick = 0.6;
                 } else {
                     // Hold ~10° pitch attitude
                     const double targetPitch = 10.0 * DTR;
                     double pitchErr = targetPitch - as.kin.theta;
-                    digi.pStick = std::max(-0.3, std::min(0.8, pitchErr * 3.0));
+                    digi.commands.pStick = std::max(-0.3, std::min(0.8, pitchErr * 3.0));
                 }
             } else {
                 // Above 50 ft: transition to heading + altitude hold
                 const double targetAlt = groundZ + 1500.0;
                 ManeuverPrimitives::HeadingAndAltitudeHold(
                     go.runwayHeading, targetAlt, digi, as,
-                    FlightControlSystem{}, fcsState, digi.maxGs);
+                    FlightControlSystem{}, fcsState, digi.config.maxGs);
             }
             break;
         }
@@ -367,7 +367,7 @@ void RunTakeoff(DigiState& digi, const AircraftState& as,
 void RunLanding(DigiState& digi, const AircraftState& as,
                 FcsState& fcsState, double dt, double simTime, double groundZ) {
     (void)simTime;
-    auto& go = digi.groundOps;
+    auto& go = digi.ag.groundOps;
 
     const double altAGL = -as.kin.z - groundZ;
 
@@ -406,29 +406,29 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             const double desHeading = std::atan2(dy, dx);
             const double headingErr = headingError(desHeading, as.kin.sigma);
             // Use proportional roll command (same as HeadingAndAltitudeHold)
-            digi.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD * 2.0 * DTR));
+            digi.commands.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD * 2.0 * DTR));
 
             // Command -3° flight path angle (descending glideslope)
             // GammaHold commands a target gamma; -3° = descending
-            ManeuverPrimitives::GammaHold(-kApproachGlideslope, digi, as, digi.maxGs);
+            ManeuverPrimitives::GammaHold(-kApproachGlideslope, digi, as, digi.config.maxGs);
 
             // Throttle: hold approach speed
             const double eProp = approachSpeed - as.vcas;
             if (eProp >= 150.0) {
-                digi.throttle = 1.5;  // burner
+                digi.commands.throttle = 1.5;  // burner
             } else if (eProp < -20.0) {
-                digi.throttle = 0.0;  // idle
+                digi.commands.throttle = 0.0;  // idle
             } else {
-                digi.throttle = std::max(0.0, std::min(0.5, eProp * 0.01));
+                digi.commands.throttle = std::max(0.0, std::min(0.5, eProp * 0.01));
             }
 
             // Extend speed brakes if significantly above approach speed
             if (as.vcas > approachSpeed + 30.0) {
-                digi.speedBrakeCmd = 1.0;  // full extend
+                digi.commands.speedBrakeCmd = 1.0;  // full extend
             } else if (as.vcas > approachSpeed + 10.0) {
-                digi.speedBrakeCmd = 0.5;  // half extend
+                digi.commands.speedBrakeCmd = 0.5;  // half extend
             } else {
-                digi.speedBrakeCmd = -1.0;  // retract (clean for flare)
+                digi.commands.speedBrakeCmd = -1.0;  // retract (clean for flare)
             }
 
             // Check for flare altitude
@@ -451,7 +451,7 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             // keeps heavy aircraft airborne) and prevents slamming into the
             // ground. The pitch attitude naturally rises as the descent
             // rate is arrested, giving a main-gear-first touchdown.
-            digi.throttle = 0.0;  // idle — no thrust during flare
+            digi.commands.throttle = 0.0;  // idle — no thrust during flare
 
             // Target descent rate decreases with altitude
             const double targetDescentRate = std::max(2.0,
@@ -459,12 +459,12 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             // NED: zdot > 0 = descending. Error = actual - target.
             const double descentErr = as.kin.zdot - targetDescentRate;
             // Positive error = descending too fast → pitch up
-            digi.pStick = std::max(-0.3, std::min(0.8, descentErr * 0.03));
+            digi.commands.pStick = std::max(-0.3, std::min(0.8, descentErr * 0.03));
 
             // Wings level
             fcsState.maxRoll = 0.0;
             const double rollDeg = as.kin.phi * RTD;
-            digi.rStick = std::max(-1.0, std::min(1.0, -rollDeg * 2.0 * DTR));
+            digi.commands.rStick = std::max(-1.0, std::min(1.0, -rollDeg * 2.0 * DTR));
 
             // Check for touchdown
             if (altAGL < 5.0) {
@@ -479,15 +479,15 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             // nose settles gently, then transition to rollout.
             // The previous code immediately set pStick=0, which dropped the
             // nose and caused nose-first touchdown.
-            digi.throttle = 0.0;
+            digi.commands.throttle = 0.0;
 
             // Hold 3° nose-up for a brief moment (nose settling)
             const double targetPitch = 3.0 * DTR;
             const double pitchErr = targetPitch - as.kin.theta;
-            digi.pStick = std::max(-0.2, std::min(0.5, pitchErr * 2.0));
+            digi.commands.pStick = std::max(-0.2, std::min(0.5, pitchErr * 2.0));
             fcsState.maxRoll = 0.0;
-            digi.rStick = 0.0;
-            digi.yPedal = 0.0;
+            digi.commands.rStick = 0.0;
+            digi.commands.yPedal = 0.0;
 
             // Transition to rollout after 1 second (nose has settled)
             go.touchdownTimer += dt;
@@ -506,15 +506,15 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             // settles naturally as speed bleeds off and the elevator loses
             // authority. The previous code set pStick=0 immediately, which
             // let the ground clamp force theta to -2° (nose-first).
-            digi.throttle = 0.0;
-            digi.wheelBrakes = (as.vcas > 5.0);  // release brakes below 5 kts
-            digi.speedBrakeCmd = (as.vcas > 30.0) ? 1.0 : -1.0;  // full extend then retract
+            digi.commands.throttle = 0.0;
+            digi.commands.wheelBrakes = (as.vcas > 5.0);  // release brakes below 5 kts
+            digi.commands.speedBrakeCmd = (as.vcas > 30.0) ? 1.0 : -1.0;  // full extend then retract
 
             // Keep straight on runway heading (NWS via yPedal)
             const double headingErr = headingError(go.runwayHeading, as.kin.psi);
             // Sign: headingErr > 0 = need left turn = left pedal (yPedal < 0).
-            digi.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
-            digi.rStick = 0.0;  // no aileron on rollout
+            digi.commands.yPedal = std::max(-1.0, std::min(1.0, -headingErr * RTD / 20.0));
+            digi.commands.rStick = 0.0;  // no aileron on rollout
 
             // Hold 2° nose-up while fast (nose gear off ground), relax to
             // level below 80 kts (nose settles naturally as elevator loses
@@ -522,10 +522,10 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             if (as.vcas > 80.0) {
                 const double targetPitch = 2.0 * DTR;
                 const double pitchErr = targetPitch - as.kin.theta;
-                digi.pStick = std::max(-0.2, std::min(0.5, pitchErr * 2.0));
+                digi.commands.pStick = std::max(-0.2, std::min(0.5, pitchErr * 2.0));
             } else {
                 // Below 80 kts — let the nose settle to level
-                digi.pStick = 0.0;
+                digi.commands.pStick = 0.0;
             }
             fcsState.maxRoll = 0.0;
 
@@ -538,10 +538,10 @@ void RunLanding(DigiState& digi, const AircraftState& as,
 
         case GroundOpsPhase::VacatingRunway: {
             // Taxi off runway — for simplicity, just hold position
-            digi.throttle = 0.0;
-            digi.pStick = 0.0;
-            digi.rStick = 0.0;
-            digi.yPedal = 0.0;
+            digi.commands.throttle = 0.0;
+            digi.commands.pStick = 0.0;
+            digi.commands.rStick = 0.0;
+            digi.commands.yPedal = 0.0;
             // In a full impl, this would taxi to a runway exit node
             break;
         }

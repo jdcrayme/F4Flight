@@ -190,7 +190,7 @@ static void runScenario() {
                 : tracer.trace().frames.back().t + dt;
             std::string modeName = f4flight::digi::digiModeName(sc.brain().activeMode());
             std::string phaseName;
-            const auto& go = sc.brain().state().groundOps;
+            const auto& go = sc.brain().state().ag.groundOps;
             switch (go.phase) {
                 case f4flight::digi::GroundOpsPhase::TakeoffRoll:    phaseName = "TakeoffRoll"; break;
                 case f4flight::digi::GroundOpsPhase::Rotation:       phaseName = "Rotation"; break;

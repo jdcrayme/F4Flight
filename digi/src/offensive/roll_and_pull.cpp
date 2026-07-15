@@ -74,15 +74,15 @@ void MaintainClosure(DigiState& digi, const DigiEntity& self,
         // Need more closure — speed up (but cap at corner speed if far + closing)
         double targetSpeed;
         if (rg.range > 2.0 * 6076.0 && rngdot > 0 &&
-            currentKias + (closure - rngdot) > digi.cornerSpeed) {
-            targetSpeed = digi.cornerSpeed;
+            currentKias + (closure - rngdot) > digi.config.cornerSpeed) {
+            targetSpeed = digi.config.cornerSpeed;
         } else {
             targetSpeed = currentKias + (closure - rngdot);
         }
         ManeuverPrimitives::MachHold(targetSpeed, currentKias, false,
                                       digi, as, 200.0, 800.0, dt, 100.0);
     } else if (rg.range < 5000.0) {
-        double targetSpeed = std::min(digi.cornerSpeed, currentKias + (closure - rngdot));
+        double targetSpeed = std::min(digi.config.cornerSpeed, currentKias + (closure - rngdot));
         ManeuverPrimitives::MachHold(targetSpeed, currentKias, false,
                                       digi, as, 200.0, 800.0, dt, 100.0);
     } else {
@@ -115,7 +115,7 @@ void EnergyManagement(DigiState& digi, const DigiEntity& self,
     //   if ataFrom < 90°: hold corner speed (no AB)
     //   else: maintain closure
     if (rg.ataFrom < 90.0 * DTR) {
-        ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, false,
+        ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, false,
                                       digi, as, 200.0, 800.0, dt, 100.0);
     } else {
         MaintainClosure(digi, self, target, as, fcs, fcsState, dt);
@@ -132,7 +132,7 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
     // Port of randp.cpp:23-279
 
     // Ground avoidance check — if needed, don't do BFM
-    if (digi.groundAvoidNeeded) {
+    if (digi.groundAvoid.groundAvoidNeeded) {
         return;
     }
 
@@ -150,11 +150,11 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
         // Use AutoTrack (lift-vector-on-target + pull) instead of TrackPoint
         // (velocity-vector-to-heading + altitude-hold). FreeFalcon's randp.cpp
         // calls AutoTrack(maxGs) after SetTrackPoint in every branch.
-        digi.trackX = target.x;
-        digi.trackY = target.y;
-        digi.trackZ = target.z;  // NED (negative up), no negation
-        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
-        ManeuverPrimitives::MachHold(0.36 * digi.cornerSpeed, as.vcas, false,
+        digi.nav.trackX = target.x;
+        digi.nav.trackY = target.y;
+        digi.nav.trackZ = target.z;  // NED (negative up), no negation
+        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
+        ManeuverPrimitives::MachHold(0.36 * digi.config.cornerSpeed, as.vcas, false,
                                       digi, as, 200.0, 800.0, dt, 100.0);
         return;
     }
@@ -164,27 +164,27 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
     if (rg.ata <= rg.ataFrom || rg.ata <= kOffensiveAtaThreshold * DTR) {
         if (rg.ataFrom <= kHeadOnAtaFrom * DTR) {
             // Head-on (me -> <- him)
-            digi.trackX = target.x;
-            digi.trackY = target.y;
-            digi.trackZ = target.z;  // NED, no negation
-            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+            digi.nav.trackX = target.x;
+            digi.nav.trackY = target.y;
+            digi.nav.trackZ = target.z;  // NED, no negation
+            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
 
             if (rg.range > kFarRange) {
                 // > 15 NM: hold corner speed
-                ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, true,
+                ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
                                               digi, as, 200.0, 800.0, dt, 100.0);
             } else if (rg.range > kMergeRange) {
                 // 6-15 NM: accelerate if facing each other, else corner speed
                 if (rg.ata > 15.0 * DTR || rg.ataFrom > 15.0 * DTR) {
-                    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, true,
+                    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
                                                   digi, as, 200.0, 800.0, dt, 100.0);
                 } else {
-                    ManeuverPrimitives::MachHold(2.0 * digi.cornerSpeed, as.vcas, true,
+                    ManeuverPrimitives::MachHold(2.0 * digi.config.cornerSpeed, as.vcas, true,
                                                   digi, as, 200.0, 800.0, dt, 100.0);
                 }
             } else if (rg.range >= kCloseRange) {
                 // 1.5-6 NM: nose up, hold ~corner speed
-                ManeuverPrimitives::MachHold(1.05 * digi.cornerSpeed, as.vcas, true,
+                ManeuverPrimitives::MachHold(1.05 * digi.config.cornerSpeed, as.vcas, true,
                                               digi, as, 200.0, 800.0, dt, 100.0);
             } else {
                 // < 1.5 NM: energy management
@@ -192,19 +192,19 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
             }
         } else {
             // Chase (me -> him ->)
-            digi.trackX = target.x;
-            digi.trackY = target.y;
-            digi.trackZ = target.z;  // NED, no negation
-            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+            digi.nav.trackX = target.x;
+            digi.nav.trackY = target.y;
+            digi.nav.trackZ = target.z;  // NED, no negation
+            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
             EnergyManagement(digi, self, target, as, fcs, fcsState, dt);
         }
     }
     // --- NEUTRAL (beam geometry, neither has advantage) ---
     else if (rg.ataFrom >= kNeutralAtaFrom * DTR) {
-        digi.trackX = target.x;
-        digi.trackY = target.y;
-        digi.trackZ = target.z;  // NED, no negation
-        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+        digi.nav.trackX = target.x;
+        digi.nav.trackY = target.y;
+        digi.nav.trackZ = target.z;  // NED, no negation
+        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
         EnergyManagement(digi, self, target, as, fcs, fcsState, dt);
     }
     // --- DEFENSIVE (bandit is behind us) ---
@@ -219,37 +219,37 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
             rg.range <= kOvershootRange &&
             closureKts > kOvershootClosure) {
             // Bandit overshooting — brake and turn
-            digi.trackX = target.x;
-            digi.trackY = target.y;
-            digi.trackZ = target.z;  // NED, no negation
-            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
-            ManeuverPrimitives::MachHold(0.36 * digi.cornerSpeed, as.vcas, false,
+            digi.nav.trackX = target.x;
+            digi.nav.trackY = target.y;
+            digi.nav.trackZ = target.z;  // NED, no negation
+            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
+            ManeuverPrimitives::MachHold(0.36 * digi.config.cornerSpeed, as.vcas, false,
                                           digi, as, 200.0, 800.0, dt, 100.0);
         }
         // Not immediately threatened
         else if (targetAlt > 5000.0 &&
                  rg.range > 1000.0 &&
                  rg.ataFrom >= 15.0 * DTR &&
-                 as.vcas <= 0.9 * digi.cornerSpeed &&
+                 as.vcas <= 0.9 * digi.config.cornerSpeed &&
                  self.pitch < -5.0 * DTR) {
             // Unload and accelerate
-            digi.trackX = target.x;
-            digi.trackY = target.y;
-            digi.trackZ = target.z;  // NED, no negation
-            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+            digi.nav.trackX = target.x;
+            digi.nav.trackY = target.y;
+            digi.nav.trackZ = target.z;  // NED, no negation
+            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
             if (as.aero.alpha_deg > 2.0) {
-                ManeuverPrimitives::SetPstick(-1.0, digi.maxGs,
+                ManeuverPrimitives::SetPstick(-1.0, digi.config.maxGs,
                                                CommandType::GCommand, digi, as);
             }
-            ManeuverPrimitives::MachHold(1.05 * digi.cornerSpeed, as.vcas, true,
+            ManeuverPrimitives::MachHold(1.05 * digi.config.cornerSpeed, as.vcas, true,
                                           digi, as, 200.0, 800.0, dt, 100.0);
         }
         // Immediately threatened
         else {
-            digi.trackX = target.x;
-            digi.trackY = target.y;
-            digi.trackZ = target.z;  // NED, no negation
-            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+            digi.nav.trackX = target.x;
+            digi.nav.trackY = target.y;
+            digi.nav.trackZ = target.z;  // NED, no negation
+            ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
             EnergyManagement(digi, self, target, as, fcs, fcsState, dt);
         }
     }

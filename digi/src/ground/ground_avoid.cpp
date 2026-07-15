@@ -40,7 +40,7 @@ bool GroundCheck(DigiState& digi, const AircraftState& state,
 
     // If already well above terrain, no avoidance needed
     if (altAGL > 5000.0) {
-        digi.groundAvoidNeeded = false;
+        digi.groundAvoid.groundAvoidNeeded = false;
         return false;
     }
 
@@ -73,7 +73,7 @@ bool GroundCheck(DigiState& digi, const AircraftState& state,
         needed = true;
     }
 
-    digi.groundAvoidNeeded = needed;
+    digi.groundAvoid.groundAvoidNeeded = needed;
     return needed;
 }
 
@@ -100,7 +100,7 @@ void PullUp(DigiState& digi, const AircraftState& state,
     const double stickCmd = rollErr * DTR * 0.75 / denom;
     constexpr double kTau = 0.0373;
     const double a = 1.0 - std::exp(-dt / kTau);
-    digi.rStick = (1.0 - a) * digi.rStick + a * stickCmd;
+    digi.commands.rStick = (1.0 - a) * digi.commands.rStick + a * stickCmd;
 
     // Full pstick (max G away from ground)
     // FreeFalcon ground.cpp:233: SetPstick(maxGs, maxGs, GCommand)
@@ -109,7 +109,7 @@ void PullUp(DigiState& digi, const AircraftState& state,
     ManeuverPrimitives::SetYpedal(0.0, digi);
 
     // Hold the pull for kPullupTime seconds
-    digi.pullupTimer = kPullupTime;
+    digi.groundAvoid.pullupTimer = kPullupTime;
 }
 
 bool RunGroundAvoid(DigiState& digi, const AircraftState& state,
@@ -120,16 +120,16 @@ bool RunGroundAvoid(DigiState& digi, const AircraftState& state,
     const bool needed = GroundCheck(digi, state, groundZ, lookahead);
 
     // If a pull-up is already in progress, continue it
-    if (digi.pullupTimer > 0.0) {
+    if (digi.groundAvoid.pullupTimer > 0.0) {
         PullUp(digi, state, cornerSpeed, dt, fcsState, maxGs);
-        digi.pullupTimer -= dt;
+        digi.groundAvoid.pullupTimer -= dt;
         return true;
     }
 
     // If the check says we need a pull-up, start one
     if (needed) {
         PullUp(digi, state, cornerSpeed, dt, fcsState, maxGs);
-        digi.pullupTimer -= dt;
+        digi.groundAvoid.pullupTimer -= dt;
         return true;
     }
 

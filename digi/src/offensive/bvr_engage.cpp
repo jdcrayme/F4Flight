@@ -133,17 +133,17 @@ void StickandThrottle(DigiState& digi, const DigiEntity& self,
         // Near target speed — adjust trackZ toward desired altitude.
         if (-as.kin.z < desiredAltFt) {
             // Below desired — command a climb (more-negative NED z).
-            digi.trackZ = std::min(as.kin.z + speedDiff * 800.0, -desiredAltFt);
+            digi.nav.trackZ = std::min(as.kin.z + speedDiff * 800.0, -desiredAltFt);
         } else {
             // At or above desired — hold.
-            digi.trackZ = -desiredAltFt;
+            digi.nav.trackZ = -desiredAltFt;
         }
     }
     // Clamp to avoid ground
-    digi.trackZ = std::min(digi.trackZ, -4000.0);
+    digi.nav.trackZ = std::min(digi.nav.trackZ, -4000.0);
 
     // Track the target via AutoTrack
-    ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+    ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
 
     // Hold speed
     ManeuverPrimitives::MachHold(desiredSpeedKts, as.vcas, true,
@@ -164,9 +164,9 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
     // the angle off the TARGET's nose to us, so > 90° means we're in their
     // rear hemisphere (the advantageous position cranking would throw away).
     if (rg.ataFrom > 90.0 * DTR) {
-        digi.trackX = target.x;
-        digi.trackY = target.y;
-        digi.trackZ = target.z;
+        digi.nav.trackX = target.x;
+        digi.nav.trackY = target.y;
+        digi.nav.trackZ = target.z;
         StickandThrottle(digi, self, as, fcs, fcsState,
                          target.speed + 100.0, -target.z, dt);
         return;
@@ -193,12 +193,12 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
 
     // Set trackpoint 10 NM in the crank direction
     const double trackDist = 10.0 * 6076.0;
-    digi.trackX = self.x + trackDist * std::cos(chosenAz);
-    digi.trackY = self.y + trackDist * std::sin(chosenAz);
-    digi.trackZ = self.z;  // hold altitude
+    digi.nav.trackX = self.x + trackDist * std::cos(chosenAz);
+    digi.nav.trackY = self.y + trackDist * std::sin(chosenAz);
+    digi.nav.trackZ = self.z;  // hold altitude
 
     StickandThrottle(digi, self, as, fcs, fcsState,
-                     digi.cornerSpeed, -self.z, dt);
+                     digi.config.cornerSpeed, -self.z, dt);
 }
 
 // ===========================================================================
@@ -229,13 +229,13 @@ void BeamManeuver(DigiState& digi, const DigiEntity& self,
 
     // Set trackpoint 4 NM in the beam direction
     const double trackDist = 4.0 * 6076.0;
-    digi.trackX = self.x + trackDist * std::cos(chosenAz);
-    digi.trackY = self.y + trackDist * std::sin(chosenAz);
+    digi.nav.trackX = self.x + trackDist * std::cos(chosenAz);
+    digi.nav.trackY = self.y + trackDist * std::sin(chosenAz);
     // Hold altitude (or descend slightly for beam)
-    digi.trackZ = std::max(self.z, -10000.0);
+    digi.nav.trackZ = std::max(self.z, -10000.0);
 
     StickandThrottle(digi, self, as, fcs, fcsState,
-                     digi.cornerSpeed, -digi.trackZ, dt);
+                     digi.config.cornerSpeed, -digi.nav.trackZ, dt);
 }
 
 // ===========================================================================
@@ -259,9 +259,9 @@ void DragManeuver(DigiState& digi, const DigiEntity& self,
 
     // Set trackpoint 10 NM in the drag direction
     const double trackDist = 10.0 * 6076.0;
-    digi.trackX = self.x + trackDist * std::cos(az);
-    digi.trackY = self.y + trackDist * std::sin(az);
-    digi.trackZ = self.z;
+    digi.nav.trackX = self.x + trackDist * std::cos(az);
+    digi.nav.trackY = self.y + trackDist * std::sin(az);
+    digi.nav.trackZ = self.z;
 
     // Max speed for drag (escape)
     StickandThrottle(digi, self, as, fcs, fcsState,
@@ -277,15 +277,15 @@ void BvrEngage(DigiState& digi, const DigiEntity& self,
                double dt) {
     // FF bvrengage.cpp:218-440 (simplified)
 
-    if (digi.groundAvoidNeeded) return;
+    if (digi.groundAvoid.groundAvoidNeeded) return;
 
     // Set trackpoint to target for AutoTrack
-    digi.trackX = target.x;
-    digi.trackY = target.y;
-    digi.trackZ = target.z;
+    digi.nav.trackX = target.x;
+    digi.nav.trackY = target.y;
+    digi.nav.trackZ = target.z;
 
     // Select profile + tactic
-    const BvrProfile profile = ChoiceProfile(self, target, digi.maxAAWpnRange);
+    const BvrProfile profile = ChoiceProfile(self, target, digi.weapon.maxAAWpnRange);
     const BvrTactic tactic = BvrChooseTactic(profile, self, target);
 
     // Execute tactic
@@ -293,7 +293,7 @@ void BvrEngage(DigiState& digi, const DigiEntity& self,
         case BvrTactic::Pursuit:
             // Head toward target, shoot when in range
             StickandThrottle(digi, self, as, fcs, fcsState,
-                             1.3 * digi.cornerSpeed, -target.z, dt);
+                             1.3 * digi.config.cornerSpeed, -target.z, dt);
             break;
 
         case BvrTactic::Crank:
@@ -310,7 +310,7 @@ void BvrEngage(DigiState& digi, const DigiEntity& self,
 
         default:
             StickandThrottle(digi, self, as, fcs, fcsState,
-                             digi.cornerSpeed, -target.z, dt);
+                             digi.config.cornerSpeed, -target.z, dt);
             break;
     }
 }

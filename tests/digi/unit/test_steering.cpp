@@ -31,21 +31,21 @@ TEST(DigiAITest, SetPstickGCommand) {
     state.vcas = 350.0;      // normal speed
 
     // Command 1G (level) -> pstick should be ~0
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::SetPstick(1.0, 9.0, digi::CommandType::GCommand, digi, state);
     // 1G maps to sqrt((1-1)/(9-1)) = 0
-    EXPECT_NEAR(digi.pStick, 0.0, 0.01);
+    EXPECT_NEAR(digi.commands.pStick, 0.0, 0.01);
 
     // Command 4G -> pstick should be positive
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
-    EXPECT_GT(digi.pStick, 0.0);
-    EXPECT_LT(digi.pStick, 1.0);
+    EXPECT_GT(digi.commands.pStick, 0.0);
+    EXPECT_LT(digi.commands.pStick, 1.0);
 
     // Command -2G -> pstick should be negative
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::SetPstick(-2.0, 9.0, digi::CommandType::GCommand, digi, state);
-    EXPECT_LT(digi.pStick, 0.0);
+    EXPECT_LT(digi.commands.pStick, 0.0);
 }
 
 TEST(DigiAITest, SetPstickLowSpeed) {
@@ -55,14 +55,14 @@ TEST(DigiAITest, SetPstickLowSpeed) {
     state.vcas = 200.0;  // low speed
 
     // At low speed, stick authority is reduced
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
-    double lowSpeedPstick = digi.pStick;
+    double lowSpeedPstick = digi.commands.pStick;
 
     state.vcas = 400.0;  // normal speed
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
-    double normalPstick = digi.pStick;
+    double normalPstick = digi.commands.pStick;
 
     EXPECT_LT(lowSpeedPstick, normalPstick);
 }
@@ -76,10 +76,10 @@ TEST(DigiAITest, GammaHoldLevel) {
     state.vcas = 350.0;
 
     // Command 0° gamma (level) -> should command ~1G
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::GammaHold(0.0, digi, state, 9.0);
     // pStick should be near 0 (1G = level)
-    EXPECT_NEAR(digi.pStick, 0.0, 0.1);
+    EXPECT_NEAR(digi.commands.pStick, 0.0, 0.1);
 }
 
 TEST(DigiAITest, GammaHoldClimb) {
@@ -91,9 +91,9 @@ TEST(DigiAITest, GammaHoldClimb) {
     state.vcas = 350.0;
 
     // Command +5° gamma (climb) -> should command >1G
-    digi.pStick = 0.0;
+    digi.commands.pStick = 0.0;
     DigiAI::GammaHold(5.0, digi, state, 9.0);
-    EXPECT_GT(digi.pStick, 0.0);
+    EXPECT_GT(digi.commands.pStick, 0.0);
 }
 
 // ===========================================================================
@@ -111,19 +111,19 @@ TEST(DigiAITest, GammaHoldClimb) {
 TEST(SteeringControllerTest, ResetZeroesStickAndPedal) {
     SteeringController sc;
     DigiState& digi = sc.digiState();
-    digi.pStick = 0.5;
-    digi.rStick = -0.3;
-    digi.yPedal = 0.2;
-    digi.autoThrottle = 0.7;
-    digi.gammaHoldIError = 1.5;
+    digi.commands.pStick = 0.5;
+    digi.commands.rStick = -0.3;
+    digi.commands.yPedal = 0.2;
+    digi.nav.autoThrottle = 0.7;
+    digi.nav.gammaHoldIError = 1.5;
 
     sc.reset();
 
-    EXPECT_NEAR(digi.pStick, 0.0, 1e-9);
-    EXPECT_NEAR(digi.rStick, 0.0, 1e-9);
-    EXPECT_NEAR(digi.yPedal, 0.0, 1e-9);
-    EXPECT_NEAR(digi.autoThrottle, 0.0, 1e-9);
-    EXPECT_NEAR(digi.gammaHoldIError, 0.0, 1e-9);
+    EXPECT_NEAR(digi.commands.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.commands.rStick, 0.0, 1e-9);
+    EXPECT_NEAR(digi.commands.yPedal, 0.0, 1e-9);
+    EXPECT_NEAR(digi.nav.autoThrottle, 0.0, 1e-9);
+    EXPECT_NEAR(digi.nav.gammaHoldIError, 0.0, 1e-9);
 }
 
 TEST(SteeringControllerTest, ResetZeroesWaypointIndex) {
@@ -141,12 +141,12 @@ TEST(SteeringControllerTest, ResetClearsNaNState) {
     // re-converging PIDs), reset() should clear it.
     SteeringController sc;
     DigiState& digi = sc.digiState();
-    digi.autoThrottle = std::numeric_limits<double>::quiet_NaN();
-    digi.gammaHoldIError = std::numeric_limits<double>::quiet_NaN();
+    digi.nav.autoThrottle = std::numeric_limits<double>::quiet_NaN();
+    digi.nav.gammaHoldIError = std::numeric_limits<double>::quiet_NaN();
 
     sc.reset();
 
-    EXPECT_FALSE(std::isnan(digi.autoThrottle));
-    EXPECT_FALSE(std::isnan(digi.gammaHoldIError));
-    EXPECT_FALSE(std::isnan(digi.pStick));
+    EXPECT_FALSE(std::isnan(digi.nav.autoThrottle));
+    EXPECT_FALSE(std::isnan(digi.nav.gammaHoldIError));
+    EXPECT_FALSE(std::isnan(digi.commands.pStick));
 }

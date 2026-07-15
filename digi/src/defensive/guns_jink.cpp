@@ -28,7 +28,7 @@ namespace digi {
 // GunsJinkCheck
 // ===========================================================================
 bool GunsJinkCheck(const DigiState& digi, const DigiEntity& self) {
-    const DigiEntity* threat = digi.gunsThreat;
+    const DigiEntity* threat = digi.gunsJink.gunsThreat;
     if (!threat || threat->isDead) return false;
 
     // Compute relative geometry
@@ -99,33 +99,33 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
               const AircraftState& as,
               const FlightControlSystem& fcs, FcsState& fcsState,
               double dt) {
-    const DigiEntity* threat = digi.gunsThreat;
+    const DigiEntity* threat = digi.gunsJink.gunsThreat;
 
     // Bail if no target or target is exploding or range > 4000 ft
     // FreeFalcon gunsjink.cpp:157-163
     if (!threat || threat->isDead) {
-        digi.jinkTime = -1;
+        digi.gunsJink.jinkTime = -1;
         return false;
     }
 
     const RelativeGeometry rg = computeRelativeGeometry(self, *threat);
     if (rg.range > kGunJinkExitRange) {
-        digi.jinkTime = -1;
+        digi.gunsJink.jinkTime = -1;
         return false;
     }
 
     // Don't jink if we need to avoid the ground
     // FreeFalcon gunsjink.cpp:166-167
-    if (digi.groundAvoidNeeded) return true;  // stay in mode but don't maneuver
+    if (digi.groundAvoid.groundAvoidNeeded) return true;  // stay in mode but don't maneuver
 
     // Energy management: hold corner speed
     // FreeFalcon gunsjink.cpp:172
-    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, false,
+    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, false,
                                   digi, as, 200.0, 800.0, dt, 100.0);
 
     // --- Phase -1: initialize, pick roll angle ---
     // FreeFalcon gunsjink.cpp:182-270
-    if (digi.jinkTime == -1) {
+    if (digi.gunsJink.jinkTime == -1) {
         // (AG jettison skipped — no SMS model)
 
         // Find target aspect: 180° - ata
@@ -146,7 +146,7 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
             } else {
                 rollOffset = rg.droll + 90.0 * DTR;
             }
-            digi.newRoll = self.roll + rollOffset;
+            digi.gunsJink.newRoll = self.roll + rollOffset;
         } else {
             // Aspect < 90°: roll ±70°
             // FreeFalcon gunsjink.cpp:211-253
@@ -154,33 +154,33 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
             // (gunsjink.cpp:214-233) — it requires comparing yaw/pitch/roll
             // differences and is a minor variation.
             if (rg.droll > 0.0) {
-                digi.newRoll = self.roll - kJinkRollAngle * DTR;
+                digi.gunsJink.newRoll = self.roll - kJinkRollAngle * DTR;
             } else {
-                digi.newRoll = self.roll + kJinkRollAngle * DTR;
+                digi.gunsJink.newRoll = self.roll + kJinkRollAngle * DTR;
             }
 
             // Roll down if speed <= 80% of corner speed
             // FreeFalcon gunsjink.cpp:246-252
-            if (as.vcas <= 0.8 * digi.cornerSpeed) {
-                if (digi.newRoll >= 0.0 && digi.newRoll <= 45.0 * DTR) {
-                    digi.newRoll += 30.0 * DTR;
-                } else if (digi.newRoll <= 0.0 && digi.newRoll >= -45.0 * DTR) {
-                    digi.newRoll -= 30.0 * DTR;
+            if (as.vcas <= 0.8 * digi.config.cornerSpeed) {
+                if (digi.gunsJink.newRoll >= 0.0 && digi.gunsJink.newRoll <= 45.0 * DTR) {
+                    digi.gunsJink.newRoll += 30.0 * DTR;
+                } else if (digi.gunsJink.newRoll <= 0.0 && digi.gunsJink.newRoll >= -45.0 * DTR) {
+                    digi.gunsJink.newRoll -= 30.0 * DTR;
                 }
             }
         }
 
         // Roll angle corrections: wrap to [-180°, 180°]
         // FreeFalcon gunsjink.cpp:258-261
-        while (digi.newRoll >  180.0 * DTR) digi.newRoll -= 360.0 * DTR;
-        while (digi.newRoll < -180.0 * DTR) digi.newRoll += 360.0 * DTR;
+        while (digi.gunsJink.newRoll >  180.0 * DTR) digi.gunsJink.newRoll -= 360.0 * DTR;
+        while (digi.gunsJink.newRoll < -180.0 * DTR) digi.gunsJink.newRoll += 360.0 * DTR;
 
         // Clamp to max roll
         // FreeFalcon gunsjink.cpp:264-267
-        digi.newRoll = std::max(-digi.maxRoll * DTR,
-                                 std::min(digi.newRoll, digi.maxRoll * DTR));
+        digi.gunsJink.newRoll = std::max(-digi.config.maxRoll * DTR,
+                                 std::min(digi.gunsJink.newRoll, digi.config.maxRoll * DTR));
 
-        digi.jinkTime = 0;
+        digi.gunsJink.jinkTime = 0;
     }
 
     // Allow unlimited rolling (set maxRoll to 190°)
@@ -189,7 +189,7 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
 
     // --- Phase 0: roll to target bank angle ---
     // FreeFalcon gunsjink.cpp:279-305
-    if (digi.jinkTime == 0) {
+    if (digi.gunsJink.jinkTime == 0) {
         // Initial negative G to break lift — roll the lift vector OFF the
         // current flight path so the aircraft starts to slice/drop.
         //
@@ -197,11 +197,11 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
         // positive-G pull on line 211, so the negative-G "break lift" never
         // took effect. Now we sequence them: negative G during the roll,
         // positive G only after the roll is captured (phase 1).
-        ManeuverPrimitives::SetPstick(-2.0, digi.maxGs,
+        ManeuverPrimitives::SetPstick(-2.0, digi.config.maxGs,
                                        CommandType::GCommand, digi, as);
 
         // Roll error
-        double eroll = digi.newRoll - self.roll;
+        double eroll = digi.gunsJink.newRoll - self.roll;
         // Wrap to [-PI, PI]
         while (eroll >  PI) eroll -= 2.0 * PI;
         while (eroll < -PI) eroll += 2.0 * PI;
@@ -214,29 +214,29 @@ bool GunsJink(DigiState& digi, const DigiEntity& self,
         // Stop rolling and pull when within 5°
         // FreeFalcon gunsjink.cpp:300-304
         if (std::fabs(eroll) < kJinkRollTolerance * DTR) {
-            digi.jinkTime = 1;
-            digi.jinkTimer = 0.0;
+            digi.gunsJink.jinkTime = 1;
+            digi.gunsJink.jinkTimer = 0.0;
             ManeuverPrimitives::SetRstick(0.5, digi, fcs, fcsState);
         }
     }
 
     // --- Phase 1: pull max G for ~2 seconds ---
     // FreeFalcon gunsjink.cpp:310-325
-    if (digi.jinkTime > 0 || digi.groundAvoidNeeded) {
-        // BUG FIX: the previous code used `std::max(0.8 * digi.maxGs, digi.maxGs)`
-        // which is always `digi.maxGs` (because x > 0.8*x for x > 0). The intent
+    if (digi.gunsJink.jinkTime > 0 || digi.groundAvoid.groundAvoidNeeded) {
+        // BUG FIX: the previous code used `std::max(0.8 * digi.config.maxGs, digi.config.maxGs)`
+        // which is always `digi.config.maxGs` (because x > 0.8*x for x > 0). The intent
         // (per FF gunsjink.cpp:310) was to pull maxGs. Just use maxGs directly.
-        const double maxPull = digi.maxGs;
-        ManeuverPrimitives::SetPstick(maxPull, digi.maxGs,
+        const double maxPull = digi.config.maxGs;
+        ManeuverPrimitives::SetPstick(maxPull, digi.config.maxGs,
                                        CommandType::GCommand, digi, as);
 
-        digi.jinkTimer += dt;
-        if (digi.jinkTimer > kJinkPullDuration) {
+        digi.gunsJink.jinkTimer += dt;
+        if (digi.gunsJink.jinkTimer > kJinkPullDuration) {
             // Done — reset and exit
             // FreeFalcon gunsjink.cpp:317-318
             fcsState.maxRoll = 80.0;  // ResetMaxRoll equivalent
-            digi.jinkTime = -1;
-            digi.jinkTimer = 0.0;
+            digi.gunsJink.jinkTime = -1;
+            digi.gunsJink.jinkTimer = 0.0;
             return false;  // exit GunsJink mode
         }
     }

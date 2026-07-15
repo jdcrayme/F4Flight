@@ -96,8 +96,8 @@ void ManeuverPrimitives::SetPstick(double pitchError, double gLimit,
     stickCmd *= stickFact;
 
     // Frame-rate-independent smoothing
-    const double a = stickSmoothAlpha(digi.dt);
-    digi.pStick = (1.0 - a) * digi.pStick + a * stickCmd;
+    const double a = stickSmoothAlpha(digi.nav.dt);
+    digi.commands.pStick = (1.0 - a) * digi.commands.pStick + a * stickCmd;
 }
 
 void ManeuverPrimitives::SetRstick(double rollError, DigiState& digi,
@@ -107,19 +107,19 @@ void ManeuverPrimitives::SetRstick(double rollError, DigiState& digi,
     const double tr01 = fcsState.tr01;
     const double denom = std::max(kr01 * tr01, 0.1);
     const double stickCmd = rollError * DTR * 0.75 / denom;
-    const double a = stickSmoothAlpha(digi.dt);
-    digi.rStick = (1.0 - a) * digi.rStick + a * stickCmd;
+    const double a = stickSmoothAlpha(digi.nav.dt);
+    digi.commands.rStick = (1.0 - a) * digi.commands.rStick + a * stickCmd;
 }
 
 void ManeuverPrimitives::SetYpedal(double yawError, DigiState& digi) {
-    const double a = stickSmoothAlpha(digi.dt);
+    const double a = stickSmoothAlpha(digi.nav.dt);
     const double newVal = -yawError * RTD * 0.0125;
-    digi.yPedal = (1.0 - a) * digi.yPedal + a * newVal;
+    digi.commands.yPedal = (1.0 - a) * digi.commands.yPedal + a * newVal;
 }
 
 void ManeuverPrimitives::GammaHold(double desGamma, DigiState& digi,
                                     const AircraftState& state, double maxGs) {
-    const double maxGam = std::max(1.0, digi.maxGammaDeg);
+    const double maxGam = std::max(1.0, digi.config.maxGammaDeg);
     desGamma = std::max(std::min(desGamma, maxGam), -maxGam);
 
     double elevCmd = desGamma - state.kin.gmma * RTD;
@@ -133,15 +133,15 @@ void ManeuverPrimitives::GammaHold(double desGamma, DigiState& digi,
     else
         elevCmd *= -elevCmd;
 
-    double gammaCmd = digi.gammaHoldIError + elevCmd + (1.0 / std::max(0.1, state.kin.cosphi));
+    double gammaCmd = digi.nav.gammaHoldIError + elevCmd + (1.0 / std::max(0.1, state.kin.cosphi));
     const double gammaCmdClamped = std::max(std::min(gammaCmd, 6.5), -2.0);
 
     // Leaky integrator (10s tau) — prevents porpoising at 60 Hz
     constexpr double kIntegralTau = 10.0;
-    const double leakFactor = std::exp(-digi.dt / kIntegralTau);
-    digi.gammaHoldIError = digi.gammaHoldIError * leakFactor
-                         + 0.0025 * elevCmd * (digi.dt / 0.06);
-    digi.gammaHoldIError = std::max(std::min(digi.gammaHoldIError, 1.0), -1.0);
+    const double leakFactor = std::exp(-digi.nav.dt / kIntegralTau);
+    digi.nav.gammaHoldIError = digi.nav.gammaHoldIError * leakFactor
+                         + 0.0025 * elevCmd * (digi.nav.dt / 0.06);
+    digi.nav.gammaHoldIError = std::max(std::min(digi.nav.gammaHoldIError, 1.0), -1.0);
 
     SetPstick(gammaCmdClamped, maxGs, CommandType::GCommand, digi, state);
 }
@@ -171,8 +171,8 @@ bool ManeuverPrimitives::AltitudeHold(double desAlt, DigiState& digi,
     SetYpedal(0.0, digi);
 
     double rollDeg = state.kin.phi * RTD;
-    double rollErr = limitRollError(-rollDeg * 2.0, rollDeg, digi.maxRoll);
-    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
+    double rollErr = limitRollError(-rollDeg * 2.0, rollDeg, digi.config.maxRoll);
+    digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.commands.rStick, digi.nav.dt);
 
     fcsState.maxRoll = 0.0;
 
@@ -222,25 +222,25 @@ bool ManeuverPrimitives::HeadingAndAltitudeHold(double desPsi, double desAlt,
     double desiredBankDeg = psiErrDeg * kHeadingToBankGain;
 
     // Clamp the desired bank. The clamp limit is the LARGER of:
-    //   - digi.maxRoll (the brain's navigation bank limit, e.g. 25° for heavy)
+    //   - digi.config.maxRoll (the brain's navigation bank limit, e.g. 25° for heavy)
     //   - the bank angle implied by turnLoadFactor (e.g. 47.6° for 1.3G)
     //
     // The old LevelTurn code targeted the load-factor-derived bank (47.6° for
-    // 1.3G) regardless of digi.maxRoll, because digi.maxRoll was only used
-    // in the wings-level branch's limitRollError. If we clamp to digi.maxRoll
+    // 1.3G) regardless of digi.config.maxRoll, because digi.config.maxRoll was only used
+    // in the wings-level branch's limitRollError. If we clamp to digi.config.maxRoll
     // alone, heavy aircraft (maxRoll=25°) can't bank steeply enough to turn
     // within the waypoint capture radius — the turn radius at 25° bank and
     // 250 kts is ~12 NM, far larger than the 5000 ft capture radius.
     const double loadFactorBankDeg = std::atan(std::sqrt(std::max(0.0,
-        digi.turnLoadFactor * digi.turnLoadFactor - 1.0))) * RTD;
-    const double bankClamp = std::max(digi.maxRoll, loadFactorBankDeg);
+        digi.config.turnLoadFactor * digi.config.turnLoadFactor - 1.0))) * RTD;
+    const double bankClamp = std::max(digi.config.maxRoll, loadFactorBankDeg);
     desiredBankDeg = std::max(-bankClamp, std::min(bankClamp, desiredBankDeg));
 
     const double rollDeg = state.kin.phi * RTD;
     double rollErr = (desiredBankDeg - rollDeg) * 2.0;
-    rollErr = limitRollError(rollErr, rollDeg, digi.maxRoll);
-    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01,
-                                digi.rStick, digi.dt);
+    rollErr = limitRollError(rollErr, rollDeg, digi.config.maxRoll);
+    digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01,
+                                digi.commands.rStick, digi.nav.dt);
 
     // Allow the FCS to roll up to the desired bank angle. Use bankClamp
     // (not desiredBankDeg) so the FCS doesn't fight the turn when the
@@ -260,18 +260,18 @@ void ManeuverPrimitives::LevelTurn(double loadFactor, double turnDir, bool newTu
                                     const FlightControlSystem& /*fcs*/,
                                     FcsState& fcsState, double maxGs) {
     if (newTurn) {
-        digi.gammaHoldIError = 0.0;
-        digi.trackMode = 0;
+        digi.nav.gammaHoldIError = 0.0;
+        digi.nav.trackMode = 0;
     }
 
-    if (digi.trackMode != 0) {
+    if (digi.nav.trackMode != 0) {
         // Phase 2: banked turn
         double edroll = std::atan(std::sqrt(std::max(0.0, loadFactor * loadFactor - 1.0)));
-        // BUG FIX: do NOT clobber digi.maxRollDelta (a persistent config field)
+        // BUG FIX: do NOT clobber digi.config.maxRollDelta (a persistent config field)
         // with the per-frame roll error. The previous line
-        //   digi.maxRollDelta = edroll * RTD;
+        //   digi.config.maxRollDelta = edroll * RTD;
         // was a dead write (nothing in the F4Flight codebase reads
-        // digi.maxRollDelta — only fcsState.maxRollDelta is read by the FCS)
+        // digi.config.maxRollDelta — only fcsState.maxRollDelta is read by the FCS)
         // but it polluted the config field for any subsequent code that
         // might read it. The correct write is to fcsState.maxRollDelta
         // (per-frame FCS limit), which is already done on the next line.
@@ -281,22 +281,22 @@ void ManeuverPrimitives::LevelTurn(double loadFactor, double turnDir, bool newTu
         edroll = edroll * turnDir - state.kin.mu;
 
         double rollErr = edroll * RTD * 2.50;
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
+        digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.commands.rStick, digi.nav.dt);
 
-        if (std::fabs(edroll) < 5.0 * DTR || digi.trackMode == 2) {
-            double alterr = ((digi.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
+        if (std::fabs(edroll) < 5.0 * DTR || digi.nav.trackMode == 2) {
+            double alterr = ((digi.nav.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
             GammaHold(alterr, digi, state, maxGs);
-            digi.trackMode = 2;
+            digi.nav.trackMode = 2;
         } else {
             SetPstick(0.0, 5.0, CommandType::GCommand, digi, state);
         }
     } else {
         // Phase 1: level wings
         double rollErr = -state.kin.phi * RTD;
-        digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
+        digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.commands.rStick, digi.nav.dt);
 
         // NOTE: only set fcsState.maxRoll here (per-frame FCS limit).
-        // Setting digi.maxRoll would clobber the host's setMaxBank() config
+        // Setting digi.config.maxRoll would clobber the host's setMaxBank() config
         // and persist across frames, degrading roll authority in subsequent
         // nav modes. fcsState.maxRoll = 0 alone is sufficient to command
         // wings-level for this frame.
@@ -308,7 +308,7 @@ void ManeuverPrimitives::LevelTurn(double loadFactor, double turnDir, bool newTu
 
         if (std::fabs(state.kin.gmma) < 2.0 * DTR &&
             std::fabs(state.kin.phi) < 10.0 * DTR)
-            digi.trackMode = 1;
+            digi.nav.trackMode = 1;
     }
 
     SetYpedal(0.0, digi);
@@ -351,28 +351,28 @@ bool ManeuverPrimitives::MachHold(double targetSpeed, double currentSpeed, bool 
             else if (usedVtDot < -kFuelVtClip) usedVtDot = -kFuelVtClip;
 
             thr = (eProp + kFuelBaseProp) * kFuelMultProp;
-            digi.autoThrottle += (eProp - usedVtDot * kFuelVtDotMult)
+            digi.nav.autoThrottle += (eProp - usedVtDot * kFuelVtDotMult)
                                  * kFuelTimeStep * dt;
 
             if (kLimitBecauseVtDot) {
-                if (eProp > 0.0 && digi.autoThrottle < 0.0)
-                    digi.autoThrottle = 0.0;
-                else if (eProp < 0.0 && digi.autoThrottle > 0.0)
-                    digi.autoThrottle = 0.0;
+                if (eProp > 0.0 && digi.nav.autoThrottle < 0.0)
+                    digi.nav.autoThrottle = 0.0;
+                else if (eProp < 0.0 && digi.nav.autoThrottle > 0.0)
+                    digi.nav.autoThrottle = 0.0;
             }
 
-            digi.autoThrottle = std::max(std::min(digi.autoThrottle, 1.5), -1.5);
-            thr += digi.autoThrottle;
+            digi.nav.autoThrottle = std::max(std::min(digi.nav.autoThrottle, 1.5), -1.5);
+            thr += digi.nav.autoThrottle;
             thr = std::min(thr, 0.99);
         }
     }
 
     if (adjustPitch) {
-        thr += std::fabs(digi.pStick) / 15.0;
+        thr += std::fabs(digi.commands.pStick) / 15.0;
     }
 
     thr = std::max(std::min(thr, 1.5), 0.0);
-    digi.throttle = thr;
+    digi.commands.throttle = thr;
 
     return std::fabs(eProp) < 0.1 * targetSpeed;
 }
@@ -385,12 +385,12 @@ void ManeuverPrimitives::Loiter(DigiState& digi, const AircraftState& state,
     if (rollErr > 180.0) rollErr -= 360.0;
     else if (rollErr < -180.0) rollErr += 360.0;
 
-    digi.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.rStick, digi.dt);
+    digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01, digi.commands.rStick, digi.nav.dt);
 
     fcsState.maxRoll = 30.0;
     fcsState.maxRollDelta = 30.0;
 
-    double alterr = ((digi.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
+    double alterr = ((digi.nav.holdAlt + state.kin.z) - state.kin.zdot) * 0.015;
     GammaHold(alterr, digi, state, maxGs);
     SetYpedal(0.0, digi);
 }
@@ -434,9 +434,9 @@ void ManeuverPrimitives::TrackPoint(double targetX, double targetY, double targe
 double ManeuverPrimitives::AutoTrack(DigiState& digi, const AircraftState& state,
                                       FcsState& fcsState, double maxGs) {
     // World-frame relative position
-    const double xft = digi.trackX - state.kin.x;
-    const double yft = digi.trackY - state.kin.y;
-    const double zft = digi.trackZ - state.kin.z;  // NED: z negative up
+    const double xft = digi.nav.trackX - state.kin.x;
+    const double yft = digi.nav.trackY - state.kin.y;
+    const double zft = digi.nav.trackZ - state.kin.z;  // NED: z negative up
 
     // Transform to body frame using DCM transpose (world-to-body).
     // F4Flight's dcm is body-to-world; transpose gives world-to-body.
@@ -464,17 +464,17 @@ double ManeuverPrimitives::AutoTrack(DigiState& digi, const AircraftState& state
         SetPstick(1.5 * elerr, maxGs, CommandType::ErrorCommand, digi, state);
         SetYpedal(azerr / 4.0, digi);
         // Wings level: damp roll
-        digi.rStick = -state.kin.phi * RTD * 5.0 * DTR;
-        digi.rStick = limit(digi.rStick, -1.0, 1.0);
+        digi.commands.rStick = -state.kin.phi * RTD * 5.0 * DTR;
+        digi.commands.rStick = limit(digi.commands.rStick, -1.0, 1.0);
     } else if (ata < 10.0) {
         // BVR flip-over branch (only meaningful at BVR ranges, but we
         // include it for fidelity). If droll is near ±180°, roll the
         // opposite direction and push negative G instead of rolling
         // all the way around.
-        if (droll > 150.0 * DTR && digi.rStick < 0.5) {
+        if (droll > 150.0 * DTR && digi.commands.rStick < 0.5) {
             SetRstick(droll * RTD - 180.0, digi, FlightControlSystem{}, fcsState);
             SetPstick(-ata, maxGs, CommandType::ErrorCommand, digi, state);
-        } else if (droll < -150.0 * DTR && digi.rStick > -0.5) {
+        } else if (droll < -150.0 * DTR && digi.commands.rStick > -0.5) {
             SetRstick(droll * RTD + 180.0, digi, FlightControlSystem{}, fcsState);
             SetPstick(-ata, maxGs, CommandType::ErrorCommand, digi, state);
         } else {
@@ -520,9 +520,9 @@ double ManeuverPrimitives::GunsAutoTrack(DigiState& digi,
                                           FcsState& fcsState,
                                           double maxGs) {
     // World-frame relative position (already lead-corrected by caller)
-    const double xft = digi.trackX - state.kin.x;
-    const double yft = digi.trackY - state.kin.y;
-    const double zft = digi.trackZ - state.kin.z;
+    const double xft = digi.nav.trackX - state.kin.x;
+    const double yft = digi.nav.trackY - state.kin.y;
+    const double zft = digi.nav.trackZ - state.kin.z;
 
     // Transform to body frame using DCM transpose (world-to-body)
     const Matrix3& dcm = state.kin.dcm;
@@ -619,9 +619,9 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
                                             DigiState& digi, const AircraftState& state,
                                             double dt) {
     // World-frame relative position
-    const double xft = digi.trackX - state.kin.x;
-    const double yft = digi.trackY - state.kin.y;
-    const double zft = digi.trackZ - state.kin.z;
+    const double xft = digi.nav.trackX - state.kin.x;
+    const double yft = digi.nav.trackY - state.kin.y;
+    const double zft = digi.nav.trackZ - state.kin.z;
 
     // Transform to body frame for azimuth
     const Matrix3& dcm = state.kin.dcm;
@@ -632,7 +632,7 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
     double rCmd = SimpleTrackAzimuth(rx, ry);
     // Clamp roll rate
     rCmd = std::max(-0.6, std::min(0.6, rCmd));
-    digi.rStick = rCmd;
+    digi.commands.rStick = rCmd;
 
     // Pitch: glideslope tracking with gamma-rate damping.
     //
@@ -664,25 +664,25 @@ void ManeuverPrimitives::TrackPointLanding(double targetSpeedKts,
     // The altitude-error term provides the primary glideslope tracking;
     // the elevation error provides fine-tuning near the threshold; the
     // damping term prevents Phugoid oscillation.
-    digi.pStick = std::min(0.5, std::max(elErr + altErrTerm + dampTerm, -0.5));
+    digi.commands.pStick = std::min(0.5, std::max(elErr + altErrTerm + dampTerm, -0.5));
 
     // Throttle: hold approach speed (error computed in kts — both targetSpeedKts
     // and state.vcas are KCAS, so no unit conversion needed here).
     const double eProp = targetSpeedKts - state.vcas;  // kts
 
     if (eProp >= 150.0) {
-        digi.autoThrottle = 1.5;
-        digi.throttle = 1.5;  // burner
+        digi.nav.autoThrottle = 1.5;
+        digi.commands.throttle = 1.5;  // burner
     } else if (eProp < -100.0) {
-        digi.autoThrottle = 0.0;
-        digi.throttle = 0.0;  // idle
+        digi.nav.autoThrottle = 0.0;
+        digi.commands.throttle = 0.0;  // idle
     } else {
         // Proportional + integral throttle
-        digi.autoThrottle += eProp * 0.01 * (dt / 0.06);
-        digi.autoThrottle = std::max(0.0, std::min(1.5, digi.autoThrottle));
-        digi.throttle = eProp * 0.02 + digi.autoThrottle - state.vtDot * (dt / 0.06) * 0.005;
+        digi.nav.autoThrottle += eProp * 0.01 * (dt / 0.06);
+        digi.nav.autoThrottle = std::max(0.0, std::min(1.5, digi.nav.autoThrottle));
+        digi.commands.throttle = eProp * 0.02 + digi.nav.autoThrottle - state.vtDot * (dt / 0.06) * 0.005;
     }
-    digi.throttle = std::max(0.0, std::min(1.5, digi.throttle));
+    digi.commands.throttle = std::max(0.0, std::min(1.5, digi.commands.throttle));
 }
 
 void ManeuverPrimitives::VectorTrack(double desHeading, double desAlt, double desSpeed,
@@ -757,16 +757,16 @@ void ManeuverPrimitives::PullToCollisionPoint(DigiState& digi,
 
     if (firstFrame) {
         // First frame of the mode — set trackpoint directly.
-        digi.trackX = newX;
-        digi.trackY = newY;
-        digi.trackZ = newZ;
+        digi.nav.trackX = newX;
+        digi.nav.trackY = newY;
+        digi.nav.trackZ = newZ;
     } else {
         // Subsequent frames — SMOOTH: 0.1*new + 0.9*old.
         // This is the key behavior F4Flight was missing — without it,
         // target jitter propagates straight to AutoTrack pitch/roll.
-        digi.trackX = 0.1 * newX + 0.9 * digi.trackX;
-        digi.trackY = 0.1 * newY + 0.9 * digi.trackY;
-        digi.trackZ = 0.1 * newZ + 0.9 * digi.trackZ;
+        digi.nav.trackX = 0.1 * newX + 0.9 * digi.nav.trackX;
+        digi.nav.trackY = 0.1 * newY + 0.9 * digi.nav.trackY;
+        digi.nav.trackZ = 0.1 * newZ + 0.9 * digi.nav.trackZ;
     }
 
     // Fly to the (smoothed) trackpoint via AutoTrack.
@@ -794,17 +794,17 @@ void ManeuverPrimitives::OverBank(DigiState& digi,
     // for the small bank angles typical in OverBMode.)
     if (firstFrame) {
         if (self.roll > 0.0) {
-            digi.newRoll = self.roll + delta;
+            digi.gunsJink.newRoll = self.roll + delta;
         } else {
-            digi.newRoll = self.roll - delta;
+            digi.gunsJink.newRoll = self.roll - delta;
         }
         // Wrap to [-PI, PI]
-        while (digi.newRoll >  PI) digi.newRoll -= 2.0 * PI;
-        while (digi.newRoll < -PI) digi.newRoll += 2.0 * PI;
+        while (digi.gunsJink.newRoll >  PI) digi.gunsJink.newRoll -= 2.0 * PI;
+        while (digi.gunsJink.newRoll < -PI) digi.gunsJink.newRoll += 2.0 * PI;
     }
 
     // Roll error
-    double eroll = digi.newRoll - self.roll;
+    double eroll = digi.gunsJink.newRoll - self.roll;
     while (eroll >  PI) eroll -= 2.0 * PI;
     while (eroll < -PI) eroll += 2.0 * PI;
 
@@ -819,28 +819,28 @@ bool ManeuverPrimitives::RollOutOfPlane(DigiState& digi,
                                          double dt, bool firstFrame) {
     // FF mnvers.cpp:868-918
     if (firstFrame) {
-        digi.mnverTime = 1.0;  // 1-second maneuver
+        digi.nav.mnverTime = 1.0;  // 1-second maneuver
 
         // Roll toward vertical but limit to 30° change (FF uses 30°, was 45°)
         if (self.roll >= 0.0) {
-            digi.newRoll = self.roll - 30.0 * DTR;
+            digi.gunsJink.newRoll = self.roll - 30.0 * DTR;
         } else {
-            digi.newRoll = self.roll + 30.0 * DTR;
+            digi.gunsJink.newRoll = self.roll + 30.0 * DTR;
         }
     }
 
     // Roll error (shortest direction)
-    double eroll = digi.newRoll - self.roll;
+    double eroll = digi.gunsJink.newRoll - self.roll;
     while (eroll >  PI) eroll -= 2.0 * PI;
     while (eroll < -PI) eroll += 2.0 * PI;
 
     // Max-G pull + roll toward target bank
-    SetPstick(digi.maxGs, digi.maxGs, CommandType::GCommand, digi, as);
+    SetPstick(digi.config.maxGs, digi.config.maxGs, CommandType::GCommand, digi, as);
     SetRstick(eroll * RTD, digi, FlightControlSystem{}, fcsState);
 
     // Decrement maneuver timer; return true while still active
-    digi.mnverTime -= dt;
-    return digi.mnverTime > 0.0;
+    digi.nav.mnverTime -= dt;
+    return digi.nav.mnverTime > 0.0;
 }
 
 void ManeuverPrimitives::WvrBugOut(DigiState& digi,
@@ -850,9 +850,9 @@ void ManeuverPrimitives::WvrBugOut(DigiState& digi,
                                    double dt) {
     // FF wvrengage.cpp:727-731: hold heading + altitude, accelerate to
     // 2× corner speed. Simplest disengage primitive.
-    HeadingAndAltitudeHold(digi.holdPsi, digi.holdAlt,
-                            digi, as, fcs, fcsState, digi.maxGs);
-    MachHold(2.0 * digi.cornerSpeed, as.vcas, true,
+    HeadingAndAltitudeHold(digi.nav.holdPsi, digi.nav.holdAlt,
+                            digi, as, fcs, fcsState, digi.config.maxGs);
+    MachHold(2.0 * digi.config.cornerSpeed, as.vcas, true,
              digi, as, 200.0, 800.0, dt, 700.0);
 }
 

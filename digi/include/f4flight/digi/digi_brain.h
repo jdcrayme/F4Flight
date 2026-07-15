@@ -80,11 +80,11 @@ namespace digi {
 // ===========================================================================
 struct DigiConfig {
     SkillLevel skillLevel    {SkillLevel::Veteran};
-    double     cornerSpeedKts{330.0};   // digi.cornerSpeed
-    double     maxGs         {9.0};      // digi.maxGs
-    double     maxBankDeg    {30.0};     // digi.maxRoll
-    double     maxGammaDeg   {60.0};     // digi.maxGammaDeg
-    double     turnLoadFactor{2.0};      // digi.turnLoadFactor
+    double     cornerSpeedKts{330.0};   // digi.config.cornerSpeed
+    double     maxGs         {9.0};      // digi.config.maxGs
+    double     maxBankDeg    {30.0};     // digi.config.maxRoll
+    double     maxGammaDeg   {60.0};     // digi.config.maxGammaDeg
+    double     turnLoadFactor{2.0};      // digi.config.turnLoadFactor
 };
 
 // ===========================================================================
@@ -121,6 +121,12 @@ struct FrameInputs {
     // When non-null, the brain's groundTarget pointer is set; the (still
     // unported) GroundAttackMode will read it.
     const DigiEntity* injectedGroundTarget {nullptr};
+
+    // --- Wingman formation following ---
+    // The flight lead entity. When non-null AND formation.isWing is true,
+    // the brain enters Wingy mode and calls AiFollowLead to fly to the
+    // wingman's formation slot relative to this lead.
+    const DigiEntity* injectedLead {nullptr};
 };
 
 // ===========================================================================
@@ -157,10 +163,10 @@ public:
 
     /// Set the held heading (radians). Read by Waypoint mode when no
     /// waypoints remain, and by HeadingAltitude mode.
-    void setHeading(double rad) { state_.holdPsi = rad; }
+    void setHeading(double rad) { state_.nav.holdPsi = rad; }
 
     /// Set the held altitude (ft, positive up). Read by Waypoint mode.
-    void setAltitude(double ft) { state_.holdAlt = ft; }
+    void setAltitude(double ft) { state_.nav.holdAlt = ft; }
 
     // =======================================================================
     // 3. Per-frame inputs (host provides each frame before compute())
@@ -182,12 +188,12 @@ public:
         const bool hostGaveUpOnThreats = (inputs.truth == nullptr);
         if (hostGaveUpOnThreats) {
             if (!inputs.injectedMissile) {
-                state_.incomingMissile = nullptr;
-                state_.incomingMissileId = kInvalidEntityId;
+                state_.missileDefeat.incomingMissile = nullptr;
+                state_.missileDefeat.incomingMissileId = kInvalidEntityId;
                 missileEntityAuto_.reset();
             }
             if (!inputs.injectedGunsThreat) {
-                state_.gunsThreat = nullptr;
+                state_.gunsJink.gunsThreat = nullptr;
                 gunsEntityAuto_.reset();
             }
             if (!inputs.injectedTarget) {
@@ -196,15 +202,15 @@ public:
             }
             // Round-2 fix (Rec 9): also clear stale A/G target pointer.
             if (!inputs.injectedGroundTarget) {
-                state_.groundTarget = nullptr;
-                state_.groundTargetId = kInvalidEntityId;
+                state_.ag.groundTarget = nullptr;
+                state_.ag.groundTargetId = kInvalidEntityId;
             }
         }
         // Commit injected ground target immediately (the future GroundMnvr
-        // mode will read state_.groundTarget; the host's injection is the
+        // mode will read state_.ag.groundTarget; the host's injection is the
         // production path).
         if (inputs.injectedGroundTarget) {
-            state_.groundTarget = inputs.injectedGroundTarget;
+            state_.ag.groundTarget = inputs.injectedGroundTarget;
         }
         frameInputs_ = inputs;
     }
@@ -243,9 +249,9 @@ public:
     // 6. Communication (set once at init)
     // =======================================================================
 
-    void setSelfId(EntityId id) { state_.selfId = id; }
+    void setSelfId(EntityId id) { state_.comm.selfId = id; }
     void setMessageBus(MessageBus* bus) { bus_ = bus; }
-    Mailbox& mailbox() { return state_.mailbox; }
+    Mailbox& mailbox() { return state_.comm.mailbox; }
 
     // =======================================================================
     // 6b. Weapon system (set once at init)
@@ -310,8 +316,8 @@ public:
         // (host-managed), but the brain's frameInputs_ injection path means
         // we need to clear them here so a stale injected threat doesn't
         // persist across reset().
-        state_.incomingMissile = nullptr;
-        state_.gunsThreat = nullptr;
+        state_.missileDefeat.incomingMissile = nullptr;
+        state_.gunsJink.gunsThreat = nullptr;
         curWp_ = 0;
         curMode_ = DigiMode::Waypoint;
         nextMode_ = DigiMode::NoMode;
@@ -338,23 +344,23 @@ public:
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
     void setSkill(SkillLevel level) {
-        state_.skill = makeSkillParams(level);
+        state_.config.skill = makeSkillParams(level);
     }
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
-    void setCornerSpeed(double kts) { state_.cornerSpeed = kts; }
+    void setCornerSpeed(double kts) { state_.config.cornerSpeed = kts; }
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
-    void setMaxGs(double g) { state_.maxGs = g; }
+    void setMaxGs(double g) { state_.config.maxGs = g; }
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
-    void setMaxBank(double deg) { state_.maxRoll = deg; }
+    void setMaxBank(double deg) { state_.config.maxRoll = deg; }
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
-    void setMaxGamma(double deg) { state_.maxGammaDeg = deg; }
+    void setMaxGamma(double deg) { state_.config.maxGammaDeg = deg; }
     /// @deprecated Use configure(DigiConfig) instead.
     [[deprecated("Use configure(DigiConfig)")]]
-    void setTurnG(double lf) { state_.turnLoadFactor = lf; }
+    void setTurnG(double lf) { state_.config.turnLoadFactor = lf; }
 
     /// @deprecated Use setFrameInputs(FrameInputs) instead.
     [[deprecated("Use setFrameInputs(FrameInputs)")]]
@@ -378,18 +384,18 @@ public:
     void setIncomingMissile(const DigiEntity* m) {
         frameInputs_.injectedMissile = m;
         // Also commit to state_ so runMissileDefeat sees it immediately.
-        state_.incomingMissile = m;
+        state_.missileDefeat.incomingMissile = m;
         if (m) {
             // Reset per-missile state on injection.
-            state_.missileDefeatTtgo = -1.0;
-            state_.incomingMissileEvadeTimer = 0.0;
+            state_.missileDefeat.missileDefeatTtgo = -1.0;
+            state_.missileDefeat.incomingMissileEvadeTimer = 0.0;
         }
     }
     /// @deprecated Use setFrameInputs(FrameInputs) with injectedGunsThreat.
     [[deprecated("Use setFrameInputs(FrameInputs).injectedGunsThreat")]]
     void setGunsThreat(const DigiEntity* t) {
         frameInputs_.injectedGunsThreat = t;
-        state_.gunsThreat = t;
+        state_.gunsJink.gunsThreat = t;
     }
 
     /// @deprecated Use setFrameInputs(FrameInputs) with injectedTarget.
@@ -517,6 +523,12 @@ private:
                     FcsState& fcsState, double groundZ);
     void runLanding(const AircraftState& as, double dt,
                     FcsState& fcsState, double groundZ);
+
+    // Wingman formation following. Called when Wingy mode is active.
+    // Uses AiFollowLead to fly to the wingman's formation slot relative
+    // to the injected lead entity.
+    void runWingy(const AircraftState& as, double dt,
+                  const FlightControlSystem& fcs, FcsState& fcsState);
 
     // Resolve the active mode based on priority + threats.
     void resolveMode(const AircraftState& as, double groundZ, double dt);

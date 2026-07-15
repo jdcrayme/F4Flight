@@ -133,33 +133,33 @@ void FireControlMissile(DigiState& digi, const DigiEntity& self,
     // Doctrine: shoot-shoot or shoot-look
     // (FF dlogic.cpp:892-933)
     const double shootShootPct = (missile.seeker == SeekerType::IR)
-        ? digi.skill.shootShootPctHeat
-        : digi.skill.shootShootPctRadar;
+        ? digi.config.skill.shootShootPctHeat
+        : digi.config.skill.shootShootPctRadar;
 
     const bool shootShoot = (shootShootPct >= 0.5);
 
     // Check timer
-    if (digi.missileShotTimer > 0.0) {
+    if (digi.weapon.missileShotTimer > 0.0) {
         // Still waiting for the next shot
         return;
     }
 
     // Fire!
-    digi.mslFireFlag = true;
+    digi.weapon.mslFireFlag = true;
 
     // Set the timer for the next shot
     if (shootShoot) {
         // Shoot-shoot: 2nd missile 4 seconds later
-        digi.missileShotTimer = 4.0;
-        digi.inShootShoot = true;
+        digi.weapon.missileShotTimer = 4.0;
+        digi.weapon.inShootShoot = true;
     } else {
         // Shoot-look: wait TOF + 5 + min(TOF*0.5, 5)
         // Approximate TOF as range / (missileSpeed + ownshipVt)
         const double missileSpeed = 2000.0;  // ~Mach 2 average
         const double tof = rg.range / std::max(missileSpeed + env.vtFtps, 1.0);
         const double delay = tof + 5.0 + std::min(tof * 0.5, 5.0);
-        digi.missileShotTimer = delay;
-        digi.inShootShoot = false;
+        digi.weapon.missileShotTimer = delay;
+        digi.weapon.inShootShoot = false;
     }
 }
 
@@ -184,15 +184,15 @@ void MissileEngage(DigiState& digi, const DigiEntity& self,
     }
 
     // Update max A/A weapon range in state (for mode checks)
-    digi.maxAAWpnRange = maxAAWpnRangeFt;
+    digi.weapon.maxAAWpnRange = maxAAWpnRangeFt;
 
     const WeaponSpec missile = weaponSpecOf(missileType);
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
     // --- Fire control ---
     // Decrement the shot timer
-    if (digi.missileShotTimer > 0.0) {
-        digi.missileShotTimer -= dt;
+    if (digi.weapon.missileShotTimer > 0.0) {
+        digi.weapon.missileShotTimer -= dt;
     }
     FireControlMissile(digi, self, target, missile, sms, dt);
 
@@ -219,9 +219,9 @@ void MissileEngage(DigiState& digi, const DigiEntity& self,
         // Set trackpoint with lead
         if (std::fabs(rg.azFrom) < 90.0 * DTR) {
             // Ahead of target 3/9 line — lead pursuit
-            digi.trackX = target.x + target.vx * tof;
-            digi.trackY = target.y + target.vy * tof;
-            digi.trackZ = target.z + zDot * tof;
+            digi.nav.trackX = target.x + target.vx * tof;
+            digi.nav.trackY = target.y + target.vy * tof;
+            digi.nav.trackZ = target.z + zDot * tof;
         } else {
             // Behind target 3/9 line — closure control.
             // FF mengage.cpp:318-336: rdes is the desired standoff range
@@ -236,28 +236,28 @@ void MissileEngage(DigiState& digi, const DigiEntity& self,
 
             if (actualClosure > desiredClosure) {
                 // Closing too fast — lag the target
-                digi.trackX = target.x + target.vx * tof * 0.9;
-                digi.trackY = target.y + target.vy * tof * 0.9;
-                digi.trackZ = target.z + zDot * tof * 0.9;
+                digi.nav.trackX = target.x + target.vx * tof * 0.9;
+                digi.nav.trackY = target.y + target.vy * tof * 0.9;
+                digi.nav.trackZ = target.z + zDot * tof * 0.9;
                 if (rg.range > 10.0 * 6076.0) {
-                    digi.trackZ -= 10000.0;  // drop below for separation
+                    digi.nav.trackZ -= 10000.0;  // drop below for separation
                 }
             } else {
                 // Not closing fast enough — pure lead
-                digi.trackX = target.x + target.vx * tof;
-                digi.trackY = target.y + target.vy * tof;
-                digi.trackZ = target.z + zDot * tof;
+                digi.nav.trackX = target.x + target.vx * tof;
+                digi.nav.trackY = target.y + target.vy * tof;
+                digi.nav.trackZ = target.z + zDot * tof;
             }
         }
 
         // Clamp trackZ to avoid ground
-        digi.trackZ = std::min(digi.trackZ, -4000.0);
+        digi.nav.trackZ = std::min(digi.nav.trackZ, -4000.0);
 
         // Track the lead point via AutoTrack
-        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.maxGs);
+        ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
 
         // Speed control: 1.3× corner speed for BVR approach
-        const double desSpeed = 1.3 * digi.cornerSpeed;
+        const double desSpeed = 1.3 * digi.config.cornerSpeed;
         ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
                                       digi, as, 200.0, 800.0, dt, 100.0);
     }

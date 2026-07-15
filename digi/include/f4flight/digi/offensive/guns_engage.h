@@ -15,7 +15,7 @@
 //     target (|azerr| < 1.5°, elerr in [-1.5°, 0.5°], atadot < 50°/s,
 //     range < 2× muzzleVel).
 //
-// The fire decision sets digi.gunFireFlag, which compute() maps to
+// The fire decision sets digi.weapon.gunFireFlag, which compute() maps to
 // PilotInput.fireGun.
 //
 // Source: FreeFalcon src/sim/digi/gengage.cpp
@@ -71,7 +71,7 @@ double CoarseGunsTrack(DigiState& digi, const DigiEntity& self,
 //   Phase B (waitingForShot): relax G, fire when pipper on target, then
 //     reset.
 //
-// Sets digi.gunFireFlag when firing. Outputs lagAngle for the caller.
+// Sets digi.weapon.gunFireFlag when firing. Outputs lagAngle for the caller.
 // ===========================================================================
 void FineGunsTrack(DigiState& digi, const DigiEntity& self,
                    const DigiEntity& target, const AircraftState& as,

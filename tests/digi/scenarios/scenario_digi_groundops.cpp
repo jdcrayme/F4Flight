@@ -90,7 +90,7 @@ public:
             }
             const std::size_t bufSize = 24;
             char phaseBuf[bufSize];
-            switch (sc_brain_->state().groundOps.phase) {
+            switch (sc_brain_->state().ag.groundOps.phase) {
                 case GroundOpsPhase::TakeoffRoll: std::snprintf(phaseBuf, bufSize, "Roll"); break;
                 case GroundOpsPhase::Rotation:    std::snprintf(phaseBuf, bufSize, "Rotation"); break;
                 case GroundOpsPhase::AfterTakeoff: std::snprintf(phaseBuf, bufSize, "Climbout"); break;
@@ -277,7 +277,7 @@ public:
             char modeBuf[bufSize];
             std::snprintf(modeBuf, bufSize, "%s", digiModeName(sc_brain_->activeMode()));
             char phaseBuf[bufSize];
-            switch (sc_brain_->state().groundOps.phase) {
+            switch (sc_brain_->state().ag.groundOps.phase) {
                 case GroundOpsPhase::Approach:  std::snprintf(phaseBuf, bufSize, "Approach"); break;
                 case GroundOpsPhase::Flare:     std::snprintf(phaseBuf, bufSize, "Flare"); break;
                 case GroundOpsPhase::Touchdown: std::snprintf(phaseBuf, bufSize, "Touchdown"); break;
@@ -407,7 +407,7 @@ public:
         // Command taxi to the runway threshold (origin).
         // We set the ground ops state directly — the brain's RunTaxi
         // function will steer toward (runwayThresholdX, runwayThresholdY).
-        auto& go = sc.brain().stateMutable().groundOps;
+        auto& go = sc.brain().stateMutable().ag.groundOps;
         go.phase = GroundOpsPhase::TaxiToRunway;
         go.runwayThresholdX = 0.0;  // threshold at origin
         go.runwayThresholdY = 0.0;
@@ -427,7 +427,7 @@ public:
         minDist_ = std::min(minDist_, dist);
         maxSpeed_ = std::max(maxSpeed_, as.vcas);
 
-        if (sc_brain_->state().groundOps.phase == GroundOpsPhase::TaxiToRunway)
+        if (sc_brain_->state().ag.groundOps.phase == GroundOpsPhase::TaxiToRunway)
             enteredTaxi_ = true;
         if (dist < 50.0) reachedThreshold_ = true;
 
@@ -441,7 +441,7 @@ public:
             }
             const std::size_t bufSize = 24;
             char phaseBuf[bufSize];
-            switch (sc_brain_->state().groundOps.phase) {
+            switch (sc_brain_->state().ag.groundOps.phase) {
                 case GroundOpsPhase::TaxiToRunway: std::snprintf(phaseBuf, bufSize, "Taxi"); break;
                 case GroundOpsPhase::HoldingShort: std::snprintf(phaseBuf, bufSize, "HoldShort"); break;
                 default: std::snprintf(phaseBuf, bufSize, "Other"); break;

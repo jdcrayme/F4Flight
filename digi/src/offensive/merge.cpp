@@ -22,7 +22,7 @@ bool MergeCheck(const DigiState& digi, const DigiEntity& self,
     // geometry matched. Now we exit when mergeTimer expires (3 seconds,
     // matching FreeFalcon merge.cpp:9-52). The timer is decremented in
     // MergeManeuver each frame.
-    if (digi.mergeTimer == 0.0) return false;  // timer expired — exit merge
+    if (digi.weapon.mergeTimer == 0.0) return false;  // timer expired — exit merge
 
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
@@ -55,15 +55,15 @@ void MergeManeuver(DigiState& digi, const DigiEntity& self,
     (void)fcs;
 
     // BUG FIX: actually use the dt parameter (was previously cast away with
-    // (void)dt and the code used digi.dt instead — usually the same, but
+    // (void)dt and the code used digi.nav.dt instead — usually the same, but
     // using the parameter is clearer and supports per-call overrides).
     //
     // Decrement mergeTimer to time out the mode (FreeFalcon merge.cpp:9-52
     // uses a 3-second exit). Initialize on first entry.
-    if (digi.mergeTimer < 0.0) {
-        digi.mergeTimer = 3.0;  // 3 seconds in merge mode
+    if (digi.weapon.mergeTimer < 0.0) {
+        digi.weapon.mergeTimer = 3.0;  // 3 seconds in merge mode
     }
-    digi.mergeTimer = std::max(0.0, digi.mergeTimer - dt);
+    digi.weapon.mergeTimer = std::max(0.0, digi.weapon.mergeTimer - dt);
 
     const RelativeGeometry rg = computeRelativeGeometry(self, target);
 
@@ -81,42 +81,42 @@ void MergeManeuver(DigiState& digi, const DigiEntity& self,
     // combination logic from FF merge.cpp:202-243.
 
     const double vcas = as.vcas;
-    const double corner = digi.cornerSpeed;
+    const double corner = digi.config.cornerSpeed;
 
     if (vcas < corner * 0.7) {
         // Slow — slice (135° bank)
-        digi.newRoll = (rg.az > 0.0 ? 135.0 * DTR : -135.0 * DTR);
+        digi.gunsJink.newRoll = (rg.az > 0.0 ? 135.0 * DTR : -135.0 * DTR);
         ManeuverPrimitives::MachHold(0.7 * corner, vcas, false,
-                                      digi, as, 100.0, 400.0, digi.dt, 100.0);
+                                      digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
     } else if (vcas < corner * 1.2) {
         // Medium — level turn (90° bank)
         if (vcas < corner) {
             // One circle — turn away from target
-            digi.newRoll = (rg.az > 0.0 ? -90.0 * DTR : 90.0 * DTR);
+            digi.gunsJink.newRoll = (rg.az > 0.0 ? -90.0 * DTR : 90.0 * DTR);
             ManeuverPrimitives::MachHold(0.7 * corner, vcas, false,
-                                          digi, as, 100.0, 400.0, digi.dt, 100.0);
+                                          digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
         } else {
             // Two circle — turn toward target
-            digi.newRoll = (rg.az > 0.0 ? 90.0 * DTR : -90.0 * DTR);
+            digi.gunsJink.newRoll = (rg.az > 0.0 ? 90.0 * DTR : -90.0 * DTR);
             ManeuverPrimitives::MachHold(corner, vcas, true,
-                                          digi, as, 100.0, 400.0, digi.dt, 100.0);
+                                          digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
         }
     } else {
         // Fast — vertical pull (wings level, full burner)
-        digi.newRoll = 0.0;
+        digi.gunsJink.newRoll = 0.0;
         ManeuverPrimitives::MachHold(corner * 1.2, vcas, true,
-                                      digi, as, 100.0, 400.0, digi.dt, 100.0);
+                                      digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
     }
 
     // Command the roll + max-G pull
     // (FF merge.cpp:247-252)
-    const double eDroll = digi.newRoll - self.roll;
+    const double eDroll = digi.gunsJink.newRoll - self.roll;
     ManeuverPrimitives::SetYpedal(0.0, digi);
     ManeuverPrimitives::SetRstick(eDroll * 2.0 * RTD, digi,
                                    FlightControlSystem{}, fcsState);
-    ManeuverPrimitives::SetPstick(digi.maxGs, digi.maxGs,
+    ManeuverPrimitives::SetPstick(digi.config.maxGs, digi.config.maxGs,
                                    CommandType::GCommand, digi, as);
-    fcsState.maxRoll = std::fabs(digi.newRoll) * RTD;
+    fcsState.maxRoll = std::fabs(digi.gunsJink.newRoll) * RTD;
     fcsState.maxRollDelta = std::fabs(eDroll) * RTD;
 }
 
@@ -132,7 +132,7 @@ bool AccelCheck(const DigiState& digi, const DigiEntity& self,
     // We check the active mode externally; here we just check the speed/pitch
     // condition.
 
-    const double corner = digi.cornerSpeed;
+    const double corner = digi.config.cornerSpeed;
     const double pitchDeg = self.pitch * RTD;
 
     // Pitch > 50° and very slow, OR pitch > 0° and critically slow
@@ -162,15 +162,15 @@ void AccelManeuver(DigiState& digi, const DigiEntity& self,
     ManeuverPrimitives::SetYpedal(0.0, digi);
     ManeuverPrimitives::SetRstick(eDroll * 2.0 * RTD, digi,
                                    FlightControlSystem{}, fcsState);
-    ManeuverPrimitives::MachHold(digi.cornerSpeed, as.vcas, false,
-                                  digi, as, 100.0, 400.0, digi.dt, 100.0);
+    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, false,
+                                  digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
 
     // If still rolling, don't pull; once inverted, pull 4G
     if (std::fabs(eDroll * RTD) > 10.0) {
-        ManeuverPrimitives::SetPstick(0.0, digi.maxGs,
+        ManeuverPrimitives::SetPstick(0.0, digi.config.maxGs,
                                        CommandType::GCommand, digi, as);
     } else {
-        ManeuverPrimitives::SetPstick(4.0, digi.maxGs,
+        ManeuverPrimitives::SetPstick(4.0, digi.config.maxGs,
                                        CommandType::GCommand, digi, as);
     }
 

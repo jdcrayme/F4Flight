@@ -29,7 +29,7 @@ namespace digi {
 // Port of FreeFalcon cavoid.cpp:12-134.
 //
 // Returns true if a collision is predicted within the reaction time.
-// Sets digi.trackX/Y/Z to the evasion trackpoint if collision is predicted.
+// Sets digi.nav.trackX/Y/Z to the evasion trackpoint if collision is predicted.
 // ===========================================================================
 bool CollisionCheck(DigiState& digi, const DigiEntity& self,
                     const DigiEntity& target);

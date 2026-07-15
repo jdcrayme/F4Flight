@@ -115,29 +115,29 @@ TEST(DigiModeTest, NumModes) {
 // ===========================================================================
 TEST(DigiStateTest, DefaultValues) {
     DigiState s;
-    EXPECT_NEAR(s.pStick, 0.0, 1e-9);
-    EXPECT_NEAR(s.rStick, 0.0, 1e-9);
-    EXPECT_NEAR(s.throttle, 0.5, 1e-9);
-    EXPECT_EQ(s.skill.level, SkillLevel::Veteran);
-    EXPECT_FALSE(s.groundAvoidNeeded);
-    EXPECT_NEAR(s.pullupTimer, 0.0, 1e-9);
+    EXPECT_NEAR(s.commands.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(s.commands.rStick, 0.0, 1e-9);
+    EXPECT_NEAR(s.commands.throttle, 0.5, 1e-9);
+    EXPECT_EQ(s.config.skill.level, SkillLevel::Veteran);
+    EXPECT_FALSE(s.groundAvoid.groundAvoidNeeded);
+    EXPECT_NEAR(s.groundAvoid.pullupTimer, 0.0, 1e-9);
 }
 
 TEST(DigiStateTest, ResetClearsState) {
     DigiState s;
-    s.pStick = 0.5;
-    s.rStick = -0.3;
-    s.gammaHoldIError = 1.5;
-    s.autoThrottle = 0.7;
-    s.groundAvoidNeeded = true;
-    s.pullupTimer = 2.0;
+    s.commands.pStick = 0.5;
+    s.commands.rStick = -0.3;
+    s.nav.gammaHoldIError = 1.5;
+    s.nav.autoThrottle = 0.7;
+    s.groundAvoid.groundAvoidNeeded = true;
+    s.groundAvoid.pullupTimer = 2.0;
     s.reset();
-    EXPECT_NEAR(s.pStick, 0.0, 1e-9);
-    EXPECT_NEAR(s.rStick, 0.0, 1e-9);
-    EXPECT_NEAR(s.gammaHoldIError, 0.0, 1e-9);
-    EXPECT_NEAR(s.autoThrottle, 0.0, 1e-9);
-    EXPECT_FALSE(s.groundAvoidNeeded);
-    EXPECT_NEAR(s.pullupTimer, 0.0, 1e-9);
+    EXPECT_NEAR(s.commands.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(s.commands.rStick, 0.0, 1e-9);
+    EXPECT_NEAR(s.nav.gammaHoldIError, 0.0, 1e-9);
+    EXPECT_NEAR(s.nav.autoThrottle, 0.0, 1e-9);
+    EXPECT_FALSE(s.groundAvoid.groundAvoidNeeded);
+    EXPECT_NEAR(s.groundAvoid.pullupTimer, 0.0, 1e-9);
 }
 
 // ===========================================================================
@@ -148,70 +148,70 @@ TEST(DigiStateTest, ResetClearsState) {
 TEST(DigiStateTest, Round2_BrakeAndSpeedBrakeDefaults) {
     // Rec 7: brake / speed-brake / gear commands default to "no drag, gear down".
     DigiState s;
-    EXPECT_FALSE(s.wheelBrakes);       // brakes off
-    EXPECT_FALSE(s.parkingBrake);
-    EXPECT_NEAR(s.speedBrakeCmd, -1.0, 1e-9);  // retracted (no drag)
-    EXPECT_NEAR(s.gearHandleCmd, 1.0, 1e-9);   // gear down
+    EXPECT_FALSE(s.commands.wheelBrakes);       // brakes off
+    EXPECT_FALSE(s.commands.parkingBrake);
+    EXPECT_NEAR(s.commands.speedBrakeCmd, -1.0, 1e-9);  // retracted (no drag)
+    EXPECT_NEAR(s.commands.gearHandleCmd, 1.0, 1e-9);   // gear down
 }
 
 TEST(DigiStateTest, Round2_ResetClearsBrakeCommands) {
     DigiState s;
-    s.wheelBrakes = true;
-    s.parkingBrake = true;
-    s.speedBrakeCmd = 1.0;
-    s.gearHandleCmd = -1.0;
+    s.commands.wheelBrakes = true;
+    s.commands.parkingBrake = true;
+    s.commands.speedBrakeCmd = 1.0;
+    s.commands.gearHandleCmd = -1.0;
     s.reset();
-    EXPECT_FALSE(s.wheelBrakes);
-    EXPECT_FALSE(s.parkingBrake);
-    EXPECT_NEAR(s.speedBrakeCmd, -1.0, 1e-9);
-    EXPECT_NEAR(s.gearHandleCmd, 1.0, 1e-9);
+    EXPECT_FALSE(s.commands.wheelBrakes);
+    EXPECT_FALSE(s.commands.parkingBrake);
+    EXPECT_NEAR(s.commands.speedBrakeCmd, -1.0, 1e-9);
+    EXPECT_NEAR(s.commands.gearHandleCmd, 1.0, 1e-9);
 }
 
 TEST(DigiStateTest, Round2_GroundTargetDefaults) {
     // Rec 9: ground target pointer defaults to null, doctrine to NONE.
     DigiState s;
-    EXPECT_EQ(s.groundTarget, nullptr);
-    EXPECT_EQ(s.groundTargetId, kInvalidEntityId);
-    EXPECT_EQ(s.agDoctrine, 0);  // AGD_NONE
-    EXPECT_EQ(s.agApproach, 0);  // AGA_NONE
-    EXPECT_FALSE(s.reachedIP);
+    EXPECT_EQ(s.ag.groundTarget, nullptr);
+    EXPECT_EQ(s.ag.groundTargetId, kInvalidEntityId);
+    EXPECT_EQ(s.ag.agDoctrine, 0);  // AGD_NONE
+    EXPECT_EQ(s.ag.agApproach, 0);  // AGA_NONE
+    EXPECT_FALSE(s.ag.reachedIP);
 }
 
 TEST(DigiStateTest, Round2_ResetClearsGroundTarget) {
     DigiState s;
     DigiEntity fakeTarget;
-    s.groundTarget = &fakeTarget;
-    s.groundTargetId = 42;
-    s.agDoctrine = 2;
-    s.agApproach = 4;
-    s.reachedIP = true;
+    s.ag.groundTarget = &fakeTarget;
+    s.ag.groundTargetId = 42;
+    s.ag.agDoctrine = 2;
+    s.ag.agApproach = 4;
+    s.ag.reachedIP = true;
     s.reset();
-    EXPECT_EQ(s.groundTarget, nullptr);
-    EXPECT_EQ(s.groundTargetId, kInvalidEntityId);
-    EXPECT_EQ(s.agDoctrine, 0);
-    EXPECT_EQ(s.agApproach, 0);
-    EXPECT_FALSE(s.reachedIP);
+    EXPECT_EQ(s.ag.groundTarget, nullptr);
+    EXPECT_EQ(s.ag.groundTargetId, kInvalidEntityId);
+    EXPECT_EQ(s.ag.agDoctrine, 0);
+    EXPECT_EQ(s.ag.agApproach, 0);
+    EXPECT_FALSE(s.ag.reachedIP);
 }
 
 TEST(DigiStateTest, Round2_FormationFieldsDefault) {
     // Rec 3: formation fields default to "no lead, not a wingman".
     DigiState s;
-    EXPECT_EQ(s.flightLeadId, kInvalidEntityId);
-    EXPECT_FALSE(s.isWing);
-    EXPECT_EQ(s.vehicleInUnit, 0);
-    EXPECT_EQ(s.formationId, 0);
-    EXPECT_NEAR(s.formRelAz, 0.0, 1e-9);
-    EXPECT_NEAR(s.formRelEl, 0.0, 1e-9);
-    EXPECT_NEAR(s.formRange, 500.0, 1e-9);  // default 500 ft
+    EXPECT_EQ(s.formation.flightLeadId, kInvalidEntityId);
+    EXPECT_FALSE(s.formation.isWing);
+    EXPECT_EQ(s.formation.vehicleInUnit, 0);
+    EXPECT_EQ(s.formation.formationId, 0);
+    EXPECT_NEAR(s.formation.formRelAz, 0.0, 1e-9);
+    EXPECT_NEAR(s.formation.formRelEl, 0.0, 1e-9);
+    EXPECT_NEAR(s.formation.formRange, 500.0, 1e-9);  // default 500 ft
 }
 
 TEST(DigiStateTest, Round2_MnverTimeDefaults) {
     // Rec 10: mnverTime (maneuver timer) defaults to 0.
     DigiState s;
-    EXPECT_NEAR(s.mnverTime, 0.0, 1e-9);
-    s.mnverTime = 1.5;
+    EXPECT_NEAR(s.nav.mnverTime, 0.0, 1e-9);
+    s.nav.mnverTime = 1.5;
     s.reset();
-    EXPECT_NEAR(s.mnverTime, 0.0, 1e-9);
+    EXPECT_NEAR(s.nav.mnverTime, 0.0, 1e-9);
 }
 
 TEST(DigiModeTest, Round2_NewModesExist) {
@@ -307,7 +307,7 @@ TEST(AGDoctrineTest, Round2_EnumsAndNames) {
 }
 
 TEST(DigiBrainRound2Test, FrameInputsGroundTargetInjection) {
-    // Rec 9: injectedGroundTarget is plumbed through to state_.groundTarget.
+    // Rec 9: injectedGroundTarget is plumbed through to state_.ag.groundTarget.
     DigiBrain brain;
     DigiEntity groundTarget;
     groundTarget.x = 1000.0;
@@ -317,43 +317,43 @@ TEST(DigiBrainRound2Test, FrameInputsGroundTargetInjection) {
     FrameInputs fi;
     fi.injectedGroundTarget = &groundTarget;
     brain.setFrameInputs(fi);
-    EXPECT_EQ(brain.state().groundTarget, &groundTarget);
+    EXPECT_EQ(brain.state().ag.groundTarget, &groundTarget);
 
     // Clearing the injection should clear the state pointer.
     FrameInputs fiEmpty;
     brain.setFrameInputs(fiEmpty);
-    EXPECT_EQ(brain.state().groundTarget, nullptr);
-    EXPECT_EQ(brain.state().groundTargetId, kInvalidEntityId);
+    EXPECT_EQ(brain.state().ag.groundTarget, nullptr);
+    EXPECT_EQ(brain.state().ag.groundTargetId, kInvalidEntityId);
 }
 
 TEST(DigiBrainRound2Test, PilotInputMapsBrakeCommands) {
-    // Rec 7: the brain's compute() maps state_.wheelBrakes / speedBrakeCmd /
+    // Rec 7: the brain's compute() maps state_.commands.wheelBrakes / speedBrakeCmd /
     // gearHandleCmd to PilotInput. We can't easily call compute() without a
     // valid aircraft config, but we CAN verify the mapping logic by reading
     // the state and applying the same mapping the brain uses. This catches
     // regressions where the mapping is removed or wired to the wrong fields.
     DigiBrain brain;
-    brain.stateMutable().wheelBrakes = true;
-    brain.stateMutable().speedBrakeCmd = 0.5;
-    brain.stateMutable().gearHandleCmd = -1.0;  // gear up
+    brain.stateMutable().commands.wheelBrakes = true;
+    brain.stateMutable().commands.speedBrakeCmd = 0.5;
+    brain.stateMutable().commands.gearHandleCmd = -1.0;  // gear up
 
     // The brain's compute() does (see digi_brain.cpp:270-273):
-    //   out.wheelBrakes  = state_.wheelBrakes;
-    //   out.parkingBrake = state_.parkingBrake;
-    //   out.speedBrake   = state_.speedBrakeCmd;
-    //   out.gearHandle   = state_.gearHandleCmd;
+    //   out.wheelBrakes  = state_.commands.wheelBrakes;
+    //   out.parkingBrake = state_.commands.parkingBrake;
+    //   out.speedBrake   = state_.commands.speedBrakeCmd;
+    //   out.gearHandle   = state_.commands.gearHandleCmd;
     // Verify the state values are what we set (so the mapping will produce
     // the correct PilotInput when compute() runs).
-    EXPECT_TRUE(brain.state().wheelBrakes);
-    EXPECT_NEAR(brain.state().speedBrakeCmd, 0.5, 1e-9);
-    EXPECT_NEAR(brain.state().gearHandleCmd, -1.0, 1e-9);
+    EXPECT_TRUE(brain.state().commands.wheelBrakes);
+    EXPECT_NEAR(brain.state().commands.speedBrakeCmd, 0.5, 1e-9);
+    EXPECT_NEAR(brain.state().commands.gearHandleCmd, -1.0, 1e-9);
 
     // And verify the mapping is correct by simulating it:
     PilotInput expected;
-    expected.wheelBrakes = brain.state().wheelBrakes;
-    expected.parkingBrake = brain.state().parkingBrake;
-    expected.speedBrake = brain.state().speedBrakeCmd;
-    expected.gearHandle = brain.state().gearHandleCmd;
+    expected.wheelBrakes = brain.state().commands.wheelBrakes;
+    expected.parkingBrake = brain.state().commands.parkingBrake;
+    expected.speedBrake = brain.state().commands.speedBrakeCmd;
+    expected.gearHandle = brain.state().commands.gearHandleCmd;
     EXPECT_TRUE(expected.wheelBrakes);
     EXPECT_NEAR(expected.speedBrake, 0.5, 1e-9);
     EXPECT_NEAR(expected.gearHandle, -1.0, 1e-9);
@@ -389,12 +389,12 @@ protected:
         state.vcas = 350.0;
         state.kin.vt = 350.0 * KNOTS_TO_FTPSEC;
         state.kin.dcm = Matrix3::identity();  // body-to-world (psi=theta=phi=0)
-        digi.dt = 1.0 / 60.0;
-        digi.maxGs = 9.0;
-        digi.maxRoll = 45.0;
-        digi.maxGammaDeg = 15.0;
-        digi.turnLoadFactor = 2.0;
-        digi.cornerSpeed = 330.0;
+        digi.nav.dt = 1.0 / 60.0;
+        digi.config.maxGs = 9.0;
+        digi.config.maxRoll = 45.0;
+        digi.config.maxGammaDeg = 15.0;
+        digi.config.turnLoadFactor = 2.0;
+        digi.config.cornerSpeed = 330.0;
     }
 };
 
@@ -418,8 +418,8 @@ TEST_F(CombatPrimitivesTest, TrackPointCommandsHeadingToTarget) {
                                     digi, state, fcs, fcsState, 9.0);
 
     // Already pointed at target → small heading error → small rStick
-    EXPECT_LT(std::fabs(digi.rStick), 0.5);
-    EXPECT_LT(std::fabs(digi.pStick), 0.5);
+    EXPECT_LT(std::fabs(digi.commands.rStick), 0.5);
+    EXPECT_LT(std::fabs(digi.commands.pStick), 0.5);
 }
 
 TEST_F(CombatPrimitivesTest, TrackPointEastTargetCommandsRightTurn) {
@@ -440,7 +440,7 @@ TEST_F(CombatPrimitivesTest, TrackPointEastTargetCommandsRightTurn) {
 
     // With a non-zero bank, the level-wings phase commands a non-zero rstick
     // to level the wings before starting the turn.
-    EXPECT_GT(std::fabs(digi.rStick), 0.01);
+    EXPECT_GT(std::fabs(digi.commands.rStick), 0.01);
 }
 
 TEST_F(CombatPrimitivesTest, AutoTrackLeadsMovingTarget) {
@@ -448,26 +448,26 @@ TEST_F(CombatPrimitivesTest, AutoTrackLeadsMovingTarget) {
     // lift-vector-on-target + pull control law (port of FF mnvers.cpp:211).
     // Set a target directly ahead (along body x-axis): ata should be ~0,
     // rStick should be near-zero (wings level).
-    digi.trackX = 6000.0;  // 6000 ft ahead (+x = nose direction)
-    digi.trackY = 0.0;
-    digi.trackZ = state.kin.z;  // same altitude → no elevation error
+    digi.nav.trackX = 6000.0;  // 6000 ft ahead (+x = nose direction)
+    digi.nav.trackY = 0.0;
+    digi.nav.trackZ = state.kin.z;  // same altitude → no elevation error
 
     ManeuverPrimitives::AutoTrack(digi, state, fcsState, 9.0);
 
     // Target is directly ahead at same altitude → ata < 5° (fine track
     // branch). Wings-level damping should produce small rStick.
     // (Not zero because the damping is proportional to current roll.)
-    EXPECT_LT(std::fabs(digi.rStick), 0.5);
+    EXPECT_LT(std::fabs(digi.commands.rStick), 0.5);
 }
 
 TEST_F(CombatPrimitivesTest, VectorTrackHoldsHeadingAndAltitude) {
     ManeuverPrimitives::VectorTrack(0.0, 10000.0, 350.0,
                                      digi, state, fcs, fcsState, 9.0, 1.0/60.0);
     // Already on heading 0, altitude 10000 → minimal stick commands
-    EXPECT_LT(std::fabs(digi.rStick), 0.5);
+    EXPECT_LT(std::fabs(digi.commands.rStick), 0.5);
     // Throttle should be set by MachHold
-    EXPECT_GT(digi.throttle, 0.0);
-    EXPECT_LT(digi.throttle, 1.5);
+    EXPECT_GT(digi.commands.throttle, 0.0);
+    EXPECT_LT(digi.commands.throttle, 1.5);
 }
 
 // ===========================================================================
@@ -480,10 +480,10 @@ protected:
     FcsState fcsState;
 
     void SetUp() override {
-        digi.dt = 1.0 / 60.0;
-        digi.maxGs = 9.0;
-        digi.cornerSpeed = 330.0;
-        digi.maxRoll = 45.0;
+        digi.nav.dt = 1.0 / 60.0;
+        digi.config.maxGs = 9.0;
+        digi.config.cornerSpeed = 330.0;
+        digi.config.maxRoll = 45.0;
 
         // Level flight at 350 kts
         state.kin.costhe = 1.0;
@@ -500,14 +500,14 @@ TEST_F(GroundAvoidTest, NoTriggerAtHighAltitude) {
     // At 10000 ft AGL, flat terrain → no avoidance needed
     state.kin.z = -10000.0;
     EXPECT_FALSE(GroundCheck(digi, state, 0.0, 5.0));
-    EXPECT_FALSE(digi.groundAvoidNeeded);
+    EXPECT_FALSE(digi.groundAvoid.groundAvoidNeeded);
 }
 
 TEST_F(GroundAvoidTest, TriggersAtLowAltitude) {
     // At 300 ft AGL (below 500 ft clearance) → avoidance needed
     state.kin.z = -300.0;
     EXPECT_TRUE(GroundCheck(digi, state, 0.0, 5.0));
-    EXPECT_TRUE(digi.groundAvoidNeeded);
+    EXPECT_TRUE(digi.groundAvoid.groundAvoidNeeded);
 }
 
 TEST_F(GroundAvoidTest, TriggersOnDescendingPath) {
@@ -540,11 +540,11 @@ TEST_F(GroundAvoidTest, PullUpCommandsMaxGAndWingsLevel) {
     // PullUp should command positive pstick (away from ground).
     // First-frame stick is 0.36 after smoothing (alpha=0.36 at 60 Hz),
     // so check > 0.2 rather than > 0.5.
-    EXPECT_GT(digi.pStick, 0.2);
+    EXPECT_GT(digi.commands.pStick, 0.2);
     // Wings level: fcsState.maxRoll = 0
     EXPECT_NEAR(fcsState.maxRoll, 0.0, 1e-9);
     // Pull-up timer should be set
-    EXPECT_GT(digi.pullupTimer, 0.0);
+    EXPECT_GT(digi.groundAvoid.pullupTimer, 0.0);
 }
 
 TEST_F(GroundAvoidTest, RunGroundAvoidIntegratesCheckAndPull) {
@@ -557,7 +557,7 @@ TEST_F(GroundAvoidTest, RunGroundAvoidIntegratesCheckAndPull) {
     bool pulled = RunGroundAvoid(digi, state, 0.0, 330.0, 1.0 / 60.0,
                                   fcsState, 9.0);
     EXPECT_TRUE(pulled);
-    EXPECT_GT(digi.pullupTimer, 0.0);
+    EXPECT_GT(digi.groundAvoid.pullupTimer, 0.0);
 }
 
 TEST_F(GroundAvoidTest, RunGroundAvoidNoOpAtSafeAltitude) {
@@ -565,7 +565,7 @@ TEST_F(GroundAvoidTest, RunGroundAvoidNoOpAtSafeAltitude) {
     bool pulled = RunGroundAvoid(digi, state, 0.0, 330.0, 1.0 / 60.0,
                                   fcsState, 9.0);
     EXPECT_FALSE(pulled);
-    EXPECT_NEAR(digi.pullupTimer, 0.0, 1e-9);
+    EXPECT_NEAR(digi.groundAvoid.pullupTimer, 0.0, 1e-9);
 }
 
 // ===========================================================================
@@ -605,14 +605,14 @@ TEST_F(DigiBrainTest, DefaultModeIsWaypoint) {
 }
 
 TEST_F(DigiBrainTest, DefaultSkillIsVeteran) {
-    EXPECT_EQ(brain.state().skill.level, SkillLevel::Veteran);
+    EXPECT_EQ(brain.state().config.skill.level, SkillLevel::Veteran);
 }
 
 TEST_F(DigiBrainTest, SetSkillChangesParameters) {
     brain.setSkill(SkillLevel::Ace);
-    EXPECT_EQ(brain.state().skill.level, SkillLevel::Ace);
-    EXPECT_TRUE(brain.state().skill.gciCapable);
-    EXPECT_TRUE(brain.state().skill.irMissileThrottleCut);
+    EXPECT_EQ(brain.state().config.skill.level, SkillLevel::Ace);
+    EXPECT_TRUE(brain.state().config.skill.gciCapable);
+    EXPECT_TRUE(brain.state().config.skill.irMissileThrottleCut);
 }
 
 TEST_F(DigiBrainTest, ComputeProducesValidPilotInput) {
@@ -663,20 +663,20 @@ TEST_F(DigiBrainTest, GroundAvoidPreemptsWaypoint) {
     // Ground avoidance should command a pull-up (positive pstick).
     // First-frame pstick is ~0.36 after smoothing; check > 0.2.
     EXPECT_GT(out.pstick, 0.2);
-    EXPECT_GT(brain.state().pullupTimer, 0.0);
+    EXPECT_GT(brain.state().groundAvoid.pullupTimer, 0.0);
 }
 
 TEST_F(DigiBrainTest, ResetClearsState) {
     // Mutate state
-    brain.state().pStick = 0.5;
-    brain.state().gammaHoldIError = 1.5;
-    brain.state().pullupTimer = 2.0;
+    brain.state().commands.pStick = 0.5;
+    brain.state().nav.gammaHoldIError = 1.5;
+    brain.state().groundAvoid.pullupTimer = 2.0;
 
     brain.reset();
 
-    EXPECT_NEAR(brain.state().pStick, 0.0, 1e-9);
-    EXPECT_NEAR(brain.state().gammaHoldIError, 0.0, 1e-9);
-    EXPECT_NEAR(brain.state().pullupTimer, 0.0, 1e-9);
+    EXPECT_NEAR(brain.state().commands.pStick, 0.0, 1e-9);
+    EXPECT_NEAR(brain.state().nav.gammaHoldIError, 0.0, 1e-9);
+    EXPECT_NEAR(brain.state().groundAvoid.pullupTimer, 0.0, 1e-9);
     EXPECT_EQ(brain.currentWaypoint(), 0u);
 }
 
@@ -713,12 +713,12 @@ TEST_F(DigiBrainTest, ConfigureSetsAllConfigFields) {
 
     brain.configure(cfg);
 
-    EXPECT_EQ(brain.state().skill.level, SkillLevel::Ace);
-    EXPECT_NEAR(brain.state().cornerSpeed, 400.0, 1e-9);
-    EXPECT_NEAR(brain.state().maxGs, 7.5, 1e-9);
-    EXPECT_NEAR(brain.state().maxRoll, 50.0, 1e-9);
-    EXPECT_NEAR(brain.state().maxGammaDeg, 20.0, 1e-9);
-    EXPECT_NEAR(brain.state().turnLoadFactor, 1.8, 1e-9);
+    EXPECT_EQ(brain.state().config.skill.level, SkillLevel::Ace);
+    EXPECT_NEAR(brain.state().config.cornerSpeed, 400.0, 1e-9);
+    EXPECT_NEAR(brain.state().config.maxGs, 7.5, 1e-9);
+    EXPECT_NEAR(brain.state().config.maxRoll, 50.0, 1e-9);
+    EXPECT_NEAR(brain.state().config.maxGammaDeg, 20.0, 1e-9);
+    EXPECT_NEAR(brain.state().config.turnLoadFactor, 1.8, 1e-9);
 }
 
 TEST_F(DigiBrainTest, ConfigReadsBackCurrentValues) {
@@ -808,16 +808,16 @@ TEST_F(DigiBrainTest, SetFrameInputsInjectedMissileEntersMissileDefeat) {
 
 TEST_F(DigiBrainTest, CommandTakeoffSetsGroundOpsPhase) {
     brain.commandTakeoff(RunwayId{1}, 0.0, 0.0, 0.0, 0.0);
-    EXPECT_EQ(brain.state().groundOps.phase, GroundOpsPhase::TakeoffRoll);
-    EXPECT_TRUE(brain.state().groundOps.hasTakeoffClearance);
+    EXPECT_EQ(brain.state().ag.groundOps.phase, GroundOpsPhase::TakeoffRoll);
+    EXPECT_TRUE(brain.state().ag.groundOps.hasTakeoffClearance);
     brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
     EXPECT_EQ(brain.activeMode(), DigiMode::Takeoff);
 }
 
 TEST_F(DigiBrainTest, CommandLandingSetsGroundOpsPhase) {
     brain.commandLanding(RunwayId{1}, 0.0, 0.0, 0.0, 0.0);
-    EXPECT_EQ(brain.state().groundOps.phase, GroundOpsPhase::Approach);
-    EXPECT_TRUE(brain.state().groundOps.hasLandingClearance);
+    EXPECT_EQ(brain.state().ag.groundOps.phase, GroundOpsPhase::Approach);
+    EXPECT_TRUE(brain.state().ag.groundOps.hasLandingClearance);
     brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
     EXPECT_EQ(brain.activeMode(), DigiMode::Landing);
 }
@@ -834,8 +834,8 @@ TEST_F(DigiBrainTest, ForceModeAndClearForcedMode) {
 
 TEST_F(DigiBrainTest, StateMutableAllowsWriteForTesting) {
     // stateMutable() returns a non-const reference for testing.
-    brain.stateMutable().pStick = 0.42;
-    EXPECT_NEAR(brain.state().pStick, 0.42, 1e-9);
+    brain.stateMutable().commands.pStick = 0.42;
+    EXPECT_NEAR(brain.state().commands.pStick, 0.42, 1e-9);
 }
 
 TEST_F(DigiBrainTest, ResetClearsFrameInputsAndAutoEntities) {
@@ -855,6 +855,6 @@ TEST_F(DigiBrainTest, ResetClearsFrameInputsAndAutoEntities) {
     brain.reset();
     EXPECT_EQ(brain.frameInputs().truth, nullptr);
     EXPECT_EQ(brain.frameInputs().injectedMissile, nullptr);
-    EXPECT_EQ(brain.state().incomingMissile, nullptr);
+    EXPECT_EQ(brain.state().missileDefeat.incomingMissile, nullptr);
     EXPECT_EQ(brain.activeMode(), DigiMode::Waypoint);
 }

@@ -81,12 +81,12 @@ public:
             enteredMissileDefeat_ = true;
         }
         // Verify the sensor pipeline actually saw the missile (not just
-        // that the brain latched the mode). The brain's state_.incomingMissile
+        // that the brain latched the mode). The brain's state_.missileDefeat.incomingMissile
         // should be non-null after sensor fusion runs.
-        if (sc_brain_->state().incomingMissile != nullptr) {
+        if (sc_brain_->state().missileDefeat.incomingMissile != nullptr) {
             sensorSawMissile_ = true;
         }
-        if (sc_brain_->state().incomingMissileId != kInvalidEntityId) {
+        if (sc_brain_->state().missileDefeat.incomingMissileId != kInvalidEntityId) {
             sensorSawMissile_ = true;
         }
 
@@ -122,7 +122,7 @@ public:
         // 2. Must have autonomously detected the missile via the sensor
         //    pipeline. The old test only checked mode-entry, which could
         //    pass from a stale pointer. Verify the brain's
-        //    state_.incomingMissile was actually populated by SensorFusion
+        //    state_.missileDefeat.incomingMissile was actually populated by SensorFusion
         //    (not just latched from a prior frame).
         if (!sensorSawMissile_) return false;
         // 3. Must not have lawn-darted.

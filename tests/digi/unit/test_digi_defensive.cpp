@@ -120,7 +120,7 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
 
         self.x = 0.0; self.y = 0.0; self.z = -10000.0;
         self.speed = 500.0;
@@ -134,28 +134,28 @@ protected:
 };
 
 TEST_F(MissileDefeatCheckTest, NoMissileReturnsFalse) {
-    digi.incomingMissile = nullptr;
+    digi.missileDefeat.incomingMissile = nullptr;
     EXPECT_FALSE(MissileDefeatCheck(digi, self, 1.0/60.0));
 }
 
 TEST_F(MissileDefeatCheckTest, DeadMissileReturnsFalse) {
     missile.isDead = true;
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
     EXPECT_FALSE(MissileDefeatCheck(digi, self, 1.0/60.0));
-    EXPECT_EQ(digi.incomingMissile, nullptr);
+    EXPECT_EQ(digi.missileDefeat.incomingMissile, nullptr);
 }
 
 TEST_F(MissileDefeatCheckTest, ActiveMissileReturnsTrue) {
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
     EXPECT_TRUE(MissileDefeatCheck(digi, self, 1.0/60.0));
 }
 
 TEST_F(MissileDefeatCheckTest, MissilePassingExitsAfterEvadeTimer) {
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     // First frame: missile at 30000 ft, closing
     MissileDefeatCheck(digi, self, 1.0/60.0);
-    EXPECT_NEAR(digi.incomingMissileRange, 30000.0, 1.0);
+    EXPECT_NEAR(digi.missileDefeat.incomingMissileRange, 30000.0, 1.0);
 
     // Missile now moving away (range increasing)
     missile.y = 31000.0;  // range increased
@@ -166,11 +166,11 @@ TEST_F(MissileDefeatCheckTest, MissilePassingExitsAfterEvadeTimer) {
         missile.y += 100.0;  // keep moving away
     }
     // Should have cleared the missile
-    EXPECT_EQ(digi.incomingMissile, nullptr);
+    EXPECT_EQ(digi.missileDefeat.incomingMissile, nullptr);
 }
 
 TEST_F(MissileDefeatCheckTest, MissileStillClosingDoesNotExit) {
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     // Run 10 seconds with missile closing
     for (int i = 0; i < 600; ++i) {
@@ -178,7 +178,7 @@ TEST_F(MissileDefeatCheckTest, MissileStillClosingDoesNotExit) {
         MissileDefeatCheck(digi, self, 1.0/60.0);
     }
     // Missile should still be tracked
-    EXPECT_NE(digi.incomingMissile, nullptr);
+    EXPECT_NE(digi.missileDefeat.incomingMissile, nullptr);
 }
 
 // ===========================================================================
@@ -195,13 +195,13 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
-        digi.maxGs = 9.0;
-        digi.cornerSpeed = 330.0;
-        digi.maxRoll = 45.0;
-        digi.maxGammaDeg = 15.0;
-        digi.turnLoadFactor = 2.0;
-        digi.dt = 1.0 / 60.0;
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.maxGs = 9.0;
+        digi.config.cornerSpeed = 330.0;
+        digi.config.maxRoll = 45.0;
+        digi.config.maxGammaDeg = 15.0;
+        digi.config.turnLoadFactor = 2.0;
+        digi.nav.dt = 1.0 / 60.0;
 
         self.x = 0.0; self.y = 0.0; self.z = -10000.0;
         self.yaw = 0.0; self.pitch = 0.0; self.roll = 0.0;
@@ -224,17 +224,17 @@ TEST_F(MissileDefeatTest, FarMissileSelectsDragOrBeam) {
     missile.yaw = PI;  // heading south (toward us)
     missile.speed = 2000.0;
     missile.seekerType = DigiEntity::SeekerType::Radar;
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     MissileDefeat(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // Should have commanded something (non-zero stick or throttle)
-    bool hasCommand = (std::fabs(digi.pStick) > 0.01 ||
-                       std::fabs(digi.rStick) > 0.01 ||
-                       digi.throttle > 0.01);
+    bool hasCommand = (std::fabs(digi.commands.pStick) > 0.01 ||
+                       std::fabs(digi.commands.rStick) > 0.01 ||
+                       digi.commands.throttle > 0.01);
     EXPECT_TRUE(hasCommand);
     // TTGO should be initialized
-    EXPECT_GE(digi.missileDefeatTtgo, 0.0);
+    EXPECT_GE(digi.missileDefeat.missileDefeatTtgo, 0.0);
 }
 
 TEST_F(MissileDefeatTest, CloseMissileSelectsLastDitch) {
@@ -243,48 +243,48 @@ TEST_F(MissileDefeatTest, CloseMissileSelectsLastDitch) {
     missile.yaw = PI;
     missile.speed = 2000.0;
     missile.seekerType = DigiEntity::SeekerType::Radar;
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     MissileDefeat(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // Last ditch = max G pull → positive pstick
-    EXPECT_GT(digi.pStick, 0.0);
+    EXPECT_GT(digi.commands.pStick, 0.0);
     // TTGO should be < LD_TIME
-    EXPECT_LT(digi.missileDefeatTtgo, kLDTime);
+    EXPECT_LT(digi.missileDefeat.missileDefeatTtgo, kLDTime);
 }
 
 TEST_F(MissileDefeatTest, IRMissileThrottleCutForHighSkill) {
-    digi.skill = makeSkillParams(SkillLevel::Ace);
-    digi.skill.irMissileThrottleCut = true;
+    digi.config.skill = makeSkillParams(SkillLevel::Ace);
+    digi.config.skill.irMissileThrottleCut = true;
 
     missile.x = 0.0; missile.y = 30000.0; missile.z = -10000.0;
     missile.yaw = PI;
     missile.speed = 2000.0;
     missile.seekerType = DigiEntity::SeekerType::IR;
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     MissileDefeat(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // IR + skill > 2 → throttle capped at 0.99
-    EXPECT_LE(digi.throttle, 0.991);
+    EXPECT_LE(digi.commands.throttle, 0.991);
 }
 
 TEST_F(MissileDefeatTest, IRMissileNoThrottleCutForLowSkill) {
-    digi.skill = makeSkillParams(SkillLevel::Rookie);
-    digi.skill.irMissileThrottleCut = false;
+    digi.config.skill = makeSkillParams(SkillLevel::Rookie);
+    digi.config.skill.irMissileThrottleCut = false;
 
     missile.x = 0.0; missile.y = 30000.0; missile.z = -10000.0;
     missile.yaw = PI;
     missile.speed = 2000.0;
     missile.seekerType = DigiEntity::SeekerType::IR;
-    digi.incomingMissile = &missile;
+    digi.missileDefeat.incomingMissile = &missile;
 
     MissileDefeat(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // IR + skill <= 2 → throttle NOT capped (may exceed 0.99 if MachHold wants AB)
     // Just verify it doesn't crash and produces a valid throttle
-    EXPECT_GE(digi.throttle, 0.0);
-    EXPECT_LE(digi.throttle, 1.5);
+    EXPECT_GE(digi.commands.throttle, 0.0);
+    EXPECT_LE(digi.commands.throttle, 1.5);
 }
 
 // ===========================================================================
@@ -298,7 +298,7 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
 
         // Self heading north (yaw=0 in our convention: +x = ahead)
         self.x = 0.0; self.y = 0.0; self.z = -10000.0;
@@ -308,13 +308,13 @@ protected:
 };
 
 TEST_F(GunsJinkCheckTest, NoThreatReturnsFalse) {
-    digi.gunsThreat = nullptr;
+    digi.gunsJink.gunsThreat = nullptr;
     EXPECT_FALSE(GunsJinkCheck(digi, self));
 }
 
 TEST_F(GunsJinkCheckTest, DeadThreatReturnsFalse) {
     threat.isDead = true;
-    digi.gunsThreat = &threat;
+    digi.gunsJink.gunsThreat = &threat;
     EXPECT_FALSE(GunsJinkCheck(digi, self));
 }
 
@@ -323,7 +323,7 @@ TEST_F(GunsJinkCheckTest, ThreatOutOfRangeReturnsFalse) {
     threat.x = 7000.0; threat.y = 0.0; threat.z = -10000.0;
     threat.yaw = PI;  // pointing at us
     threat.isFiring = true;
-    digi.gunsThreat = &threat;
+    digi.gunsJink.gunsThreat = &threat;
     EXPECT_FALSE(GunsJinkCheck(digi, self));
 }
 
@@ -331,7 +331,7 @@ TEST_F(GunsJinkCheckTest, ThreatNotFiringReturnsFalse) {
     threat.x = 3000.0; threat.y = 0.0; threat.z = -10000.0;
     threat.yaw = PI;
     threat.isFiring = false;
-    digi.gunsThreat = &threat;
+    digi.gunsJink.gunsThreat = &threat;
     EXPECT_FALSE(GunsJinkCheck(digi, self));
 }
 
@@ -345,7 +345,7 @@ TEST_F(GunsJinkCheckTest, ThreatInFiringPositionReturnsTrue) {
     threat.x = 3000.0; threat.y = 0.0; threat.z = -10000.0;
     threat.yaw = PI;  // pointing at us
     threat.isFiring = true;
-    digi.gunsThreat = &threat;
+    digi.gunsJink.gunsThreat = &threat;
     EXPECT_TRUE(GunsJinkCheck(digi, self));
 }
 
@@ -355,7 +355,7 @@ TEST_F(GunsJinkCheckTest, ThreatOutOfAzimuthReturnsFalse) {
     threat.x = 3000.0; threat.y = 5196.0; threat.z = -10000.0;
     threat.yaw = atan2(-5196.0, -3000.0);  // pointing back at us
     threat.isFiring = true;
-    digi.gunsThreat = &threat;
+    digi.gunsJink.gunsThreat = &threat;
     EXPECT_FALSE(GunsJinkCheck(digi, self));
 }
 
@@ -373,13 +373,13 @@ protected:
 
     void SetUp() override {
         digi.reset();
-        digi.skill = makeSkillParams(SkillLevel::Veteran);
-        digi.maxGs = 9.0;
-        digi.cornerSpeed = 330.0;
-        digi.maxRoll = 190.0;  // fighters allow unlimited roll in jink
-        digi.maxGammaDeg = 15.0;
-        digi.turnLoadFactor = 2.0;
-        digi.dt = 1.0 / 60.0;
+        digi.config.skill = makeSkillParams(SkillLevel::Veteran);
+        digi.config.maxGs = 9.0;
+        digi.config.cornerSpeed = 330.0;
+        digi.config.maxRoll = 190.0;  // fighters allow unlimited roll in jink
+        digi.config.maxGammaDeg = 15.0;
+        digi.config.turnLoadFactor = 2.0;
+        digi.nav.dt = 1.0 / 60.0;
 
         self.x = 0.0; self.y = 0.0; self.z = -10000.0;
         self.yaw = 0.0; self.pitch = 0.0; self.roll = 0.0;
@@ -389,7 +389,7 @@ protected:
         threat.yaw = PI;
         threat.isFiring = true;
         threat.isDead = false;
-        digi.gunsThreat = &threat;
+        digi.gunsJink.gunsThreat = &threat;
 
         as.kin.costhe = 1.0;
         as.kin.cosphi = 1.0;
@@ -407,66 +407,66 @@ TEST_F(GunsJinkTest, InitPhasePicksRollAngle) {
     bool stillJinking = GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     EXPECT_TRUE(stillJinking);
-    EXPECT_EQ(digi.jinkTime, 0);  // moved to rolling phase
+    EXPECT_EQ(digi.gunsJink.jinkTime, 0);  // moved to rolling phase
     // newRoll should be set to a non-zero value
-    EXPECT_NE(digi.newRoll, 0.0);
+    EXPECT_NE(digi.gunsJink.newRoll, 0.0);
 }
 
 TEST_F(GunsJinkTest, RollingPhaseCommandsNonZeroStick) {
     // Start in rolling phase
-    digi.jinkTime = 0;
-    digi.newRoll = 70.0 * DTR;  // 70° target bank
+    digi.gunsJink.jinkTime = 0;
+    digi.gunsJink.newRoll = 70.0 * DTR;  // 70° target bank
     self.roll = 0.0;  // currently level
 
     GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // Should command non-zero rstick to roll
-    EXPECT_NE(digi.rStick, 0.0);
+    EXPECT_NE(digi.commands.rStick, 0.0);
 }
 
 TEST_F(GunsJinkTest, PullPhaseCommandsMaxG) {
     // Start in pull phase
-    digi.jinkTime = 1;
-    digi.jinkTimer = 0.0;
+    digi.gunsJink.jinkTime = 1;
+    digi.gunsJink.jinkTimer = 0.0;
     self.roll = 0.0;
 
     GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // Should command positive pstick (max G pull)
-    EXPECT_GT(digi.pStick, 0.0);
-    EXPECT_GT(digi.jinkTimer, 0.0);  // timer incremented
+    EXPECT_GT(digi.commands.pStick, 0.0);
+    EXPECT_GT(digi.gunsJink.jinkTimer, 0.0);  // timer incremented
 }
 
 TEST_F(GunsJinkTest, PullPhaseExitsAfterDuration) {
-    digi.jinkTime = 1;
-    digi.jinkTimer = kJinkPullDuration - 0.01;  // almost done
+    digi.gunsJink.jinkTime = 1;
+    digi.gunsJink.jinkTimer = kJinkPullDuration - 0.01;  // almost done
 
     bool stillJinking = GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     // Should exit (return false) after exceeding pull duration
     EXPECT_FALSE(stillJinking);
-    EXPECT_EQ(digi.jinkTime, -1);  // reset
+    EXPECT_EQ(digi.gunsJink.jinkTime, -1);  // reset
 }
 
 TEST_F(GunsJinkTest, ExitsWhenThreatOutOfRange) {
     // Threat moved beyond 4000 ft
     threat.x = 4500.0;
-    digi.jinkTime = 1;
+    digi.gunsJink.jinkTime = 1;
 
     bool stillJinking = GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     EXPECT_FALSE(stillJinking);
-    EXPECT_EQ(digi.jinkTime, -1);
+    EXPECT_EQ(digi.gunsJink.jinkTime, -1);
 }
 
 TEST_F(GunsJinkTest, NoThreatExits) {
-    digi.gunsThreat = nullptr;
-    digi.jinkTime = 1;
+    digi.gunsJink.gunsThreat = nullptr;
+    digi.gunsJink.jinkTime = 1;
 
     bool stillJinking = GunsJink(digi, self, as, fcs, fcsState, 1.0/60.0);
 
     EXPECT_FALSE(stillJinking);
-    EXPECT_EQ(digi.jinkTime, -1);
+    EXPECT_EQ(digi.gunsJink.jinkTime, -1);
 }
 
 // ===========================================================================
@@ -625,5 +625,5 @@ TEST_F(DigiBrainDefensiveTest, GroundAvoidPreemptsMissileDefeat) {
 
     // Ground avoidance should pre-empt (pull-up commanded)
     // The mode might still say MissileDefeat but the output should be a pull-up
-    EXPECT_GT(brain.state().pullupTimer, 0.0);
+    EXPECT_GT(brain.state().groundAvoid.pullupTimer, 0.0);
 }

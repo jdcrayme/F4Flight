@@ -250,7 +250,7 @@ public:
             }
             std::printf("%6.1f %8.0f %6.2f %6.2f %6.2f\n",
                 phaseTime_, -as.kin.z, as.loads.nzcgs, input.pstick,
-                sc_brain_->state().missileDefeatTtgo);
+                sc_brain_->state().missileDefeat.missileDefeatTtgo);
             nextPrint_ += 0.5;
         }
     }
@@ -399,7 +399,7 @@ public:
         if (!enteredGunsJink_) return false;
         // 2. Must have rolled significantly. The jink primitive sets
         //    fcsState.maxRoll = 190° and commands ±70° (kJinkRollAngle),
-        //    but the bank is clamped to digi.maxRoll (45° in this test).
+        //    but the bank is clamped to digi.config.maxRoll (45° in this test).
         //    Requiring > 25° ensures the AI actually rolled into the jink
         //    (not just drifted). 25° is conservative; in practice the jink
         //    reaches the 45° clamp within ~1 s.

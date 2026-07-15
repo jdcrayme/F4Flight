@@ -565,7 +565,7 @@ TEST_F(DigiBrainSensorTest, SensorPictureAvailableAfterCompute) {
 // Strengthened tests — verify the brain actually commands a maneuver,
 // not just enters a mode. These guard against Bug A regressions where
 // resolveMode enters MissileDefeat but runMissileDefeat falls back to
-// waypoint navigation because state_.incomingMissile is null.
+// waypoint navigation because state_.missileDefeat.incomingMissile is null.
 // ===========================================================================
 
 TEST_F(DigiBrainSensorTest, AutonomousMissileDefeatCommandsNonzeroStick) {
@@ -625,7 +625,7 @@ TEST_F(DigiBrainSensorTest, AutonomousMissileDefeatTurnsBeamToMissile) {
 
     // The brain should be commanding a turn. rstick is the roll command;
     // a non-zero value means we're rolling away from level flight.
-    const double rstick = brain.state().rStick;
+    const double rstick = brain.state().commands.rStick;
     EXPECT_GT(std::fabs(rstick), 0.05)
         << "MissileDefeat did not command a turn (rstick=" << rstick << ")";
 }
@@ -703,7 +703,7 @@ TEST_F(DigiBrainSensorTest, MissileSwapReinitializesDefeatState) {
         brain.compute(state, 1.0/60.0, 0.0, fcs, fcsState);
     }
     EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
-    EXPECT_EQ(brain.state().incomingMissileId, 200u);
+    EXPECT_EQ(brain.state().missileDefeat.incomingMissileId, 200u);
 
     // Now swap to missile B (different entityId). Wait long enough for
     // SensorFusion's 5-second contact memory to age out missile A — only
@@ -726,7 +726,7 @@ TEST_F(DigiBrainSensorTest, MissileSwapReinitializesDefeatState) {
     // Brain should now be tracking missile B (id=201). The per-missile
     // state (missileDefeatTtgo) should have been reset when the ID changed,
     // triggering MissileDefeat's "new missile" init branch.
-    EXPECT_EQ(brain.state().incomingMissileId, 201u)
+    EXPECT_EQ(brain.state().missileDefeat.incomingMissileId, 201u)
         << "Brain did not update incomingMissileId on missile swap";
     EXPECT_EQ(brain.activeMode(), DigiMode::MissileDefeat);
 }

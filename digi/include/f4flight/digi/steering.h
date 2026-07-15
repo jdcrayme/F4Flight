@@ -149,9 +149,43 @@ public:
         brain_.setFrameInputs(fi);
     }
 
+    // --- Wingman / formation setup ---
+    // setLead: inject the flight lead entity. When non-null AND setWingman(true)
+    // has been called, the brain enters Wingy mode and follows the lead.
+    void setLead(const digi::DigiEntity* lead) {
+        digi::FrameInputs fi = brain_.frameInputs();
+        fi.injectedLead = lead;
+        brain_.setFrameInputs(fi);
+    }
+    // setWingman: mark this aircraft as a wingman (isWing=true) and set the
+    // flight lead's entity ID. The host must also call setLead() each frame
+    // to provide the lead's current position/velocity.
+    void setWingman(digi::EntityId leadId, int slot) {
+        brain_.stateMutable().formation.isWing = true;
+        brain_.stateMutable().formation.flightLeadId = leadId;
+        brain_.stateMutable().formation.vehicleInUnit = slot;
+    }
+    // setFormation: set the formation type (FormationType enum value) and
+    // optionally the side mirror (+1 = right, -1 = left).
+    void setFormation(int formationId, int side = 1) {
+        brain_.stateMutable().formation.formationId = formationId;
+        brain_.stateMutable().formation.wingman.formSide = side;
+    }
+    // Kickout / Closeup: adjust lateral spacing.
+    void kickout() {
+        brain_.stateMutable().formation.wingman.formLateralSpaceFactor = 2.0;
+    }
+    void closeup() {
+        brain_.stateMutable().formation.wingman.formLateralSpaceFactor = 0.5;
+    }
+    void toggleSide() {
+        auto& ws = brain_.stateMutable().formation.wingman;
+        ws.formSide = -ws.formSide;
+    }
+
     // Accessors
-    double heading() const { return brain_.state().holdPsi; }
-    double altitude() const { return brain_.state().holdAlt; }
+    double heading() const { return brain_.state().nav.holdPsi; }
+    double altitude() const { return brain_.state().nav.holdAlt; }
     std::size_t currentWaypoint() const { return brain_.currentWaypoint(); }
     bool allWaypointsCaptured() const { return brain_.allWaypointsCaptured(); }
     const DigiState& digiState() const { return brain_.state(); }

@@ -40,7 +40,7 @@ namespace digi {
 // Returns: true if the aircraft is within 2*turnRadius of the terrain along
 //          the predicted path and a pull-up is needed.
 //
-// Updates: digi.groundAvoidNeeded
+// Updates: digi.groundAvoid.groundAvoidNeeded
 bool GroundCheck(DigiState& digi, const AircraftState& state,
                  double groundZ, double lookahead = 5.0);
 
@@ -51,7 +51,7 @@ bool GroundCheck(DigiState& digi, const AircraftState& state,
 //   - Full pstick (1.0) — max G away from ground
 //   - MachHold at cornerSpeed (smallest turn radius for recovery)
 //
-// Updates: digi.pStick, digi.rStick, digi.yPedal, digi.pullupTimer
+// Updates: digi.commands.pStick, digi.commands.rStick, digi.commands.yPedal, digi.groundAvoid.pullupTimer
 // Writes:  fcsState.maxRoll = 0 (wings level), fcsState.maxRollDelta = 5
 void PullUp(DigiState& digi, const AircraftState& state,
             double cornerSpeed, double dt,

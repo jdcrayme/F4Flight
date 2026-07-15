@@ -70,13 +70,13 @@ PilotInput SteeringController::compute(const AircraftState& state, double dt,
         // Loiter/MachHold take DigiState& (they write pStick/rStick/throttle).
         // Use stateMutable() to avoid the [[deprecated]] non-const state() shim.
         digi::DigiState& s = brain_.stateMutable();
-        digi::ManeuverPrimitives::Loiter(s, state, fcs, fcsState, s.maxGs);
-        digi::ManeuverPrimitives::MachHold(s.cornerSpeed, state.vcas, true,
+        digi::ManeuverPrimitives::Loiter(s, state, fcs, fcsState, s.config.maxGs);
+        digi::ManeuverPrimitives::MachHold(s.config.cornerSpeed, state.vcas, true,
                                             s, state, 200.0, 800.0, dt, 700.0);
-        out.pstick = limit(s.pStick, -1.0, 1.0);
-        out.rstick = limit(s.rStick, -1.0, 1.0);
-        out.ypedal = limit(s.yPedal, -1.0, 1.0);
-        out.throttle = limit(s.throttle, 0.0, 1.5);
+        out.pstick = limit(s.commands.pStick, -1.0, 1.0);
+        out.rstick = limit(s.commands.rStick, -1.0, 1.0);
+        out.ypedal = limit(s.commands.yPedal, -1.0, 1.0);
+        out.throttle = limit(s.commands.throttle, 0.0, 1.5);
         out.refueling = false;
     }
 
