@@ -149,6 +149,14 @@ set(F4FLIGHT_DIGI_SCENARIOS
     digi_wvr_defensive    # WVR defensive (bandit on tail)
     digi_formation_types  # Trail / Echelon / Spread formations
     digi_loiter_orbit     # Loiter full orbit verification (180s)
+    digi_formation_maneuver  # Formation through lead turns (racetrack N→E→S)
+    digi_ground_attack    # Dive-bomb ground attack profile
+    digi_ground_attack_profiles  # Task 15-a: dive / level / toss profiles
+    digi_e2e_mission      # End-to-end: takeoff -> navigate -> intercept -> RTB
+    digi_e2e_ground_attack  # Task 16-a: End-to-end A/G strike (takeoff -> navigate -> dive-bomb -> RTB)
+    digi_e2e_formation    # Task 17-a: End-to-end formation (rejoin -> navigate -> maneuver)
+    digi_aar              # Air-to-air refueling (approach + contact + disconnect)
+    digi_e2e_aar          # Task 19-a: End-to-end AAR (takeoff -> navigate -> refuel -> RTB)
 )
 
 foreach(fixture ${F4FLIGHT_FIXTURES})

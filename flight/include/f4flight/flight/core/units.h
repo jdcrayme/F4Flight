@@ -63,6 +63,19 @@ struct AccelerationFtPerSec2Tag {};
 struct TemperatureRankineTag {};
 struct FuelFlowLbPerHourTag {};
 
+// --- Airspeed type tags ---
+// FreeFalcon and F4Flight distinguish Calibrated Airspeed (CAS, what the
+// pilot sees on the airspeed indicator) from True Airspeed (TAS, the actual
+// speed through the air mass). At altitude TAS > CAS (lower density), so
+// mixing them causes severe speed-control errors (up to 2x at 40k ft).
+//
+// These tags make CAS/TAS confusion a compile-time error. The conversion
+// functions (casFromTas / tasFromCas) require an AircraftState because the
+// CAS↔TAS ratio depends on altitude and Mach number.
+struct SpeedCasKnotsTag {};       // Calibrated Airspeed, knots
+struct SpeedTasKnotsTag {};       // True Airspeed, knots
+struct SpeedTasFeetPerSecTag {};  // True Airspeed, ft/s
+
 // ---------------------------------------------------------------------------
 // Quantity<Tag, Rep> — strong wrapper around a numeric representation.
 // ---------------------------------------------------------------------------
@@ -161,6 +174,23 @@ using FtPerSec2      = Quantity<AccelerationFtPerSec2Tag>;
 using Rankine        = Quantity<TemperatureRankineTag>;
 using LbPerHour      = Quantity<FuelFlowLbPerHourTag>;
 
+// --- Airspeed type aliases ---
+// CasKnots: Calibrated Airspeed (what the pilot sees, what the AI should
+//           target for speed control — e.g. "hold 350 kts" means CAS).
+// TasKnots: True Airspeed in knots (used for energy calculations, closure
+//           rate, formation speed matching).
+// TasFtPerSec: True Airspeed in ft/s (the EOM's native speed unit —
+//              AircraftState.kin.vt is TasFtPerSec).
+//
+// Mixing these is a compile error. Convert via:
+//   casFromTas(TasKnots, AircraftState)  → CasKnots
+//   tasFromCas(CasKnots, AircraftState)  → TasKnots
+//   toTasFtPerSec(TasKnots)              → TasFtPerSec
+//   toTasKnots(TasFtPerSec)              → TasKnots
+using CasKnots       = Quantity<SpeedCasKnotsTag>;
+using TasKnots       = Quantity<SpeedTasKnotsTag>;
+using TasFtPerSec    = Quantity<SpeedTasFeetPerSecTag>;
+
 // Dimensionless quantities (Mach, CL, CD, CY, ratio, ...) stay as plain double
 // so they flow through existing math without ceremony.
 using Dimensionless  = double;
@@ -177,6 +207,42 @@ inline constexpr Meters toMeters(Feet f) noexcept      { return Meters(f.count()
 
 inline constexpr FeetPerSec toFeetPerSec(Knots k) noexcept { return FeetPerSec(k.count() * KNOTS_TO_FTPSEC); }
 inline constexpr Knots      toKnots(FeetPerSec v) noexcept { return Knots(v.count() * FTPSEC_TO_KNOTS); }
+
+// --- Airspeed conversions ---
+//
+// TAS ↔ CAS conversions require the aircraft's current state because the
+// ratio depends on altitude and Mach number. We use the AircraftState's own
+// vcas/vt ratio as the conversion factor — this is the most accurate
+// conversion available without recomputing the atmosphere model.
+//
+// AircraftState is forward-declared here to avoid a circular include
+// (aircraft_state.h includes units.h for the type aliases). The conversion
+// functions are defined inline in the header but only instantiate when
+// called from a .cpp that has the full AircraftState definition.
+struct AircraftState;  // forward declaration
+
+// Convert TasFtPerSec (kin.vt) → TasKnots.
+inline constexpr TasKnots toTasKnots(TasFtPerSec v) noexcept {
+    return TasKnots(v.count() * FTPSEC_TO_KNOTS);
+}
+// Convert TasKnots → TasFtPerSec (kin.vt units).
+inline constexpr TasFtPerSec toTasFtPerSec(TasKnots v) noexcept {
+    return TasFtPerSec(v.count() * KNOTS_TO_FTPSEC);
+}
+// Convert CasKnots → raw double (for passing to legacy APIs that take double).
+inline constexpr double toDouble(CasKnots v) noexcept { return v.count(); }
+// Convert TasKnots → raw double.
+inline constexpr double toDouble(TasKnots v) noexcept { return v.count(); }
+// Convert TasFtPerSec → raw double.
+inline constexpr double toDouble(TasFtPerSec v) noexcept { return v.count(); }
+
+// CAS → TAS. Uses the aircraft's current CAS/TAS ratio (from vcas and vt).
+// This is accurate for small deviations from the current flight condition.
+inline TasKnots tasFromCas(CasKnots cas, const AircraftState& as);
+// TAS → CAS. Inverse of tasFromCas.
+inline CasKnots casFromTas(TasKnots tas, const AircraftState& as);
+// Convenience: TAS ft/s → CAS kts (common when reading kin.vt).
+inline CasKnots casFromTasFps(TasFtPerSec tas, const AircraftState& as);
 
 // Mass: slugs <-> pounds-mass (W = m * g, so lbm = slug * g).
 inline constexpr PoundsMass toPoundsMass(Slugs s) noexcept { return PoundsMass(s.count() * GRAVITY); }
@@ -210,5 +276,13 @@ inline constexpr PoundsForce lbf(double v) noexcept    { return PoundsForce(v); 
 inline constexpr LbPerFt2   psf(double v) noexcept     { return LbPerFt2(v); }
 inline constexpr AreaFt2    sqft(double v) noexcept    { return AreaFt2(v); }
 inline constexpr FtPerSec2  fps2(double v) noexcept    { return FtPerSec2(v); }
+
+// Airspeed factories (lowercase, self-documenting at call sites):
+//     CasKnots v = cas_kts(350.0);    // "hold 350 CAS"
+//     TasKnots v = tas_kts(target.speed / KNOTS_TO_FTPSEC);
+//     TasFtPerSec v = tas_fps(as.kin.vt);
+inline constexpr CasKnots    cas_kts(double v) noexcept  { return CasKnots(v); }
+inline constexpr TasKnots    tas_kts(double v) noexcept  { return TasKnots(v); }
+inline constexpr TasFtPerSec tas_fps(double v) noexcept  { return TasFtPerSec(v); }
 
 } // namespace f4flight

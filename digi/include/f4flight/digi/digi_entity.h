@@ -60,7 +60,7 @@ struct DigiEntity {
     double vx{0.0}, vy{0.0}, vz{0.0};
 
     // --- Attitude (radians) ---
-    double yaw{0.0};     // heading (0 = North)
+    double yaw{0.0};     // heading (0 = +X/East, +π/2 = +Y/North, CCW — see convention block above)
     double pitch{0.0};   // pitch
     double roll{0.0};    // roll
 

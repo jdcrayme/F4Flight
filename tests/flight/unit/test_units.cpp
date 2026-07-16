@@ -8,9 +8,12 @@
 //   - cross-unit conversion functions are correct
 //   - the lowercase factories (radians(), feet(), knots(), ...) work
 //   - comparisons are tag-consistent
+//   - CAS/TAS type distinction prevents mixing calibrated/true airspeed
 
 #include "f4flight/flight/core/units.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTas, tasFromCas
 #include "f4flight/flight/core/constants.h"
+#include "f4flight/flight/aircraft_state.h"
 #include <gtest/gtest.h>
 
 #include <type_traits>
@@ -201,3 +204,112 @@ TEST(UnitsTest, RealisticInitUsage) {
     EXPECT_NEAR(vt.count(), 420.0 * KNOTS_TO_FTPSEC, 1e-6);
     EXPECT_DOUBLE_EQ(heading.count(), 0.0);
 }
+
+// ===========================================================================
+// CAS/TAS airspeed type tests
+// ===========================================================================
+//
+// These tests verify that the CasKnots / TasKnots / TasFtPerSec types:
+//   1. Are distinct types (can't be mixed at compile time)
+//   2. Convert correctly via the factory functions
+//   3. Convert correctly between TAS kts and TAS ft/s
+//   4. Convert correctly between CAS and TAS using an AircraftState
+
+TEST(UnitsTest, CasTasFactoriesProduceCorrectValues) {
+    CasKnots cas = cas_kts(350.0);
+    TasKnots tas = tas_kts(420.0);
+    TasFtPerSec v = tas_fps(500.0);
+
+    EXPECT_DOUBLE_EQ(cas.count(), 350.0);
+    EXPECT_DOUBLE_EQ(tas.count(), 420.0);
+    EXPECT_DOUBLE_EQ(v.count(), 500.0);
+}
+
+TEST(UnitsTest, TasKnotsTasFtPerSecConversion) {
+    TasKnots tas = tas_kts(420.0);
+    TasFtPerSec fps = toTasFtPerSec(tas);
+    EXPECT_NEAR(fps.count(), 420.0 * KNOTS_TO_FTPSEC, 1e-6);
+
+    TasFtPerSec fps2 = tas_fps(500.0);
+    TasKnots tas2 = toTasKnots(fps2);
+    EXPECT_NEAR(tas2.count(), 500.0 * FTPSEC_TO_KNOTS, 1e-6);
+}
+
+TEST(UnitsTest, CasFromTasUsesAircraftStateRatio) {
+    // At sea level, CAS ≈ TAS (ratio ≈ 1.0).
+    AircraftState as{};
+    as.vcas = 350.0;
+    as.kin.vt = 350.0 * KNOTS_TO_FTPSEC;  // TAS ft/s = CAS kts at sea level
+
+    TasKnots tas = tas_kts(350.0);
+    CasKnots cas = casFromTas(tas, as);
+    EXPECT_NEAR(cas.count(), 350.0, 1.0);  // CAS ≈ TAS at sea level
+}
+
+TEST(UnitsTest, CasFromTasAtAltitude) {
+    // At altitude, TAS > CAS. Simulate: CAS = 250, TAS = 450 (ratio 1.8).
+    AircraftState as{};
+    as.vcas = 250.0;
+    as.kin.vt = 450.0 * KNOTS_TO_FTPSEC;  // TAS ft/s
+
+    // If we have a TAS of 450 kts, the CAS should be ~250 (using the
+    // aircraft's own CAS/TAS ratio of 250/450 = 0.556).
+    TasKnots tas = tas_kts(450.0);
+    CasKnots cas = casFromTas(tas, as);
+    EXPECT_NEAR(cas.count(), 250.0, 1.0);
+}
+
+TEST(UnitsTest, TasFromCasAtAltitude) {
+    // Inverse: CAS 250 → TAS 450 at the same ratio.
+    AircraftState as{};
+    as.vcas = 250.0;
+    as.kin.vt = 450.0 * KNOTS_TO_FTPSEC;
+
+    CasKnots cas = cas_kts(250.0);
+    TasKnots tas = tasFromCas(cas, as);
+    EXPECT_NEAR(tas.count(), 450.0, 1.0);
+}
+
+TEST(UnitsTest, CasFromTasFpsConvenience) {
+    // casFromTasFps: TAS ft/s → CAS kts (common when reading kin.vt)
+    AircraftState as{};
+    as.vcas = 250.0;
+    as.kin.vt = 450.0 * KNOTS_TO_FTPSEC;
+
+    TasFtPerSec tas = tas_fps(450.0 * KNOTS_TO_FTPSEC);
+    CasKnots cas = casFromTasFps(tas, as);
+    EXPECT_NEAR(cas.count(), 250.0, 1.0);
+}
+
+TEST(UnitsTest, CasTasFallbackAtZeroSpeed) {
+    // At zero speed, the ratio is undefined — the functions should fall back
+    // to assuming CAS ≈ TAS (ratio 1.0).
+    AircraftState as{};
+    as.vcas = 0.0;
+    as.kin.vt = 0.0;
+
+    TasKnots tas = tas_kts(300.0);
+    CasKnots cas = casFromTas(tas, as);
+    EXPECT_NEAR(cas.count(), 300.0, 0.1);  // fallback: CAS = TAS
+}
+
+TEST(UnitsTest, ToDoubleExtractsRawValue) {
+    CasKnots cas = cas_kts(350.0);
+    TasKnots tas = tas_kts(420.0);
+    TasFtPerSec fps = tas_fps(500.0);
+
+    EXPECT_DOUBLE_EQ(toDouble(cas), 350.0);
+    EXPECT_DOUBLE_EQ(toDouble(tas), 420.0);
+    EXPECT_DOUBLE_EQ(toDouble(fps), 500.0);
+}
+
+// Compile-time check: CasKnots and TasKnots are distinct types.
+// If this compiles, the types are distinct. (If they were the same type,
+// the assignment would succeed — but we can't test "doesn't compile" in
+// a unit test. Instead, we verify they have different tags.)
+static_assert(!std::is_same_v<CasKnots, TasKnots>,
+              "CasKnots and TasKnots must be distinct types");
+static_assert(!std::is_same_v<CasKnots, TasFtPerSec>,
+              "CasKnots and TasFtPerSec must be distinct types");
+static_assert(!std::is_same_v<TasKnots, TasFtPerSec>,
+              "TasKnots and TasFtPerSec must be distinct types");

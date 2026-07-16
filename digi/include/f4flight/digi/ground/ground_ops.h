@@ -108,6 +108,8 @@ struct GroundOpsState {
     double approachStartAlt{0.0};     // altitude when approach began
     double flareStartAlt{0.0};        // altitude when flare began
     double touchdownSpeed{0.0};       // speed at touchdown (kts)
+    double touchdownDescentRate{0.0}; // descent rate at touchdown (ft/s, + = descending)
+    double touchdownPitch{0.0};       // pitch attitude at touchdown (radians)
     double touchdownTimer{0.0};       // time since touchdown (s) — for nose settling
     bool gearDeployed{false};
 
@@ -140,6 +142,8 @@ struct GroundOpsState {
         approachStartAlt = 0.0;
         flareStartAlt = 0.0;
         touchdownSpeed = 0.0;
+        touchdownDescentRate = 0.0;
+        touchdownPitch = 0.0;
         touchdownTimer = 0.0;
         gearDeployed = false;
         hasTakeoffClearance = false;

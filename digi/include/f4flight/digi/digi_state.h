@@ -40,6 +40,7 @@
 #include "f4flight/digi/ground/ground_ops.h"
 #include "f4flight/digi/ground/ag_attack_phase.h"
 #include "f4flight/digi/comms/mailbox.h"
+#include "f4flight/digi/comms/radio_calls.h"
 #include "f4flight/digi/wingman/wingman_state.h"
 
 namespace f4flight {
@@ -65,6 +66,12 @@ struct DigiCommands {
     double speedBrakeCmd{-1.0};     // default retracted
     double gearHandleCmd{1.0};      // default down
 
+    // Flap commands (normalized 0..1, matches PilotInput.tefCmd/lefCmd).
+    // 0 = retracted (clean), 1 = fully extended.
+    // Set by ground_ops.cpp for landing (FreeFalcon's af->SetFlaps(true)).
+    double tefCmd{0.0};             // trailing-edge flap
+    double lefCmd{0.0};             // leading-edge flap
+
     void reset() noexcept {
         pStick = rStick = yPedal = 0.0;
         throttle = 0.5;
@@ -72,6 +79,8 @@ struct DigiCommands {
         parkingBrake = false;
         speedBrakeCmd = -1.0;
         gearHandleCmd = 1.0;
+        tefCmd = 0.0;
+        lefCmd = 0.0;
     }
 };
 
@@ -89,6 +98,101 @@ struct DigiConfigState {
     // Only DigiBrain::reset() (full brain reset) clears it via value-init.
 };
 
+// ===========================================================================
+// FlightPhase — the AI's current flight phase, used for gain scheduling.
+//
+// FreeFalcon does NOT have an explicit flight-phase enum for the AI. Instead,
+// it relies on:
+//   1. The FCS-level `landingGains` flag (triggered by gear/flaps down) to
+//      soften the FCS response at low speed.
+//   2. Different error formulations per mode (GammaHold vs AltHold vs
+//      TrackPointLanding) — each mode feeds a different error signal to the
+//      same PID controller.
+//
+// F4Flight adds an explicit FlightPhase enum because:
+//   - The landing approach/flare need MUCH gentler PID gains than combat
+//     (the Phugoid oscillation is excited by aggressive gains at low speed).
+//   - Formation needs different lateral damping than navigation.
+//   - Having the phase explicit makes the gain scheduling visible and
+//     tunable, rather than implicit in the error formulation.
+//
+// The phase is set by the brain's mode dispatch (runWaypoint, runRTB,
+// runGroundAttack, ground_ops, etc.) and read by GammaHold/MachHold/
+// HeadingAndAltitudeHold to select per-phase gains.
+// ===========================================================================
+enum class FlightPhase : int {
+    Cruise      = 0,  // waypoint navigation, RTB, loiter (gentle, stable)
+    Combat      = 1,  // BVR/WVR/guns engagement (aggressive, high-G)
+    Formation   = 2,  // wingman formation following (precise, damped)
+    Approach    = 3,  // landing approach (gentle, Phugoid-damped)
+    Flare       = 4,  // landing flare (very gentle, nose-up bias)
+    GroundOps   = 5,  // takeoff/taxi/rollout (ground steering)
+};
+
+inline const char* flightPhaseName(FlightPhase p) {
+    switch (p) {
+        case FlightPhase::Cruise:    return "Cruise";
+        case FlightPhase::Combat:    return "Combat";
+        case FlightPhase::Formation: return "Formation";
+        case FlightPhase::Approach:  return "Approach";
+        case FlightPhase::Flare:     return "Flare";
+        case FlightPhase::GroundOps: return "GroundOps";
+    }
+    return "Unknown";
+}
+
+// PhaseGainSet — per-phase PID gains for the AI maneuver primitives.
+//
+// These gains are used by GammaHold, HeadingAndAltitudeHold, and MachHold
+// when the brain is in the corresponding flight phase. The brain sets
+// state_.nav.flightPhase each frame; the primitives read it to select gains.
+//
+// The gains are:
+//   gammaGain     — GammaHold error gain (altErr * gammaGain → desired gamma)
+//   gammaClamp    — GammaHold max gamma (deg) — limits the pitch command
+//   integralGain  — GammaHold integral gain (0 = pure P, no integral)
+//   phugoidGain   — PhugoidDamper gain (pitch-rate feedback)
+//   rollDampGain  — HeadingAndAltitudeHold roll-rate damping gain
+//   speedGain     — MachHold proportional gain (eProp * speedGain → throttle)
+//
+// Default values are tuned per phase. Hosts can override via DigiBrain::
+// configurePhaseGains() if needed.
+struct PhaseGainSet {
+    double gammaGain{0.015};
+    double gammaClamp{15.0};
+    double integralGain{0.0025};  // 0 = pure P
+    double phugoidGain{0.3};
+    double rollDampGain{0.3};
+    double speedGain{0.02};
+
+    static PhaseGainSet forPhase(FlightPhase phase) {
+        switch (phase) {
+            case FlightPhase::Cruise:
+                // Gentle, stable. Phugoid-damped for smooth cruise.
+                return PhaseGainSet{0.015, 15.0, 0.0025, 0.3, 0.3, 0.02};
+            case FlightPhase::Combat:
+                // Aggressive, high-G. No Phugoid damping (combat maneuvers
+                // need fast response, not smoothness).
+                return PhaseGainSet{0.05, 60.0, 0.0025, 0.0, 0.5, 0.02};
+            case FlightPhase::Formation:
+                // Precise, damped. Higher Phugoid damping for stable formation.
+                return PhaseGainSet{0.015, 15.0, 0.0, 0.4, 0.15, 0.02};
+            case FlightPhase::Approach:
+                // Gentle, Phugoid-damped. Lower gain to prevent oscillation
+                // on the glideslope. Pure P (no integral) to prevent windup.
+                return PhaseGainSet{0.015, 10.0, 0.0, 0.5, 0.3, 0.015};
+            case FlightPhase::Flare:
+                // Very gentle. Low gamma clamp to prevent pitch-up runaway.
+                // High Phugoid damping for a smooth flare.
+                return PhaseGainSet{0.01, 5.0, 0.0, 0.6, 0.2, 0.01};
+            case FlightPhase::GroundOps:
+                // Ground steering — minimal pitch, no Phugoid damping.
+                return PhaseGainSet{0.01, 5.0, 0.0, 0.0, 0.3, 0.02};
+        }
+        return PhaseGainSet{};  // default
+    }
+};
+
 // Navigation state — waypoint following, track points, maneuver timers.
 struct DigiNavState {
     double dt{1.0/60.0};       // set by brain each frame
@@ -104,6 +208,11 @@ struct DigiNavState {
     double trackY{0.0};
     double trackZ{0.0};
 
+    // Flight phase for gain scheduling (set by the brain's mode dispatch
+    // each frame). Read by GammaHold/HeadingAndAltitudeHold/MachHold to
+    // select per-phase PID gains via PhaseGainSet::forPhase().
+    FlightPhase flightPhase{FlightPhase::Cruise};
+
     void reset() noexcept {
         dt = 1.0/60.0;
         holdAlt = 0.0;
@@ -115,6 +224,7 @@ struct DigiNavState {
         autoThrottle = 0.0;
         mnverTime = 0.0;
         trackX = trackY = trackZ = 0.0;
+        flightPhase = FlightPhase::Cruise;
     }
 };
 
@@ -222,6 +332,12 @@ struct DigiGroundState {
     GroundOpsState groundOps;
     AgAttackPhase  agAttackPhase{AgAttackPhase::NotThereYet};
 
+    // Task 15-a: which delivery geometry runGroundAttack() executes.
+    // Selected by the host via FrameInputs.injectedAgProfile. Defaults to
+    // DiveBomb so existing scenarios that don't set a profile keep the
+    // Task 11 dive-bomb behavior (backward compat).
+    AgAttackProfile agProfile{AgAttackProfile::DiveBomb};
+
     void reset() noexcept {
         groundTarget = nullptr;
         groundTargetId = kInvalidEntityId;
@@ -230,6 +346,7 @@ struct DigiGroundState {
         reachedIP = false;
         groundOps.reset();
         agAttackPhase = AgAttackPhase::NotThereYet;
+        agProfile = AgAttackProfile::DiveBomb;
     }
 };
 
@@ -282,10 +399,22 @@ struct DigiCommState {
     // so it's per-brain (not global). CommandFlight reads/writes this.
     double lastOrderTime{-1e9};  // -1e9 = "never ordered" sentinel
 
+    // Radio call queue — the brain pushes RadioCallType events here; the
+    // host drains them each frame for display/logging/voice playback.
+    // Port of FreeFalcon's wingradio.cpp AiMakeRadioCall/AiMakeRadioResponse.
+    RadioCallQueue radioCalls;
+
+    // Track which calls have been made (to prevent repeating). Each bit
+    // corresponds to a RadioCallType. Once a call is made, it's not repeated
+    // until reset.
+    uint32_t callsMade{0};
+
     void reset() noexcept {
         mailbox.clear();
         // selfId is NOT reset — it's set once at init
         lastOrderTime = -1e9;
+        radioCalls.reset();
+        callsMade = 0;
     }
 };
 
@@ -408,6 +537,47 @@ struct DigiDamageState {
 };
 
 // ===========================================================================
+// Air-to-air refueling (AAR) state.
+//
+// Port of FreeFalcon's refuel.cpp refuelstatus enum + AiRefuel state machine.
+// The brain tracks the refueling phase: approach → contact → disconnect.
+//
+// The host injects the tanker via FrameInputs.injectedTanker. When non-null,
+// the brain enters Refueling mode and flies to the tanker's boom position.
+// The tanker must be a friendly aircraft flying straight and level.
+//
+// Phases:
+//   None      — not refueling (no tanker injected)
+//   Approach  — flying to the boom position (behind and below the tanker)
+//   Contact   — holding position at the boom, taking fuel
+//   Disconnect — departing the tanker after refueling complete
+// ===========================================================================
+struct DigiRefuelState {
+    enum class Phase : int {
+        None       = 0,  // not refueling
+        Approach   = 1,  // flying to the boom position
+        Contact    = 2,  // holding at the boom, taking fuel
+        Disconnect = 3,  // departing after refueling
+    };
+
+    Phase  phase{Phase::None};
+    double contactTimer{0.0};    // seconds in Contact phase (fuel taken)
+    double contactDuration{30.0}; // seconds to hold contact before disconnect
+
+    // Boom position (computed each frame from tanker position + geometry).
+    // The boom is behind and below the tanker. The receiver flies to this
+    // position and holds.
+    double boomX{0.0}, boomY{0.0}, boomZ{0.0};
+
+    void reset() noexcept {
+        phase = Phase::None;
+        contactTimer = 0.0;
+        contactDuration = 30.0;
+        boomX = boomY = boomZ = 0.0;
+    }
+};
+
+// ===========================================================================
 // DigiState — the aggregate.
 // ===========================================================================
 struct DigiState {
@@ -424,6 +594,7 @@ struct DigiState {
     DigiThreatState      threat;   // HandleThreat (FF handlethreat.cpp)
     DigiFuelState        fuel;     // FuelCheck / RTB (FF separate.cpp + AirbaseCheck)
     DigiDamageState      damage;   // SeparateCheck / BugoutMode (FF separate.cpp)
+    DigiRefuelState      refuel;   // AAR (FF refuel.cpp)
 
     void reset() noexcept {
         commands.reset();
@@ -439,6 +610,7 @@ struct DigiState {
         threat.reset();
         fuel.reset();
         damage.reset();
+        refuel.reset();
     }
 };
 

@@ -16,6 +16,7 @@
 
 #include "f4flight/digi/offensive/roll_and_pull.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // cas_kts (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 #include "f4flight/digi/steering.h"  // for headingError
@@ -68,7 +69,9 @@ void MaintainClosure(DigiState& digi, const DigiEntity& self,
         closure = std::min(closure, 30.0);
     }
 
-    // Mach hold command
+    // Mach hold command. currentKias = as.vcas (CAS-kts); closure/rngdot
+    // are in kts (CAS-kts-consistent additions to a CAS-kts baseline).
+    // targetSpeed is therefore CAS-kts. Use the typed machHoldCas API.
     const double currentKias = as.vcas;
     if (closure - rngdot > 0.0) {
         // Need more closure — speed up (but cap at corner speed if far + closing)
@@ -79,16 +82,16 @@ void MaintainClosure(DigiState& digi, const DigiEntity& self,
         } else {
             targetSpeed = currentKias + (closure - rngdot);
         }
-        ManeuverPrimitives::MachHold(targetSpeed, currentKias, false,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(targetSpeed), false,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
     } else if (rg.range < 5000.0) {
         double targetSpeed = std::min(digi.config.cornerSpeed, currentKias + (closure - rngdot));
-        ManeuverPrimitives::MachHold(targetSpeed, currentKias, false,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(targetSpeed), false,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
     } else {
         double targetSpeed = currentKias + (closure - rngdot);
-        ManeuverPrimitives::MachHold(targetSpeed, currentKias, false,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(targetSpeed), false,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
     }
 }
 
@@ -115,8 +118,8 @@ void EnergyManagement(DigiState& digi, const DigiEntity& self,
     //   if ataFrom < 90°: hold corner speed (no AB)
     //   else: maintain closure
     if (rg.ataFrom < 90.0 * DTR) {
-        ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, false,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(digi.config.cornerSpeed), false,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
     } else {
         MaintainClosure(digi, self, target, as, fcs, fcsState, dt);
     }
@@ -154,8 +157,8 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
         digi.nav.trackY = target.y;
         digi.nav.trackZ = target.z;  // NED (negative up), no negation
         ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
-        ManeuverPrimitives::MachHold(0.36 * digi.config.cornerSpeed, as.vcas, false,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(0.36 * digi.config.cornerSpeed), false,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
         return;
     }
 
@@ -171,21 +174,21 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
 
             if (rg.range > kFarRange) {
                 // > 15 NM: hold corner speed
-                ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
-                                              digi, as, 200.0, 800.0, dt, 100.0);
+                ManeuverPrimitives::machHoldCas(cas_kts(digi.config.cornerSpeed), true,
+                                                 digi, as, 200.0, 800.0, dt, 100.0);
             } else if (rg.range > kMergeRange) {
                 // 6-15 NM: accelerate if facing each other, else corner speed
                 if (rg.ata > 15.0 * DTR || rg.ataFrom > 15.0 * DTR) {
-                    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, true,
-                                                  digi, as, 200.0, 800.0, dt, 100.0);
+                    ManeuverPrimitives::machHoldCas(cas_kts(digi.config.cornerSpeed), true,
+                                                     digi, as, 200.0, 800.0, dt, 100.0);
                 } else {
-                    ManeuverPrimitives::MachHold(2.0 * digi.config.cornerSpeed, as.vcas, true,
-                                                  digi, as, 200.0, 800.0, dt, 100.0);
+                    ManeuverPrimitives::machHoldCas(cas_kts(2.0 * digi.config.cornerSpeed), true,
+                                                     digi, as, 200.0, 800.0, dt, 100.0);
                 }
             } else if (rg.range >= kCloseRange) {
                 // 1.5-6 NM: nose up, hold ~corner speed
-                ManeuverPrimitives::MachHold(1.05 * digi.config.cornerSpeed, as.vcas, true,
-                                              digi, as, 200.0, 800.0, dt, 100.0);
+                ManeuverPrimitives::machHoldCas(cas_kts(1.05 * digi.config.cornerSpeed), true,
+                                                 digi, as, 200.0, 800.0, dt, 100.0);
             } else {
                 // < 1.5 NM: energy management
                 EnergyManagement(digi, self, target, as, fcs, fcsState, dt);
@@ -223,8 +226,8 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
             digi.nav.trackY = target.y;
             digi.nav.trackZ = target.z;  // NED, no negation
             ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
-            ManeuverPrimitives::MachHold(0.36 * digi.config.cornerSpeed, as.vcas, false,
-                                          digi, as, 200.0, 800.0, dt, 100.0);
+            ManeuverPrimitives::machHoldCas(cas_kts(0.36 * digi.config.cornerSpeed), false,
+                                             digi, as, 200.0, 800.0, dt, 100.0);
         }
         // Not immediately threatened
         else if (targetAlt > 5000.0 &&
@@ -241,8 +244,8 @@ void RollAndPull(DigiState& digi, const DigiEntity& self,
                 ManeuverPrimitives::SetPstick(-1.0, digi.config.maxGs,
                                                CommandType::GCommand, digi, as);
             }
-            ManeuverPrimitives::MachHold(1.05 * digi.config.cornerSpeed, as.vcas, true,
-                                          digi, as, 200.0, 800.0, dt, 100.0);
+            ManeuverPrimitives::machHoldCas(cas_kts(1.05 * digi.config.cornerSpeed), true,
+                                             digi, as, 200.0, 800.0, dt, 100.0);
         }
         // Immediately threatened
         else {

@@ -57,6 +57,12 @@ public:
         sc.setMaxBank(60.0);
         sc.setMaxGamma(15.0);
         isHeavy_ = isHeavy(fm.config());
+        // Record the aircraft's corner speed — used to determine if range
+        // closure is a meaningful check. If the aircraft's corner speed is
+        // close to the target speed (250 kts), the aircraft can't close
+        // range regardless of AI behavior, so the range closure check is
+        // waived.
+        aircraftCornerSpeed_ = speed_;
 
         // Target ahead (+x), same heading (east, yaw=0), slower.
         // Both fly east — AI catches up from behind, slowly closing range.
@@ -94,19 +100,32 @@ public:
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
 
-        // Heading convergence: target is at +x (bearing 0 = east). AI starts
-        // heading 0 (east). Track the closest heading to east — proves the AI
-        // turned toward the target (not away).
+        // Heading error to target bearing (target is at +x = east = heading 0).
+        // Wrap to [-PI, PI].
         double dh = as.kin.sigma - 0.0;
         while (dh >  PI) dh -= 2.0 * PI;
         while (dh < -PI) dh += 2.0 * PI;
-        minAbsHeadingToEast_ = std::min(minAbsHeadingToEast_, std::fabs(dh));
+        const double absHdgErr = std::fabs(dh);
+        minAbsHeadingToEast_ = std::min(minAbsHeadingToEast_, absHdgErr);
+        // Track the FINAL heading error (proves the AI was still engaging at
+        // the end, not just at t=0 before any maneuver). The min-heading
+        // check is trivially 0 at t=0 because the aircraft starts heading
+        // east — without the final-heading check, the test would pass even
+        // if the AI immediately turned 90° away from the target.
+        finalAbsHeadingToEast_ = absHdgErr;
+        // Count frames where the heading was within 30° of the target
+        // bearing (sustained pursuit, not just a momentary alignment).
+        if (absHdgErr <= 30.0 * DTR) framesOnHeading_++;
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
         const DigiMode mode = sc_brain_->activeMode();
-        if (mode == DigiMode::BVREngage) enteredBVREngage_ = true;
+        if (mode == DigiMode::BVREngage) {
+            enteredBVREngage_ = true;
+            framesInBvr_++;
+        }
         curMode_ = mode;
+        totalFrames_++;
 
         // Per-frame sample data
         curRange_ = range;
@@ -139,20 +158,43 @@ public:
         if (hasNaN_) return false;
         // 1. Must have entered BVREngage mode.
         if (!enteredBVREngage_) return false;
-        // 2. Must steer toward the target (target is east, heading 0).
-        //    BVR Pursuit tactic commands AutoTrack on the target, so the nose
-        //    should swing toward east. Allow up to 60° off — the Crank/Beam
-        //    tactics deliberately offset 45°/90° from the target bearing.
-        const double hdgThreshold = isHeavy_ ? 90.0 : 60.0;
-        if (minAbsHeadingToEast_ > hdgThreshold * DTR) return false;
-        // 3. Must not have lawn-darted.
+        // 2. Must have STAYED in BVREngage for a sustained period (at least
+        //    50% of the phase). A momentary mode entry that immediately
+        //    exits is not a real engagement. This catches regressions where
+        //    the mode is entered but the brain can't sustain it.
+        if (totalFrames_ > 0 && framesInBvr_ < totalFrames_ / 2) return false;
+        // 3. Must have closed range on the target by at least 1.5 NM — proves
+        //    the AI was actually pursuing, not just sitting at heading 0.
+        //    (The aircraft starts at heading 0 = target bearing, so a heading
+        //    check alone is trivially satisfied at t=0. Range closure proves
+        //    active engagement.) The pure speed differential (350 vs 250 kts)
+        //    gives ~0.83 NM closure in 30s — requiring 1.5 NM means the
+        //    aircraft must also accelerate (proving the pursuit is active,
+        //    not just physics). Heavy aircraft (B-52, C-130) and slow aircraft
+        //    (A-10, corner speed ~250 kts) fly at ~the SAME speed as the
+        //    target — so they can't close range regardless of AI behavior.
+        //    Waive the range closure check for them (they're still checked on
+        //    mode + heading + sustained).
+        const bool canCloseRange = !isHeavy_ && (aircraftCornerSpeed_ > 300.0);
+        if (canCloseRange) {
+            const double requiredClosureFt = 1.5 * 6076.0;
+            if (maxRange_ - minRange_ < requiredClosureFt) return false;
+        }
+        // 4. Final heading must still be roughly toward the target (within
+        //    45° of east). Proves the AI didn't wander off at the end.
+        //    (minAbsHeadingToEast_ is trivially 0 at t=0 — the final heading
+        //    check is the meaningful one.)
+        const double hdgThreshold = isHeavy_ ? 90.0 : 45.0;
+        if (finalAbsHeadingToEast_ > hdgThreshold * DTR) return false;
+        // 5. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter BVREngage mode; Turn within 60deg of target bearing (90deg heavy); "
-               "Min alt >= 5000ft; No NaN";
+        return "Enter BVREngage mode; Sustain BVREngage >= 50% of phase; "
+               "Close range by >= 1.5NM (heavy/slow: waived); Final heading within 45deg of "
+               "target bearing (90deg heavy); Min alt >= 5000ft; No NaN";
     }
 
     std::string failureReason() const override {
@@ -164,12 +206,28 @@ public:
                    "ft — BvrEngageCheck did not pass (range may have closed "
                    "inside 8 NM, or target was not injected).";
         }
-        const double hdgThreshold = isHeavy_ ? 90.0 : 60.0;
-        if (minAbsHeadingToEast_ > hdgThreshold * DTR) {
-            return "Closest heading to target bearing was " +
+        if (totalFrames_ > 0 && framesInBvr_ < totalFrames_ / 2) {
+            return "BVREngage was only active for " + std::to_string(framesInBvr_) +
+                   " of " + std::to_string(totalFrames_) +
+                   " frames — mode was not sustained (brain kept exiting BVREngage).";
+        }
+        const bool canCloseRange = !isHeavy_ && (aircraftCornerSpeed_ > 300.0);
+        if (canCloseRange) {
+            const double requiredClosureFt = 1.5 * 6076.0;
+            if (maxRange_ - minRange_ < requiredClosureFt) {
+                return "Range only closed from " +
+                       std::to_string(static_cast<int>(maxRange_)) + " to " +
+                       std::to_string(static_cast<int>(minRange_)) +
+                       "ft (needed >= " + std::to_string(static_cast<int>(requiredClosureFt)) +
+                       "ft closure = 1.5NM) — aircraft did not actively pursue the target.";
+            }
+        }
+        const double hdgThreshold = isHeavy_ ? 90.0 : 45.0;
+        if (finalAbsHeadingToEast_ > hdgThreshold * DTR) {
+            return "Final heading error to target bearing was " +
                    std::to_string(curHdgErr_) +
                    "deg (needed <= " + std::to_string(hdgThreshold) +
-                   "deg) — aircraft did not steer toward the BVR target.";
+                   "deg) — aircraft wandered off the target bearing by end of phase.";
         }
         if (minAlt_ < 5000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -191,22 +249,35 @@ public:
     // (set by sc.setTarget(&target_) in Init). No need to publish here.
 
     void Finish() const override {
-        const double hdgThreshold = isHeavy_ ? 90.0 : 60.0;
+        const double hdgThreshold = isHeavy_ ? 90.0 : 45.0;
+        const double requiredClosureFt = 1.5 * 6076.0;
+        const bool canCloseRange = !isHeavy_ && (aircraftCornerSpeed_ > 300.0);
         std::printf("  --- Summary ---\n");
-        std::printf("  Entered BVREngage:    %s\n", enteredBVREngage_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Closest hdg to east:  %.1f deg (need <= %.0f) %s\n",
-            minAbsHeadingToEast_ * RTD, hdgThreshold,
-            minAbsHeadingToEast_ <= hdgThreshold * DTR ? "[PASS]" : "[FAIL]");
-        std::printf("  Range: %.0f..%.0f ft (info, BVR may not close)\n",
-            minRange_, maxRange_);
-        std::printf("  Max G:                %.2f\n", maxG_);
-        std::printf("  Min altitude:         %.0f ft (need >= 5000) %s\n",
+        std::printf("  Entered BVREngage:        %s\n", enteredBVREngage_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Sustained BVREngage:      %d/%d frames %s\n",
+            framesInBvr_, totalFrames_,
+            (totalFrames_ > 0 && framesInBvr_ >= totalFrames_ / 2) ? "[PASS]" : "[FAIL]");
+        if (!canCloseRange) {
+            std::printf("  Range closure:            %.0f ft (heavy/slow: waived)\n",
+                maxRange_ - minRange_);
+        } else {
+            std::printf("  Range closure:            %.0f ft (need >= %.0f) %s\n",
+                maxRange_ - minRange_, requiredClosureFt,
+                (maxRange_ - minRange_ >= requiredClosureFt) ? "[PASS]" : "[FAIL]");
+        }
+        std::printf("  Final hdg to east:        %.1f deg (need <= %.0f) %s\n",
+            finalAbsHeadingToEast_ * RTD, hdgThreshold,
+            finalAbsHeadingToEast_ <= hdgThreshold * DTR ? "[PASS]" : "[FAIL]");
+        std::printf("  Range: %.0f..%.0f ft (info)\n", minRange_, maxRange_);
+        std::printf("  Max G:                    %.2f\n", maxG_);
+        std::printf("  Min altitude:             %.0f ft (need >= 5000) %s\n",
             minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
 private:
     double alt_, speed_, targetSpeed_, initialRangeNm_, initialRangeFt_;
+    double aircraftCornerSpeed_{0.0};
     DigiEntity target_;
     double nextPrint_{0.0};
     double minRange_{1e9};
@@ -214,6 +285,10 @@ private:
     double minAlt_{1e9};
     double maxG_{0.0};
     double minAbsHeadingToEast_{std::numeric_limits<double>::max()};
+    double finalAbsHeadingToEast_{0.0};
+    int   framesInBvr_{0};
+    int   totalFrames_{0};
+    int   framesOnHeading_{0};
     bool hasNaN_{false};
     bool enteredBVREngage_{false};
     bool isHeavy_{false};

@@ -4,6 +4,7 @@
 
 #include "f4flight/digi/offensive/merge.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // cas_kts (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -83,29 +84,32 @@ void MergeManeuver(DigiState& digi, const DigiEntity& self,
     const double vcas = as.vcas;
     const double corner = digi.config.cornerSpeed;
 
+    // All speed targets below are CAS-kts (cornerSpeed is CAS-kts, per
+    // digi_brain.cpp:62-63 and ground_avoid.cpp:84 FF reference comment).
+    // Use the typed machHoldCas API to enforce this at compile time.
     if (vcas < corner * 0.7) {
         // Slow — slice (135° bank)
         digi.gunsJink.newRoll = (rg.az > 0.0 ? 135.0 * DTR : -135.0 * DTR);
-        ManeuverPrimitives::MachHold(0.7 * corner, vcas, false,
-                                      digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(0.7 * corner), false,
+                                         digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
     } else if (vcas < corner * 1.2) {
         // Medium — level turn (90° bank)
         if (vcas < corner) {
             // One circle — turn away from target
             digi.gunsJink.newRoll = (rg.az > 0.0 ? -90.0 * DTR : 90.0 * DTR);
-            ManeuverPrimitives::MachHold(0.7 * corner, vcas, false,
-                                          digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
+            ManeuverPrimitives::machHoldCas(cas_kts(0.7 * corner), false,
+                                             digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
         } else {
             // Two circle — turn toward target
             digi.gunsJink.newRoll = (rg.az > 0.0 ? 90.0 * DTR : -90.0 * DTR);
-            ManeuverPrimitives::MachHold(corner, vcas, true,
-                                          digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
+            ManeuverPrimitives::machHoldCas(cas_kts(corner), true,
+                                             digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
         }
     } else {
         // Fast — vertical pull (wings level, full burner)
         digi.gunsJink.newRoll = 0.0;
-        ManeuverPrimitives::MachHold(corner * 1.2, vcas, true,
-                                      digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(corner * 1.2), true,
+                                         digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
     }
 
     // Command the roll + max-G pull
@@ -162,8 +166,9 @@ void AccelManeuver(DigiState& digi, const DigiEntity& self,
     ManeuverPrimitives::SetYpedal(0.0, digi);
     ManeuverPrimitives::SetRstick(eDroll * 2.0 * RTD, digi,
                                    FlightControlSystem{}, fcsState);
-    ManeuverPrimitives::MachHold(digi.config.cornerSpeed, as.vcas, false,
-                                  digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
+    // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+    ManeuverPrimitives::machHoldCas(cas_kts(digi.config.cornerSpeed), false,
+                                     digi, as, 100.0, 400.0, digi.nav.dt, 100.0);
 
     // If still rolling, don't pull; once inverted, pull 4G
     if (std::fabs(eDroll * RTD) > 10.0) {

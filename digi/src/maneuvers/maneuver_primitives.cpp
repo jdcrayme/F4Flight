@@ -119,7 +119,15 @@ void ManeuverPrimitives::SetYpedal(double yawError, DigiState& digi) {
 
 void ManeuverPrimitives::GammaHold(double desGamma, DigiState& digi,
                                     const AircraftState& state, double maxGs) {
-    const double maxGam = std::max(1.0, digi.config.maxGammaDeg);
+    // Phase-aware gain scheduling: read the current flight phase and use
+    // the corresponding PhaseGainSet for the integral gain and gamma clamp.
+    // This allows landing approach to use a lower gamma clamp (10°) than
+    // combat (60°), and formation to use pure P (no integral) to prevent
+    // windup during station-keeping.
+    const PhaseGainSet gains = PhaseGainSet::forPhase(digi.nav.flightPhase);
+
+    // Clamp the desired gamma to the phase-specific limit.
+    const double maxGam = std::max(1.0, std::min(digi.config.maxGammaDeg, gains.gammaClamp));
     desGamma = std::max(std::min(desGamma, maxGam), -maxGam);
 
     double elevCmd = desGamma - state.kin.gmma * RTD;
@@ -136,14 +144,59 @@ void ManeuverPrimitives::GammaHold(double desGamma, DigiState& digi,
     double gammaCmd = digi.nav.gammaHoldIError + elevCmd + (1.0 / std::max(0.1, state.kin.cosphi));
     const double gammaCmdClamped = std::max(std::min(gammaCmd, 6.5), -2.0);
 
-    // Leaky integrator (10s tau) — prevents porpoising at 60 Hz
+    // Leaky integrator (10s tau) — prevents porpoising at 60 Hz.
+    // The integral gain is phase-specific: 0 for Approach/Formation (pure P,
+    // prevents windup during glideslope tracking), 0.0025 for Cruise/Combat
+    // (steady-state error correction).
     constexpr double kIntegralTau = 10.0;
     const double leakFactor = std::exp(-digi.nav.dt / kIntegralTau);
     digi.nav.gammaHoldIError = digi.nav.gammaHoldIError * leakFactor
-                         + 0.0025 * elevCmd * (digi.nav.dt / 0.06);
+                         + gains.integralGain * elevCmd * (digi.nav.dt / 0.06);
     digi.nav.gammaHoldIError = std::max(std::min(digi.nav.gammaHoldIError, 1.0), -1.0);
 
     SetPstick(gammaCmdClamped, maxGs, CommandType::GCommand, digi, state);
+}
+
+void ManeuverPrimitives::PhugoidDamper(DigiState& digi, const AircraftState& state,
+                                        double gain) {
+    // Pitch rate (q) feedback. q is in rad/s — positive = nose pitching up.
+    //
+    // If gain < 0, use the phase-aware gain from PhaseGainSet::forPhase().
+    // This lets callers write `PhugoidDamper(digi, as)` and get the right
+    // damping for the current flight phase without hardcoding a gain.
+    double effectiveGain = gain;
+    if (gain < 0.0) {
+        effectiveGain = PhaseGainSet::forPhase(digi.nav.flightPhase).phugoidGain;
+    }
+    //
+    // The damper subtracts a term proportional to q from the pStick command.
+    // If the aircraft is pitching up (q > 0), reduce the nose-up command
+    // (oppose the pitch-up). If pitching down (q < 0), add nose-up command.
+    // This damps the Phugoid oscillation.
+    //
+    // The gain is in units of pstick per rad/s of pitch rate. At gain=0.4,
+    // a 0.05 rad/s (~3°/s) pitch rate produces 0.02 pstick correction —
+    // enough to damp the Phugoid without interfering with the controller's
+    // target tracking (the Phugoid's q is small, ~0.02-0.05 rad/s, while
+    // maneuvering q is much larger).
+    //
+    // The damper is a pure derivative term: in steady-state trim q=0, so the
+    // damper contributes nothing. It only acts when the aircraft is pitching
+    // (i.e. during oscillation or maneuver transients).
+    //
+    // We also add airspeed scaling: at low speed the elevator has less
+    // authority, so the damper needs a larger stick deflection to produce
+    // the same pitch acceleration. Scale by (350 / vcas), clamped to [0.5, 2.0].
+    const double q = state.kin.q;  // rad/s
+    const double speedScale = std::max(0.5, std::min(2.0, 350.0 / std::max(150.0, state.vcas)));
+    const double dampingTerm = -effectiveGain * q * speedScale;
+    // Clamp the damping term to prevent excessive correction during large
+    // maneuvering pitch rates (e.g. pull-up for takeoff rotation). The damper
+    // should only act on the small Phugoid oscillation, not fight intentional
+    // pitch maneuvers.
+    const double clampedDamping = std::max(-0.15, std::min(0.15, dampingTerm));
+    digi.commands.pStick = std::max(-1.0, std::min(1.0,
+        digi.commands.pStick + clampedDamping));
 }
 
 void ManeuverPrimitives::AltHold(double desAlt, DigiState& digi,
@@ -240,6 +293,39 @@ bool ManeuverPrimitives::HeadingAndAltitudeHold(double desPsi, double desAlt,
     const double rollDeg = state.kin.phi * RTD;
     double rollErr = (desiredBankDeg - rollDeg) * 2.0;
     rollErr = limitRollError(rollErr, rollDeg, digi.config.maxRoll);
+
+    // Roll-rate damping: subtract a term proportional to the roll rate (p).
+    // This prevents the limit-cycle oscillation that occurs on fast-rolling
+    // aircraft (F-22, MiG-29) where the rstick saturates, the aircraft rolls
+    // through the desired bank, and the rstick reverses too late. The damping
+    // term reduces the rstick as the aircraft approaches the desired bank,
+    // preventing overshoot.
+    //
+    // The damping gain is based on the CURRENT BANK ANGLE magnitude:
+    //   - Large bank (>30°): high gain (0.5) — the aircraft is in a steep
+    //     turn (RTB/waypoint case) and needs aggressive damping to prevent
+    //     overshooting the desired heading.
+    //   - Small bank (<10°): low gain (0.15) — the aircraft is near wings-
+    //     level (formation station-keeping case) and needs light damping so
+    //     the controller can make precise lateral corrections.
+    //   - In between: linearly interpolated.
+    //
+    // This adaptive gain satisfies both use cases: RTB (steep turns, needs
+    // heavy damping) and formation (shallow banks, needs light damping).
+    // It doesn't use heading error because formation rejoin has large heading
+    // errors but shallow banks (the wingman turns gradually toward the slot).
+    const double absBankDeg = std::fabs(rollDeg);
+    double dampGain;
+    if (absBankDeg > 30.0) {
+        dampGain = 0.5;
+    } else if (absBankDeg < 10.0) {
+        dampGain = 0.15;
+    } else {
+        // Linear interpolation between 10° (0.15) and 30° (0.5).
+        dampGain = 0.15 + (absBankDeg - 10.0) / 20.0 * (0.5 - 0.15);
+    }
+    const double rollRateDamp = state.kin.p * RTD * dampGain;  // deg
+    rollErr -= rollRateDamp;
     digi.commands.rStick = computeRstick(rollErr, fcsState.kr01, fcsState.tr01,
                                 digi.commands.rStick, digi.nav.dt);
 

@@ -25,7 +25,7 @@ namespace digi {
 static constexpr double kTaxiSpeedKts = 15.0;       // taxi speed
 static constexpr double kRotationSpeedFraction = 0.9; // V_R = 0.9 * stallSpeed
 static constexpr double kClimboutAltFt = 500.0;      // gear up altitude
-static constexpr double kFlareAltFt = 100.0;          // flare start altitude AGL (was 50 — too low for high descent rates)
+static constexpr double kFlareAltFt = 150.0;          // flare start altitude AGL
 static constexpr double kApproachGlideslope = 3.0;    // degrees
 static constexpr double kApproachSpeedFraction = 1.3; // V_approach = 1.3 * stallSpeed
 static constexpr double kRolloutBrakeSpeed = 80.0;    // kts — start braking below this
@@ -473,25 +473,66 @@ void RunLanding(DigiState& digi, const AircraftState& as,
                 go.gearDeployed = true;
             }
 
-            // Fly toward runway threshold, descending on 3° glideslope.
+            // Deploy flaps for approach. FreeFalcon's TrackPointLanding calls
+            // af->SetFlaps(true) (mnvers.cpp:107). Flaps increase CLmax (lower
+            // stall speed) and CD (steeper descent at lower speed). Without
+            // flaps, the approach speed is too high and the flare can't arrest
+            // the descent. Half flaps for approach, full flaps below 200 ft.
+            if (altAGL < 200.0) {
+                digi.commands.tefCmd = 1.0;  // full flaps
+                digi.commands.lefCmd = 1.0;
+            } else {
+                digi.commands.tefCmd = 0.5;  // approach flaps (half)
+                digi.commands.lefCmd = 0.5;
+            }
+
+            // Glideslope beam tracking.
             //
-            // Use a direct descent-rate controller instead of TrackPointLanding.
-            // The TrackPointLanding primitive's elevation-angle tracker has
-            // too little gain at long range, causing the aircraft to oscillate
-            // above and below the glideslope. Instead, we:
-            //   1. Command a -3° flight path angle (GammaHold)
-            //   2. Steer toward the runway threshold (heading)
-            //   3. Hold approach speed (throttle + speed brakes)
-            // This produces a stable, smooth 3° descent.
+            // The previous code used GammaHold(-3°) — a flight-path-angle
+            // controller that does NOT reference the actual glideslope beam.
+            // If the aircraft's gamma diverged from -3° (due to speed changes,
+            // initial condition mismatch, or Phugoid transients), GammaHold
+            // would blindly hold -3° while the aircraft flew steeper and
+            // steeper. The aircraft would arrive at flare altitude with a
+            // 80+ ft/s descent rate (6x the correct 15 ft/s), and the flare
+            // couldn't arrest it — producing a nose-first "landing" with no
+            // flare.
             //
-            // NOTE: only dx/dy are needed — the runway-threshold range
-            // (distToThreshold) was previously computed but never read, which
-            // both -Wunused-variable flagged and was a real sign that the
-            // glideslope math had been simplified away. If a future tuning
-            // pass wants to gate the gear/speed-brake extension on distance
-            // to threshold, re-introduce `distToThreshold` here and use it.
+            // FIX: compute the desired altitude from the distance to the
+            // threshold and the 3° glideslope angle, then track that altitude
+            // with a PD controller (proportional on altitude error, derivative
+            // on descent rate). This is a beam-tracking approach: if the
+            // aircraft is above the beam, it descends faster; if below, it
+            // levels off. The aircraft stays on the beam regardless of speed
+            // or gamma transients.
             const double dx = go.runwayThresholdX - as.kin.x;
             const double dy = go.runwayThresholdY - as.kin.y;
+            const double distToThreshold = std::sqrt(dx * dx + dy * dy);
+
+            // Desired altitude on the 3° glideslope beam.
+            // At the threshold (dist=0), desired alt = groundZ (touchdown).
+            // At 3 NM (18228 ft), desired alt = 955 ft AGL.
+            const double desiredAltAGL = distToThreshold * std::tan(kApproachGlideslope * DTR);
+
+            // Glideslope beam tracker with Phugoid damping.
+            //
+            // This is a PD controller on altitude error:
+            //   alterr = (beam_alt - actual_alt)              [P term]
+            //          + Kd * (beam_descent_rate - zdot)      [D term]
+            //
+            // The P term brings the aircraft back to the beam. The D term
+            // damps the approach: if descending faster than the beam rate,
+            // reduce the descent; if slower, increase it.
+            //
+            // NED: z is negative (altitude = -z), zdot > 0 = descending.
+            // beam_alt_AGL + as.kin.z = beam_alt - actual_alt (both AGL).
+            // beam_descent_rate = V * sin(3°) ≈ 15 ft/s at approach speed.
+            //
+            // The GammaHold integrator is cleared each frame to prevent windup.
+            const double altError = desiredAltAGL + as.kin.z;  // + = below beam
+            const double beamDescentRate = as.kin.vt * std::sin(kApproachGlideslope * DTR);
+            const double descentRateError = beamDescentRate - as.kin.zdot;  // + = too slow
+            const double alterr = altError * 1.0 + descentRateError * 2.0;
 
             // Approach speed
             const double approachSpeed = kApproachSpeedFraction *
@@ -500,27 +541,53 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             // Steer toward the runway threshold (heading)
             const double desHeading = std::atan2(dy, dx);
             const double headingErr = headingError(desHeading, as.kin.sigma);
-            // Use proportional roll command (same as HeadingAndAltitudeHold)
             digi.commands.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD * 2.0 * DTR));
 
-            // Command -3° flight path angle (descending glideslope)
-            // GammaHold commands a target gamma; -3° = descending
-            ManeuverPrimitives::GammaHold(-kApproachGlideslope, digi, as, digi.config.maxGs);
+            // GammaHold with the PD error. Gain 0.015: 1° gamma per ~67 ft of
+            // altitude error (or 33 ft/s of descent rate error). This is
+            // gentler than the previous 0.15 — the PD formulation already
+            // provides the error amplification, so the GammaHold gain just
+            // scales it to a gamma command.
+            digi.nav.gammaHoldIError = 0.0;  // pure P, no integrator windup
+            ManeuverPrimitives::GammaHold(alterr * 0.015, digi, as, digi.config.maxGs);
+            // Phugoid damper: damps the long-period pitch oscillation.
+            ManeuverPrimitives::PhugoidDamper(digi, as);
 
-            // Throttle: hold approach speed
+            // Throttle: hold approach speed.
+            // Use an auto-throttle integrator (like FreeFalcon's TrackPointLanding)
+            // for smooth throttle management. The integrator learns the trim
+            // throttle for the current drag configuration (gear + speed brakes).
+            //
+            // The descent trades altitude for speed, so the autothrottle must
+            // aggressively reduce power when above approach speed. The previous
+            // thresholds (+150 kts for burner, -100 kts for idle) were far too
+            // loose — the aircraft would arrive at flare altitude 25+ kts too
+            // fast because the throttle didn't go to idle soon enough.
             const double eProp = approachSpeed - as.vcas;
-            if (eProp >= 150.0) {
-                digi.commands.throttle = 1.5;  // burner
-            } else if (eProp < -20.0) {
-                digi.commands.throttle = 0.0;  // idle
+            if (eProp >= 50.0) {
+                // Way too slow — add power (but not full burner on approach)
+                digi.commands.throttle = std::min(1.0, 0.3 + eProp * 0.01);
+            } else if (eProp <= -15.0) {
+                // Too fast — idle. The descent will keep adding speed, so we
+                // must cut power early to arrive at approach speed.
+                digi.commands.throttle = 0.0;
             } else {
-                digi.commands.throttle = std::max(0.0, std::min(0.5, eProp * 0.01));
+                // PI throttle: proportional + integral on speed error,
+                // with vtDot feedback for damping.
+                const double vtDotClamped = std::max(-10.0, std::min(10.0, as.vtDot));
+                digi.nav.autoThrottle += (eProp - vtDotClamped * 5.0) * 0.001 * dt;
+                digi.nav.autoThrottle = std::max(0.0, std::min(0.5, digi.nav.autoThrottle));
+                digi.commands.throttle = std::max(0.0, std::min(0.6,
+                    eProp * 0.015 + digi.nav.autoThrottle));
             }
 
-            // Extend speed brakes if significantly above approach speed
-            if (as.vcas > approachSpeed + 30.0) {
+            // Extend speed brakes if above approach speed.
+            // Aggressive thresholds: deploy at +5 kts (half) and +10 kts (full).
+            // The descent adds 25+ kts from the Phugoid, so we must deploy
+            // early to arrive at flare altitude at the correct speed.
+            if (as.vcas > approachSpeed + 10.0) {
                 digi.commands.speedBrakeCmd = 1.0;  // full extend
-            } else if (as.vcas > approachSpeed + 10.0) {
+            } else if (as.vcas > approachSpeed + 5.0) {
                 digi.commands.speedBrakeCmd = 0.5;  // half extend
             } else {
                 digi.commands.speedBrakeCmd = -1.0;  // retract (clean for flare)
@@ -535,26 +602,97 @@ void RunLanding(DigiState& digi, const AircraftState& as,
         }
 
         case GroundOpsPhase::Flare: {
-            // Flare: gradually arrest the descent rate for a gentle touchdown.
+            // Flare: gradually arrest the descent rate AND raise the pitch
+            // attitude for a gentle main-gear-first touchdown.
             //
-            // The flare uses a target descent rate that decreases with altitude:
-            //   At 100 ft: target = 15 ft/s (normal approach descent)
-            //   At 50 ft:  target = 10 ft/s
-            //   At 20 ft:  target = 5 ft/s
-            //   At 5 ft:   target = 2 ft/s (gentle touchdown)
-            // This prevents the aircraft from leveling off too high (which
-            // keeps heavy aircraft airborne) and prevents slamming into the
-            // ground. The pitch attitude naturally rises as the descent
-            // rate is arrested, giving a main-gear-first touchdown.
-            digi.commands.throttle = 0.0;  // idle — no thrust during flare
+            // The flare has two objectives:
+            //   1. Arrest the descent rate (target decreases with altitude)
+            //   2. Raise the pitch attitude to a touchdown attitude (5° nose up)
+            //
+            // The previous code only targeted descent rate — the pitch attitude
+            // stayed low because the descent-rate controller doesn't naturally
+            // produce a nose-up attitude (it just reduces the descent). Real
+            // pilots flare to a PITCH ATTITUDE, not a descent rate — they pull
+            // the nose up to ~5° and hold it there as the aircraft settles.
+            //
+            // This implementation blends both: the descent-rate controller
+            // provides the primary pitch command, and a pitch-attitude target
+            // adds a nose-up bias that increases as the aircraft gets close to
+            // the ground. The pitch-attitude target ensures the aircraft
+            // touches down nose-up (main gear first), not nose-down.
+            //
+            // THROTTLE MANAGEMENT: the previous code set throttle=0 (idle) for
+            // the entire flare. This caused the aircraft to decelerate rapidly
+            // (195→81 kts), and at 81 kts the elevator had no authority to
+            // raise the nose — producing a nose-down touchdown. Real pilots
+            // hold approach power until the flare is established, then smoothly
+            // reduce to idle. We hold a small throttle (15%) above 30 ft to
+            // maintain elevator authority, then idle below 30 ft.
+            digi.commands.speedBrakeCmd = -1.0;  // retract brakes for flare
+            digi.commands.tefCmd = 1.0;  // full flaps for flare
+            digi.commands.lefCmd = 1.0;
+
+            // Throttle: hold approach power to maintain elevator authority.
+            // The key insight: at low speed the elevator has almost no
+            // authority (the FCS clamps ptcmd to gsAvail, which is tiny at
+            // low qbar). We MUST keep the speed above ~130 kts through the
+            // flare or the nose won't come up. But too much power causes a
+            // float (the aircraft won't descend). Balance: hold 55% power
+            // to maintain speed without floating. Below 5 ft, reduce to
+            // idle for touchdown. If speed drops below approach-20, add power.
+            //
+            // CRITICAL: do NOT cut throttle to 0 abruptly at 10 ft — the
+            // sudden drag causes a 20+ kt speed drop in 2 seconds, and at
+            // 80 kts the elevator has no authority to hold the nose up.
+            // Instead, hold a small amount of power (20%) until 5 ft, then
+            // idle. This keeps the speed above the elevator-authority floor
+            // (~100 kts for most fighters) through the touchdown.
+            const double approachSpeed = kApproachSpeedFraction *
+                (as.aero.stallSpeed > 0 ? as.aero.stallSpeed : 130.0);
+            if (altAGL < 5.0) {
+                digi.commands.throttle = 0.0;  // idle for touchdown
+            } else if (as.vcas < approachSpeed - 20.0) {
+                // Too slow — add power to maintain elevator authority
+                digi.commands.throttle = 0.8;
+            } else if (altAGL < 15.0) {
+                // Close to ground — hold 20% power to prevent speed drop
+                digi.commands.throttle = 0.2;
+            } else {
+                // Hold approach power (55%) — enough for authority, not
+                // enough to float. The descent-rate controller will still
+                // bring the aircraft down.
+                digi.commands.throttle = 0.55;
+            }
 
             // Target descent rate decreases with altitude
             const double targetDescentRate = std::max(2.0,
                 15.0 * std::max(0.0, altAGL) / kFlareAltFt);
             // NED: zdot > 0 = descending. Error = actual - target.
             const double descentErr = as.kin.zdot - targetDescentRate;
-            // Positive error = descending too fast → pitch up
-            digi.commands.pStick = std::max(-0.3, std::min(0.8, descentErr * 0.03));
+            // Descent-rate pitch command (primary).
+            // Positive error = descending too fast → pitch up.
+            const double descentPstick = descentErr * 0.05;
+
+            // Pitch attitude target: 10° nose up at touchdown, ramping from 0°
+            // at flare-start altitude to 10° at ground level. This biases the
+            // pitch command nose-up so the aircraft settles in a main-gear-
+            // first attitude. 10° is a typical fighter touchdown attitude.
+            const double flareProgress = std::max(0.0, std::min(1.0,
+                1.0 - altAGL / kFlareAltFt));  // 0 at flare start, 1 at ground
+            const double targetPitchDeg = 10.0 * flareProgress;  // 0° → 10°
+            const double pitchErr = targetPitchDeg - as.kin.theta * RTD;
+            // Pitch-attitude command (secondary, adds to descent command).
+            // Gain 0.08: aggressive nose-up command to overcome the low-speed
+            // elevator authority problem.
+            const double pitchPstick = pitchErr * 0.08;
+
+            // Combined pitch command: descent-rate + pitch-attitude.
+            // CLAMP TO NOSE-UP: during flare, never command nose-down. The
+            // minimum pstick ramps up with flare progress to force the nose
+            // up as the aircraft settles.
+            const double minFlarePstick = 0.15 + 0.35 * flareProgress;  // 0.15 → 0.50
+            digi.commands.pStick = std::max(minFlarePstick, std::min(1.0,
+                descentPstick + pitchPstick));
 
             // Wings level
             fcsState.maxRoll = 0.0;
@@ -565,6 +703,8 @@ void RunLanding(DigiState& digi, const AircraftState& as,
             if (altAGL < 5.0) {
                 go.phase = GroundOpsPhase::Touchdown;
                 go.touchdownSpeed = as.vcas;
+                go.touchdownDescentRate = as.kin.zdot;
+                go.touchdownPitch = as.kin.theta;
             }
             break;
         }

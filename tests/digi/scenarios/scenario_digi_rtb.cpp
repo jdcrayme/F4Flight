@@ -80,6 +80,7 @@ public:
 
         sc_brain_ = &sc.brain();
         initialHeading_ = initialHeading;
+        isHeavy_ = isHeavy(fm.config());
     }
 
     void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
@@ -142,12 +143,14 @@ public:
         //    to turn 90° to north; in 60s at 45° bank it can turn ~200°.
         if (minAbsHeadingToNorth_ > 60.0 * DTR) return false;
         // 3. Must close the distance to the airbase (prove it's flying toward
-        //    it, not away). Started at 20 NM = 121520 ft; require the min
-        //    distance to be at least 0.5 NM less than the start (proves the
-        //    aircraft turned toward the airbase and is closing). Slow aircraft
-        //    (A-10 at 250 kts) may not close much in 90s, but they should at
-        //    least be getting closer, not further.
-        if (minDistToAirbase_ > 121520.0 - 0.5 * 6076.0) return false;
+        //    it, not away). Started at 20 NM = 121520 ft. The old test only
+        //    required 0.5 NM closure — trivially satisfied by any drift
+        //    toward the airbase. Tighten to require at least 3 NM closure
+        //    (proves the AI actually navigated toward the airbase, not just
+        //    happened to drift slightly closer). Heavy/slow aircraft (A-10,
+        //    C-130) get a 1 NM threshold.
+        const double requiredClosureFt = (isHeavy_ ? 1.0 : 3.0) * 6076.0;
+        if (minDistToAirbase_ > 121520.0 - requiredClosureFt) return false;
         // 4. Must not crash.
         if (minAlt_ < 1000.0) return false;
         return true;
@@ -155,7 +158,7 @@ public:
 
     std::string criteria() const override {
         return "Enter RTB mode; Turn within 60° of airbase bearing; "
-               "Close distance to airbase (at least 0.5NM closer); No crash; No NaN";
+               "Close distance by >= 3NM (1NM heavy); No crash; No NaN";
     }
 
     std::string failureReason() const override {
@@ -171,12 +174,13 @@ public:
                    std::to_string(minAbsHeadingToNorth_ * RTD) +
                    "deg (needed <= 60deg) — aircraft did not turn toward the airbase.";
         }
-        const double required = 121520.0 - 0.5 * 6076.0;
-        if (minDistToAirbase_ > required) {
+        const double requiredClosureFt = (isHeavy_ ? 1.0 : 3.0) * 6076.0;
+        if (minDistToAirbase_ > 121520.0 - requiredClosureFt) {
             return "Min distance to airbase was " +
                    std::to_string(static_cast<int>(minDistToAirbase_)) +
-                   "ft (needed <= " + std::to_string(static_cast<int>(required)) +
-                   "ft) — aircraft did not close on the divert field.";
+                   "ft (needed <= " + std::to_string(static_cast<int>(121520.0 - requiredClosureFt)) +
+                   "ft = " + std::to_string(isHeavy_ ? 1.0 : 3.0) +
+                   "NM closure) — aircraft did not close meaningfully on the divert field.";
         }
         if (minAlt_ < 1000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -202,14 +206,15 @@ public:
     }
 
     void Finish() const override {
+        const double requiredClosureFt = (isHeavy_ ? 1.0 : 3.0) * 6076.0;
         std::printf("  --- Summary ---\n");
         std::printf("  Entered RTB:          %s\n", enteredRTB_ ? "[PASS]" : "[FAIL]");
         std::printf("  Min heading to north: %.1f° (need < 60°) %s\n",
             minAbsHeadingToNorth_ * RTD,
             minAbsHeadingToNorth_ < 60.0 * DTR ? "[PASS]" : "[FAIL]");
         std::printf("  Min dist to airbase:  %.0f ft (need < %.0f) %s\n",
-            minDistToAirbase_, 121520.0 - 0.5 * 6076.0,
-            minDistToAirbase_ < 121520.0 - 0.5 * 6076.0 ? "[PASS]" : "[FAIL]");
+            minDistToAirbase_, 121520.0 - requiredClosureFt,
+            minDistToAirbase_ < 121520.0 - requiredClosureFt ? "[PASS]" : "[FAIL]");
         std::printf("  Entered Landing:      %s\n", enteredLanding_ ? "[PASS]" : "(n/a)");
         std::printf("  Min altitude:         %.0f ft %s\n", minAlt_,
             minAlt_ >= 1000.0 ? "[PASS]" : "[FAIL]");
@@ -227,6 +232,7 @@ private:
     DigiMode currentMode_{DigiMode::NoMode};
     bool enteredRTB_{false};
     bool enteredLanding_{false};
+    bool isHeavy_{false};
     double minAbsHeadingToNorth_{1e9};
     double minDistToAirbase_{1e9};
     double minAlt_{1e9};

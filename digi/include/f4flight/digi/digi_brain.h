@@ -122,11 +122,29 @@ struct FrameInputs {
     // unported) GroundAttackMode will read it.
     const DigiEntity* injectedGroundTarget {nullptr};
 
+    // --- Task 15-a: A/G attack profile selection ---
+    // Selects which delivery geometry runGroundAttack() executes when the
+    // injectedGroundTarget is non-null. Defaults to DiveBomb for backward
+    // compatibility (existing scenarios that don't set it keep the Task 11
+    // dive-bomb profile). Committed to state_.ag.agProfile by
+    // setFrameInputs().
+    //
+    // Set this to LevelDelivery or TossBomb to exercise the new profiles.
+    AgAttackProfile injectedAgProfile {AgAttackProfile::DiveBomb};
+
     // --- Wingman formation following ---
     // The flight lead entity. When non-null AND formation.isWing is true,
     // the brain enters Wingy mode and calls AiFollowLead to fly to the
     // wingman's formation slot relative to this lead.
     const DigiEntity* injectedLead {nullptr};
+
+    // --- Air-to-air refueling (AAR) ---
+    // The tanker entity. When non-null, the brain can enter Refueling mode
+    // to fly to the tanker's boom position and hold formation for refueling.
+    // The tanker must be a friendly aircraft flying straight and level.
+    // The brain tracks the refueling state (approach → contact → disconnect)
+    // in state_.refuel.
+    const DigiEntity* injectedTanker {nullptr};
 
     // --- Secondary threat injection (HandleThreat port) ---
     // A "secondary threat" is an aircraft that has spiked us, fired a missile
@@ -263,8 +281,22 @@ public:
         // mode will read state_.ag.groundTarget; the host's injection is the
         // production path).
         if (inputs.injectedGroundTarget) {
+            // Task 15-a: when a NEW ground target is injected (different
+            // pointer from the previous one), reset the attack phase counter
+            // so the new attack starts from approach (phase 0). Without this,
+            // a previous scenario phase's egress phase (phase 3) leaks into
+            // the next phase and immediately clears the new target because
+            // the egress-complete range check passes at the start distance.
+            if (state_.ag.groundTarget != inputs.injectedGroundTarget) {
+                state_.ag.agApproach = 0;
+            }
             state_.ag.groundTarget = inputs.injectedGroundTarget;
         }
+        // Task 15-a: commit the A/G attack profile. The host selects the
+        // delivery geometry via FrameInputs.injectedAgProfile; we mirror it
+        // into state_.ag.agProfile so runGroundAttack() can dispatch on it.
+        // Defaults to DiveBomb when the host doesn't set it (backward compat).
+        state_.ag.agProfile = inputs.injectedAgProfile;
         // Commit injected secondary threat. HandleThreat will read threatPtr
         // each frame and re-evaluate every 10 s.
         if (inputs.injectedThreat) {
@@ -422,6 +454,39 @@ public:
         // causes a use-after-free when the next scenario's compute() calls
         // sms_->hasWeaponClass().
         sms_ = nullptr;
+    }
+
+    /// Reset per-phase navigation state (call between PHASES within a scenario).
+    ///
+    /// Unlike reset() (which clears everything including mode and config),
+    /// this only clears the navigation integrators and stick commands that
+    /// accumulate during a phase and would leak into the next phase:
+    ///   - gammaHoldIError (GammaHold integrator)
+    ///   - autoThrottle (MachHold integrator)
+    ///   - pStick, rStick, yPedal, throttle (smoothed stick commands)
+    ///   - speedBrakeCmd, tefCmd, lefCmd
+    ///
+    /// This is needed because the scenario framework reuses the same brain
+    /// across all phases in a scenario. Without this, a Takeoff phase's
+    /// wound-up GammaHold integrator and full-throttle stick command carry
+    /// over to the Landing phase, causing the aircraft to pitch the wrong
+    /// way initially and excite the Phugoid.
+    ///
+    /// The mode, config, waypoints, and threat state are PRESERVED — only
+    /// the transient control state is cleared. Each phase's Init() should
+    /// still set up whatever it needs, but it no longer has to manually
+    /// clear the previous phase's integrators.
+    void resetPhaseState() noexcept {
+        state_.nav.gammaHoldIError = 0.0;
+        state_.nav.autoThrottle = 0.0;
+        state_.commands.pStick = 0.0;
+        state_.commands.rStick = 0.0;
+        state_.commands.yPedal = 0.0;
+        state_.commands.throttle = 0.5;
+        state_.commands.speedBrakeCmd = -1.0;
+        state_.commands.tefCmd = 0.0;
+        state_.commands.lefCmd = 0.0;
+        state_.commands.wheelBrakes = false;
     }
 
     // =======================================================================
@@ -627,6 +692,48 @@ private:
     // waypoint nav if no divert airbase is set.
     void runRTB(const AircraftState& as, double dt,
                 const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // GroundAttack: simplified dive-bomb attack profile. Flies toward the
+    // ground target, dives to the release altitude, releases the weapon,
+    // pulls out, and egresses. Port of FreeFalcon's GroundAttackMode
+    // (gndattck.cpp:96-4900), vastly simplified.
+    //
+    // Task 15-a: dispatches on state_.ag.agProfile (DiveBomb / LevelDelivery /
+    // TossBomb) to one of the three per-profile helper methods below. The host
+    // selects the profile via FrameInputs.injectedAgProfile. Defaults to
+    // DiveBomb for backward compatibility.
+    void runGroundAttack(const AircraftState& as, double dt,
+                          const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // Refueling: air-to-air refueling. Flies to the tanker's boom position,
+    // holds contact for fuel transfer, then disconnects. Port of FreeFalcon's
+    // AiRefuel (refuel.cpp:33-200), vastly simplified.
+    void runRefueling(const AircraftState& as, double dt,
+                       const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // DiveBomb profile: the original Task 11 4-phase dive-bomb attack
+    // (approach → dive → pullout → egress). Reuses state_.ag.agApproach as
+    // the phase counter (0..3).
+    void runDiveBombAttack(const DigiEntity* target,
+                            const AircraftState& as, double dt,
+                            const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // LevelDelivery profile: Task 15-a level bombing against soft/area
+    // targets. 4-phase (approach → level → release → egress). Approaches at
+    // 8000 ft / 400 kts, descends to 500 ft AGL within 2 NM, releases when
+    // directly over the target, climbs back to 8000 ft on egress.
+    void runLevelDeliveryAttack(const DigiEntity* target,
+                                 const AircraftState& as, double dt,
+                                 const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // TossBomb profile: Task 15-a loft (toss) bombing for standoff delivery.
+    // 4-phase (approach → pull-up → release → egress). Approaches at 500 ft
+    // AGL / 450 kts, pulls up into a 4G climb within 3 NM, releases at the
+    // apex (45° pitch attitude or 3000 ft AGL), continues climbing to
+    // 10000 ft before leveling off.
+    void runTossBombAttack(const DigiEntity* target,
+                            const AircraftState& as, double dt,
+                            const FlightControlSystem& fcs, FcsState& fcsState);
 
     // FollowOrders: execute the wingman's current tactical maneuver
     // (BreakLeft/Right, ClearSix, Posthole, Chainsaw). Dispatches to

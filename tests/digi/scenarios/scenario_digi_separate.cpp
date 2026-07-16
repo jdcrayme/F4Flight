@@ -336,10 +336,23 @@ public:
         maxG_ = std::max(maxG_, as.loads.nzcgs);
         maxThrottle_ = std::max(maxThrottle_, input.throttle);
 
+        // Track speed (VCAS) to verify acceleration. The WvrBugOut primitive
+        // is supposed to accelerate to 2x corner speed — a speed increase
+        // proves the bugout command actually fired (vs. the aircraft just
+        // sitting at MIL power, which trivially satisfies throttle > 0.9).
+        if (firstFrame_) {
+            startVcas_ = as.vcas;
+            firstFrame_ = false;
+        }
+        maxVcas_ = std::max(maxVcas_, as.vcas);
+        curVcas_ = as.vcas;
+
         const double dx = target_.x - as.kin.x;
         const double dy = target_.y - as.kin.y;
         const double range = std::sqrt(dx * dx + dy * dy);
         curRange_ = range;
+        startRange_ = (startRange_ < 0.0) ? range : startRange_;
+        maxRange_ = std::max(maxRange_, range);
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
@@ -372,10 +385,24 @@ public:
         // 1. Must enter Bugout mode (pre-armed timer expires after ~1s).
         //    Accept Separate/RTB as alternates (in case of future re-routing).
         if (!enteredBugout_ && !enteredSeparate_ && !enteredRTB_) return false;
-        // 2. Must have engaged throttle (WvrBugOut accelerates to 2x corner).
-        //    Or maneuvered (heading change).
-        const double hdgThreshold = isHeavy_ ? 5.0 : 10.0;
-        if (maxHeadingChange_ < hdgThreshold * DTR && maxThrottle_ < 0.9) return false;
+        // 2. Must have ACTUALLY disengaged — not just sat at MIL power.
+        //    The old test accepted "throttle > 0.9" which is trivially
+        //    satisfied because the aircraft starts at full throttle. Instead
+        //    require at least ONE of:
+        //    (a) Heading change > 30° (turned away from the target), OR
+        //    (b) Speed increased by >= 30 kts (accelerated to disengage), OR
+        //    (c) Range to target increased (opened distance from target).
+        //    Heavy aircraft (B-52, C-130) have very low T/W and can't
+        //    accelerate or turn quickly — waive the disengagement check
+        //    for them (they're still checked on mode entry + no crash).
+        if (!isHeavy_) {
+            const double hdgThreshold = 30.0;
+            const double spdIncrease = 30.0;
+            const bool turnedAway = maxHeadingChange_ >= hdgThreshold * DTR;
+            const bool accelerated = (maxVcas_ - startVcas_) >= spdIncrease;
+            const bool openedRange = (maxRange_ > startRange_ + 500.0);
+            if (!turnedAway && !accelerated && !openedRange) return false;
+        }
         // 3. Must not crash.
         if (minAlt_ < 1000.0) return false;
         return true;
@@ -383,7 +410,8 @@ public:
 
     std::string criteria() const override {
         return "Enter Bugout mode (pre-armed timer; Separate/RTB accepted as alt); "
-               "Maneuver (hdg chg > 10deg OR throttle > 0.9); Min alt >= 1000ft; No NaN";
+               "Disengage (hdg chg > 30deg OR speed +30kts OR range opened; heavy: waived); "
+               "Min alt >= 1000ft; No NaN";
     }
 
     std::string failureReason() const override {
@@ -396,11 +424,23 @@ public:
                    "s — SeparateCheck did not return Bugout despite the "
                    "pre-armed timer.";
         }
-        const double hdgThreshold = isHeavy_ ? 5.0 : 10.0;
-        if (maxHeadingChange_ < hdgThreshold * DTR && maxThrottle_ < 0.9) {
-            return "Max heading change was " + std::to_string(curHdgChg_) +
-                   "deg, max throttle was " + std::to_string(maxThrottle_) +
-                   " — aircraft did not maneuver or accelerate to disengage.";
+        if (!isHeavy_) {
+            const double hdgThreshold = 30.0;
+            const double spdIncrease = 30.0;
+            const bool turnedAway = maxHeadingChange_ >= hdgThreshold * DTR;
+            const bool accelerated = (maxVcas_ - startVcas_) >= spdIncrease;
+            const bool openedRange = (maxRange_ > startRange_ + 500.0);
+            if (!turnedAway && !accelerated && !openedRange) {
+                return "Aircraft did not disengage: max heading change was " +
+                       std::to_string(curHdgChg_) + "deg (need > " +
+                       std::to_string(hdgThreshold) + "), speed increased " +
+                       std::to_string(static_cast<int>(maxVcas_ - startVcas_)) +
+                       "kts (need > " + std::to_string(static_cast<int>(spdIncrease)) +
+                       "), range " + std::to_string(static_cast<int>(startRange_)) +
+                       "->" + std::to_string(static_cast<int>(maxRange_)) +
+                       "ft (did not open). Bugout mode was entered but the "
+                       "WvrBugOut primitive did not maneuver or accelerate.";
+            }
         }
         if (minAlt_ < 1000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -422,7 +462,11 @@ public:
     // The target is auto-extracted by the framework via brain.resolvedTarget().
 
     void Finish() const override {
-        const double hdgThreshold = isHeavy_ ? 5.0 : 10.0;
+        const double hdgThreshold = 30.0;
+        const double spdIncrease = 30.0;
+        const bool turnedAway = maxHeadingChange_ >= hdgThreshold * DTR;
+        const bool accelerated = (maxVcas_ - startVcas_) >= spdIncrease;
+        const bool openedRange = (maxRange_ > startRange_ + 500.0);
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Bugout:      %s\n", enteredBugout_ ? "[PASS]" : "[FAIL]");
         std::printf("  Entered Separate:    %s (alt)\n",
@@ -431,9 +475,20 @@ public:
             enteredRTB_ ? "[PASS]" : "(n/a)");
         std::printf("  Entered WVREngage:   %s (info — pre-empts Separate)\n",
             enteredWVREngage_ ? "[YES]" : "(no)");
-        std::printf("  Max heading change:  %.1f deg (need > %.0f OR throttle > 0.9) %s\n",
-            maxHeadingChange_ * RTD, hdgThreshold,
-            (maxHeadingChange_ > hdgThreshold * DTR || maxThrottle_ > 0.9) ? "[PASS]" : "[FAIL]");
+        if (isHeavy_) {
+            std::printf("  Disengage check:     (heavy: waived) hdg %.1f deg, "
+                        "spd +%d kts, range %.0f->%.0f\n",
+                maxHeadingChange_ * RTD,
+                static_cast<int>(maxVcas_ - startVcas_),
+                startRange_, maxRange_);
+        } else {
+            std::printf("  Disengage check:     hdg %.1f deg (need > %.0f), "
+                        "spd +%d kts (need > %.0f), range %.0f->%.0f %s\n",
+                maxHeadingChange_ * RTD, hdgThreshold,
+                static_cast<int>(maxVcas_ - startVcas_), spdIncrease,
+                startRange_, maxRange_,
+                (turnedAway || accelerated || openedRange) ? "[PASS]" : "[FAIL]");
+        }
         std::printf("  Max throttle:         %.2f\n", maxThrottle_);
         std::printf("  Final range:         %.0f ft (info)\n", curRange_);
         std::printf("  Max G:               %.2f\n", maxG_);
@@ -451,6 +506,11 @@ private:
     double minAlt_{1e9};
     double maxG_{0.0};
     double maxThrottle_{0.0};
+    double startVcas_{0.0};
+    double maxVcas_{0.0};
+    double startRange_{-1.0};
+    double maxRange_{0.0};
+    bool firstFrame_{true};
     bool hasNaN_{false};
     bool enteredBugout_{false};
     bool enteredSeparate_{false};
@@ -464,6 +524,7 @@ private:
     double curRange_{0.0};
     double curHdgChg_{0.0};
     double curThrottle_{0.0};
+    double curVcas_{0.0};
     double curBugoutTimer_{0.0};
     DigiMode curMode_{DigiMode::NoMode};
 };

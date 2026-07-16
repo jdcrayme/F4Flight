@@ -78,6 +78,15 @@ public:
         while (dh < -PI) dh += 2.0 * PI;
         maxAbsHeadingChange_ = std::max(maxAbsHeadingChange_, std::fabs(dh));
 
+        // Track heading at t=20s so we can verify SUSTAINED turning in the
+        // last 10s (not just a one-time turn that stopped). The old test
+        // only checked max heading change — a brief 25° turn at t=5 that
+        // then stopped would pass the 20° threshold.
+        if (phaseTime_ >= 20.0 && headingAtT20_ == 0.0 && phaseTime_ < 21.0) {
+            headingAtT20_ = heading;
+        }
+        finalHeading_ = heading;
+
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
@@ -108,16 +117,30 @@ public:
         // 1. Must enter Loiter mode.
         if (!enteredLoiter_) return false;
         // 2. Must have turned significantly (Loiter = 30° bank orbit).
-        //    In 30s at 30° bank, expect > 20° of heading change.
-        if (maxAbsHeadingChange_ < 20.0 * DTR) return false;
-        // 3. Must not crash.
+        //    At 30° bank / 350 kts, theoretical turn rate is 1.4°/s → 42° in
+        //    30s. The FCS doesn't sustain the full 30° bank, so actual is
+        //    ~1.1°/s → 33° in 30s. Require > 25° (catches "barely turning"
+        //    regressions while accommodating the FCS shortfall).
+        if (maxAbsHeadingChange_ < 25.0 * DTR) return false;
+        // 3. Must have SUSTAINED the turn through the last 10s — proves the
+        //    aircraft was still orbiting at the end, not just a one-time
+        //    turn that stopped. The old test only checked max heading
+        //    change, which passed even if the aircraft turned 25° at t=5
+        //    and then flew straight for the rest of the phase.
+        if (headingAtT20_ != 0.0) {
+            double dhLast10 = finalHeading_ - headingAtT20_;
+            while (dhLast10 >  PI) dhLast10 -= 2.0 * PI;
+            while (dhLast10 < -PI) dhLast10 += 2.0 * PI;
+            if (std::fabs(dhLast10) < 5.0 * DTR) return false;
+        }
+        // 4. Must not crash.
         if (minAlt_ < alt_ - 2000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter Loiter mode; Heading change > 20° (orbiting); "
-               "No crash; No NaN";
+        return "Enter Loiter mode; Heading change > 25° (orbiting); "
+               "Sustained turn in last 10s (> 5°); No crash; No NaN";
     }
 
     std::string failureReason() const override {
@@ -127,9 +150,19 @@ public:
                    std::string(digiModeName(curMode_)) +
                    ") — brain did not latch Loiter despite the mode being forced.";
         }
-        if (maxAbsHeadingChange_ < 20.0 * DTR) {
+        if (maxAbsHeadingChange_ < 25.0 * DTR) {
             return "Max heading change was " + std::to_string(curHdgChg_) +
-                   "deg (needed > 20deg) — aircraft is not orbiting (flying straight).";
+                   "deg (needed > 25deg) — aircraft is not orbiting (flying straight).";
+        }
+        if (headingAtT20_ != 0.0) {
+            double dhLast10 = finalHeading_ - headingAtT20_;
+            while (dhLast10 >  PI) dhLast10 -= 2.0 * PI;
+            while (dhLast10 < -PI) dhLast10 += 2.0 * PI;
+            if (std::fabs(dhLast10) < 5.0 * DTR) {
+                return "Heading only changed " + std::to_string(std::fabs(dhLast10) * RTD) +
+                       "deg in the last 10s (needed > 5deg) — orbit was not sustained "
+                       "(aircraft turned briefly then stopped).";
+            }
         }
         if (minAlt_ < alt_ - 2000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -149,9 +182,17 @@ public:
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Loiter:       %s\n", enteredLoiter_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Max heading change:   %.1f° (need > 20°) %s\n",
+        std::printf("  Max heading change:   %.1f° (need > 25°) %s\n",
             maxAbsHeadingChange_ * RTD,
-            maxAbsHeadingChange_ > 20.0 * DTR ? "[PASS]" : "[FAIL]");
+            maxAbsHeadingChange_ > 25.0 * DTR ? "[PASS]" : "[FAIL]");
+        if (headingAtT20_ != 0.0) {
+            double dhLast10 = finalHeading_ - headingAtT20_;
+            while (dhLast10 >  PI) dhLast10 -= 2.0 * PI;
+            while (dhLast10 < -PI) dhLast10 += 2.0 * PI;
+            std::printf("  Heading chg last 10s: %.1f° (need > 5°) %s\n",
+                std::fabs(dhLast10) * RTD,
+                std::fabs(dhLast10) > 5.0 * DTR ? "[PASS]" : "[FAIL]");
+        }
         std::printf("  Max G:                %.2f\n", maxG_);
         std::printf("  Min altitude:         %.0f ft %s\n", minAlt_,
             minAlt_ >= alt_ - 2000.0 ? "[PASS]" : "[FAIL]");
@@ -168,6 +209,8 @@ private:
     DigiMode currentMode_{DigiMode::NoMode};
     bool enteredLoiter_{false};
     double maxAbsHeadingChange_{0.0};
+    double headingAtT20_{0.0};
+    double finalHeading_{0.0};
     double minAlt_{1e9};
     double maxG_{0.0};
     bool hasNaN_{false};

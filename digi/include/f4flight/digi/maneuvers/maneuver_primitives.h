@@ -28,6 +28,7 @@
 #include "f4flight/digi/digi_state.h"
 #include "f4flight/flight/aircraft_state.h"
 #include "f4flight/flight/fcs.h"
+#include "f4flight/flight/core/units.h"  // CasKnots, TasKnots for typed overloads
 
 namespace f4flight {
 namespace digi {
@@ -58,6 +59,32 @@ public:
     static void GammaHold(double desGamma, DigiState& digi,
                           const AircraftState& state, double maxGs);
 
+    // PhugoidDamper — add pitch rate (q) feedback to the pStick command.
+    //
+    // The Phugoid is a long-period oscillation (period ~30s for the F-16)
+    // where altitude and airspeed exchange: the aircraft gently pitches up
+    // and climbs (bleeding speed), then pitches down and descends (gaining
+    // speed), repeating. The GammaHold controller cannot damp this because
+    // it only commands a target gamma — it has no awareness of the pitch
+    // RATE. The Phugoid builds up when the controller's corrections lag
+    // the oscillation (e.g. during a glideslope approach where the beam
+    // descent rate changes).
+    //
+    // This damper adds a pitch-rate feedback term to the pStick command:
+    // if the aircraft is pitching up (q > 0), reduce the nose-up command;
+    // if pitching down (q < 0), increase it. This opposes the oscillation
+    // and damps it out within 1-2 cycles.
+    //
+    // Call this AFTER GammaHold (or any pitch controller) so it can modify
+    // the pStick that the controller already set. The damper is a pure
+    // derivative term — it has no steady-state effect (q → 0 in trim), so
+    // it doesn't interfere with the controller's target tracking.
+    //
+    // gain: typically 0.3-0.5. Higher = more damping but possible high-
+    //       frequency buzz if the FCS pitch loop has lag.
+    static void PhugoidDamper(DigiState& digi, const AircraftState& state,
+                              double gain = -1.0);  // <0 = phase-aware
+
     // AltHold — hold a desired altitude (feet, positive up).
     static void AltHold(double desAlt, DigiState& digi, const AircraftState& state,
                         double maxGs);
@@ -84,10 +111,33 @@ public:
 
     // MachHold — hold a target speed via throttle.
     // Returns true if within 10% of target speed.
+    //
+    // UNITS NOTE: targetSpeed and currentSpeed are both in CAS kts. Many
+    // call sites pass a TAS value (e.g. entity.speed / KNOTS_TO_FTPSEC) as
+    // the target — this is a CAS/TAS mismatch bug. Use the typed overload
+    // below (machHoldCas) to prevent this at compile time.
     static bool MachHold(double targetSpeed, double currentSpeed, bool adjustPitch,
                          DigiState& digi, const AircraftState& state,
                          double minVcas, double maxVcas,
                          double dt, double burnerDelta = 500.0);
+
+    // machHoldCas — typed overload. The target is CasKnots (calibrated
+    // airspeed, what the pilot sees). The current speed is read from
+    // state.vcas (also CAS kts). This overload makes it a compile error to
+    // pass a TAS value as the target.
+    //
+    // Example:
+    //   // CORRECT: target is CAS
+    //   ManeuverPrimitives::machHoldCas(cas_kts(350.0), digi, as, ...);
+    //   // WRONG (compile error): target is TAS
+    //   ManeuverPrimitives::machHoldCas(tas_kts(target.speed / KNOTS_TO_FTPSEC), ...);
+    static bool machHoldCas(CasKnots targetCas, bool adjustPitch,
+                            DigiState& digi, const AircraftState& state,
+                            double minVcas, double maxVcas,
+                            double dt, double burnerDelta = 500.0) {
+        return MachHold(targetCas.count(), state.vcas, adjustPitch,
+                        digi, state, minVcas, maxVcas, dt, burnerDelta);
+    }
 
     // Loiter — orbit pattern (30° bank).
     static void Loiter(DigiState& digi, const AircraftState& state,

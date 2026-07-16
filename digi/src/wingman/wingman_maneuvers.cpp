@@ -15,6 +15,7 @@
 #include "f4flight/digi/offensive/guns_engage.h"
 #include "f4flight/digi/weapons/weapon_spec.h"
 #include "f4flight/digi/weapons/sms.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTas (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -100,8 +101,10 @@ bool AiExecBreakRL(DigiState& digi, const DigiEntity& self,
     double desSpeed = digi.formation.wingman.speedOrdered;
     if (desSpeed <= 0.0) desSpeed = digi.config.cornerSpeed;
     desSpeed *= 1.001;
-    ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                  digi, as, 150.0, 800.0, dt, 100.0);
+    // BreakRL: speedOrdered is CAS-kts (set externally by host/tests). Use
+    // the typed machHoldCas API to enforce the CAS contract at compile time.
+    ManeuverPrimitives::machHoldCas(cas_kts(desSpeed), true,
+                                     digi, as, 150.0, 800.0, dt, 100.0);
 
     digi.nav.mnverTime -= dt;
     return digi.nav.mnverTime > 0.0;
@@ -128,8 +131,10 @@ bool AiExecClearSix(DigiState& digi, const DigiEntity& self,
     double desSpeed = digi.formation.wingman.speedOrdered;
     if (desSpeed <= 0.0) desSpeed = digi.config.cornerSpeed;
     desSpeed *= 1.001;
-    ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                  digi, as, 150.0, 800.0, dt, 100.0);
+    // ClearSix: speedOrdered is CAS-kts (set externally by host/tests). Use
+    // the typed machHoldCas API to enforce the CAS contract at compile time.
+    ManeuverPrimitives::machHoldCas(cas_kts(desSpeed), true,
+                                     digi, as, 150.0, 800.0, dt, 100.0);
 
     digi.nav.mnverTime -= dt;
     return digi.nav.mnverTime > 0.0;
@@ -160,8 +165,10 @@ bool AiExecPosthole(DigiState& digi, const DigiEntity& self,
 
         ManeuverPrimitives::TrackPoint(self.x, self.y, desAlt,
                                         digi, as, fcs, fcsState, digi.config.maxGs);
-        ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                      digi, as, 150.0, 800.0, dt, 100.0);
+        // Posthole: speedOrdered is CAS-kts (set externally by host/tests).
+        // Use the typed machHoldCas API to enforce the CAS contract.
+        ManeuverPrimitives::machHoldCas(cas_kts(desSpeed), true,
+                                         digi, as, 150.0, 800.0, dt, 100.0);
 
         // Transition to phase 2 when within 1000 ft of target altitude.
         if (std::fabs(-as.kin.z - desAlt) < 1000.0) {
@@ -230,6 +237,17 @@ void AiInitPince(DigiState& digi, const DigiEntity& self,
                  const DigiEntity* target, const DigiEntity* lead) {
     // Determine the maneuver axis (trigYaw).
     // FF: target bearing if target, else lead's yaw, else self's yaw.
+    //
+    // CAS/TAS NOTE: speedOrdered is stored in TAS-kts here (entity.speed is
+    // TRUE airspeed in ft/s; dividing by KNOTS_TO_FTPSEC gives TAS-kts).
+    // AiExecPince converts it to CAS-kts at use time using the wingman's
+    // own CAS/TAS ratio, matching the convention used in wingman_ai.cpp's
+    // AiFollowLead. Storing CAS-kts here would require AircraftState, which
+    // is not available in this function; converting at use time also keeps
+    // the target current as the wingman's altitude changes during the
+    // maneuver. Other maneuvers (BreakRL, ClearSix, Posthole) treat
+    // speedOrdered as CAS-kts because it is set externally by the host /
+    // tests — do NOT mix the two conventions.
     double trigYaw;
     if (target) {
         // TargetAz(self, target) = bearing to target relative to self heading.
@@ -239,15 +257,15 @@ void AiInitPince(DigiState& digi, const DigiEntity& self,
         trigYaw = self.yaw + (bearingToTarget - self.yaw);
         // Simplify: trigYaw = bearingToTarget (world-frame bearing).
         trigYaw = bearingToTarget;
-        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -self.z;
     } else if (lead) {
         trigYaw = lead->yaw;
-        digi.formation.wingman.speedOrdered = lead->speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = lead->speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -lead->z;
     } else {
         trigYaw = self.yaw;
-        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -self.z;
     }
 
@@ -290,20 +308,24 @@ void AiInitFlex(DigiState& digi, const DigiEntity& self,
                 const DigiEntity* target, const DigiEntity* lead) {
     // FF uses AiInitTrig to compute firstTrig (target/lead/self bearing) and
     // secondTrig (firstTrig + 90°). We inline the equivalent.
+    //
+    // CAS/TAS NOTE: as in AiInitPince, speedOrdered is stored in TAS-kts here
+    // and converted to CAS-kts in AiExecFlex using the wingman's own
+    // CAS/TAS ratio. See AiInitPince for the full rationale.
     double trigYaw;
     if (target) {
         const double dx = target->x - self.x;
         const double dy = target->y - self.y;
         trigYaw = std::atan2(dy, dx);
-        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -self.z;
     } else if (lead) {
         trigYaw = lead->yaw;
-        digi.formation.wingman.speedOrdered = lead->speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = lead->speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -lead->z;
     } else {
         trigYaw = self.yaw;
-        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;
+        digi.formation.wingman.speedOrdered = self.speed / KNOTS_TO_FTPSEC;  // TAS-kts
         digi.formation.wingman.altitudeOrdered = -self.z;
     }
 
@@ -372,11 +394,21 @@ bool AiExecPince(DigiState& digi, const DigiEntity& self,
                                     digi, as, fcs, fcsState, digi.config.maxGs);
 
     // Speed: ordered speed with tiny ramp-up (matches FF's mSpeedOrdered *= 1.001F).
-    double desSpeed = digi.formation.wingman.speedOrdered;
-    if (desSpeed <= 0.0) desSpeed = digi.config.cornerSpeed;
-    desSpeed *= 1.001;
-    ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                  digi, as, 150.0, 800.0, dt, 100.0);
+    //
+    // CAS/TAS CORRECTION: speedOrdered was set in TAS-kts by AiInitPince
+    // (from self/lead entity.speed, which is TRUE airspeed in ft/s).
+    // machHoldCas compares the target against as.vcas (CALIBRATED airspeed
+    // in kts), so we must convert TAS-kts to the equivalent CAS at our
+    // altitude before passing it in. Without this conversion the Pince
+    // maneuver would command a CAS equal to the lead's TAS — at altitude
+    // the wingman would fly much faster than the lead and never stabilize
+    // in the bracket formation. Conversion uses OUR CAS/TAS ratio via the
+    // typed casFromTas helper (replaces the manual casToTasRatio idiom).
+    double desSpeedTasKts = digi.formation.wingman.speedOrdered;
+    if (desSpeedTasKts <= 0.0) desSpeedTasKts = digi.config.cornerSpeed;
+    const CasKnots desCas = casFromTas(tas_kts(desSpeedTasKts * 1.001), as);
+    ManeuverPrimitives::machHoldCas(desCas, true,
+                                     digi, as, 150.0, 800.0, dt, 100.0);
 
     return true;
 }
@@ -419,11 +451,14 @@ bool AiExecFlex(DigiState& digi, const DigiEntity& self,
     ManeuverPrimitives::TrackPoint(tpX, tpY, tpAlt,
                                     digi, as, fcs, fcsState, digi.config.maxGs);
 
-    double desSpeed = digi.formation.wingman.speedOrdered;
-    if (desSpeed <= 0.0) desSpeed = digi.config.cornerSpeed;
-    desSpeed *= 1.001;
-    ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                  digi, as, 150.0, 800.0, dt, 100.0);
+    // CAS/TAS CORRECTION: as in AiExecPince, speedOrdered is stored in
+    // TAS-kts by AiInitFlex. Convert to CAS-kts using our CAS/TAS ratio
+    // via the typed casFromTas helper before passing to machHoldCas.
+    double desSpeedTasKts = digi.formation.wingman.speedOrdered;
+    if (desSpeedTasKts <= 0.0) desSpeedTasKts = digi.config.cornerSpeed;
+    const CasKnots desCas = casFromTas(tas_kts(desSpeedTasKts * 1.001), as);
+    ManeuverPrimitives::machHoldCas(desCas, true,
+                                     digi, as, 150.0, 800.0, dt, 100.0);
 
     return true;
 }

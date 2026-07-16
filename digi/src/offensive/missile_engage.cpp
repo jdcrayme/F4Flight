@@ -10,6 +10,7 @@
 #include "f4flight/digi/offensive/roll_and_pull.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/weapons/fire_control.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // cas_kts (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -257,9 +258,11 @@ void MissileEngage(DigiState& digi, const DigiEntity& self,
         ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
 
         // Speed control: 1.3× corner speed for BVR approach
+        // cornerSpeed is CAS-kts, so desSpeed is CAS-kts. Use the typed
+        // machHoldCas API to enforce this at compile time.
         const double desSpeed = 1.3 * digi.config.cornerSpeed;
-        ManeuverPrimitives::MachHold(desSpeed, as.vcas, true,
-                                      digi, as, 200.0, 800.0, dt, 100.0);
+        ManeuverPrimitives::machHoldCas(cas_kts(desSpeed), true,
+                                         digi, as, 200.0, 800.0, dt, 100.0);
     }
 }
 

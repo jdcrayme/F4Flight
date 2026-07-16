@@ -80,6 +80,12 @@ public:
         const DigiMode mode = sc_brain_->activeMode();
         if (mode == DigiMode::MissileDefeat) {
             enteredMissileDefeat_ = true;
+            // Track G during MissileDefeat specifically. The test is supposed
+            // to verify the AI RESPONDED to the detected missile, not just
+            // detected it. A regression where the AI enters MissileDefeat
+            // but doesn't maneuver would pass the old test (which only
+            // checked mode entry + sensor detection).
+            maxGInDefeat_ = std::max(maxGInDefeat_, as.loads.nzcgs);
         }
         // Verify the sensor pipeline actually saw the missile (not just
         // that the brain latched the mode). The brain's state_.missileDefeat.incomingMissile
@@ -134,14 +140,23 @@ public:
         //    state_.missileDefeat.incomingMissile was actually populated by SensorFusion
         //    (not just latched from a prior frame).
         if (!sensorSawMissile_) return false;
-        // 3. Must not have lawn-darted.
+        // 3. Must have actually MANEUVERED in response to the missile. The
+        //    old test only checked mode entry + sensor detection — a
+        //    regression where the AI detects the missile but doesn't react
+        //    would pass. Require maxG >= 1.2 during MissileDefeat (above
+        //    level-flight G of ~1.0, proving the AI rolled/pulled in
+        //    response to the detected threat).
+        if (maxGInDefeat_ < 1.2) return false;
+        // 4. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
         return "Enter MissileDefeat mode via autonomous sensor fusion; "
-               "Sensor pipeline saw incomingMissile; Min alt >= 5000ft; No NaN";
+               "Sensor pipeline saw incomingMissile; "
+               "Maneuvered (maxG >= 1.2 during MissileDefeat); "
+               "Min alt >= 5000ft; No NaN";
     }
 
     std::string failureReason() const override {
@@ -156,6 +171,11 @@ public:
             return "Entered MissileDefeat mode but sensor pipeline never populated "
                    "state_.missileDefeat.incomingMissile (mode entry may have been "
                    "a stale latch from a prior frame).";
+        }
+        if (maxGInDefeat_ < 1.2) {
+            return "Max G during MissileDefeat was " + std::to_string(maxGInDefeat_) +
+                   " (needed >= 1.2) — AI detected the missile via sensors but "
+                   "did not maneuver in response (no roll/pull command issued).";
         }
         if (minAlt_ < 5000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -183,6 +203,8 @@ public:
             enteredMissileDefeat_ ? "[PASS]" : "[FAIL]");
         std::printf("  Sensor saw missile:       %s\n",
             sensorSawMissile_ ? "[PASS]" : "[FAIL]");
+        std::printf("  Max G during MissileDefeat: %.2f (need >= 1.2) %s\n",
+            maxGInDefeat_, maxGInDefeat_ >= 1.2 ? "[PASS]" : "[FAIL]");
         std::printf("  Max G:                    %.2f\n", maxG_);
         std::printf("  Max heading change:       %.1f deg\n", maxHeadingChange_ * RTD);
         std::printf("  Min altitude:             %.0f ft (need >= 5000) %s\n",
@@ -197,6 +219,7 @@ private:
     double nextPrint_{0.0};
     double minAlt_{1e9};
     double maxG_{0.0};
+    double maxGInDefeat_{0.0};
     double maxHeadingChange_{0.0};
     bool hasNaN_{false};
     bool enteredMissileDefeat_{false};

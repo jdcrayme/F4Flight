@@ -39,13 +39,18 @@ set(F4FLIGHT_DIGI_SOURCES
     src/sensors/radar_sensor.cpp
     src/sensors/rwr_sensor.cpp
     src/sensors/visual_sensor.cpp
-    # Note: formation/ and comms/ and weapons/ are header-only — no .cpp
+    # Note: comms/ and weapons/ are header-only — no .cpp
+    # formation
+    src/formation/formation_file_loader.cpp
     # wingman
     src/wingman/wingman_state.cpp
     src/wingman/wingman_ai.cpp
     src/wingman/wingman_maneuvers.cpp
     # decision (Round 6: AirbaseCheck, SeparateCheck, CommandFlight)
     src/decision/decision_routines.cpp
+    src/decision/flight_lead.cpp
+    # autopilot
+    src/autopilot/autopilot.cpp
 )
 
 set(F4FLIGHT_DIGI_HEADERS
@@ -71,6 +76,8 @@ set(F4FLIGHT_DIGI_HEADERS
     include/f4flight/digi/wingman/wingman_maneuvers.h
     # decision (Round 6)
     include/f4flight/digi/decision/decision_routines.h
+    include/f4flight/digi/decision/flight_lead.h
+    include/f4flight/digi/autopilot/autopilot.h
     # defensive
     include/f4flight/digi/defensive/missile_defeat.h
     include/f4flight/digi/defensive/guns_jink.h

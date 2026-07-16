@@ -107,6 +107,7 @@ public:
         const double dy = target_.y - as.kin.y;
         const double range = std::sqrt(dx * dx + dy * dy);
         minRange_ = std::min(minRange_, range);
+        maxRange_ = std::max(maxRange_, range);
 
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
@@ -117,7 +118,17 @@ public:
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
         const DigiMode mode = sc_brain_->activeMode();
-        if (mode == DigiMode::MissileEngage) enteredMissileEngage_ = true;
+        if (mode == DigiMode::MissileEngage) {
+            enteredMissileEngage_ = true;
+            // Track G specifically DURING MissileEngage mode. The old test
+            // checked maxG over the whole phase — but the G might be achieved
+            // in GunsEngage or WVREngage after the AI leaves MissileEngage.
+            // A regression where the AI enters MissileEngage but doesn't
+            // maneuver (then later pulls G in another mode) would pass the
+            // old test. This catches that.
+            maxGInMissileEngage_ = std::max(maxGInMissileEngage_, as.loads.nzcgs);
+            framesInMissileEngage_++;
+        }
         if (mode == DigiMode::WVREngage) enteredWVREngage_ = true;
         curMode_ = mode;
 
@@ -153,7 +164,13 @@ public:
         // 1. Must enter an offensive mode: MissileEngage (preferred) or
         //    WVREngage (fallback if SMS path doesn't trigger — see task notes).
         if (!enteredMissileEngage_ && !enteredWVREngage_) return false;
-        // 2. Must maneuver — either turn (heading change > 30°) OR pull G
+        // 2. Must have closed range significantly — proves the AI was
+        //    actually engaging the target, not just sitting at heading 0.
+        //    The target starts at 5 NM; the AI should close to at least
+        //    50% of initial range (2.5 NM). Heavy aircraft get 70%.
+        const double rangeFraction = isHeavy_ ? 0.7 : 0.5;
+        if (minRange_ > rangeFraction * initialRangeFt_) return false;
+        // 3. Must maneuver — either turn (heading change > 30°) OR pull G
         //    (maxG > 2.0). Attack aircraft like the A-10 may pull G in
         //    pitch without much bank, so accept either. Heavy aircraft
         //    (B-52, C-130) can't sustain either — waive for them.
@@ -162,15 +179,27 @@ public:
         }
         const bool maneuvered = (maxHeadingChange_ >= 30.0 * DTR) || (maxG_ >= 2.0);
         if (!maneuvered) return false;
-        // 3. Must not have lawn-darted.
+        // 4. If MissileEngage was entered, must have pulled SOME G during
+        //    MissileEngage mode specifically. The old test checked maxG over
+        //    the whole phase — a regression where the AI enters
+        //    MissileEngage but doesn't maneuver (then later pulls G in
+        //    GunsEngage/WVREngage) would pass. Require maxG >= 1.5 during
+        //    MissileEngage (above level-flight G of ~1.0, proving the AI
+        //    was actively maneuvering in the mode). This only applies if
+        //    MissileEngage was actually entered (not just the WVR fallback).
+        if (enteredMissileEngage_ && framesInMissileEngage_ > 0) {
+            if (maxGInMissileEngage_ < 1.5) return false;
+        }
+        // 5. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
         return "Enter MissileEngage mode (or WVREngage fallback); "
+               "Close range to <= 50% of initial (70% heavy); "
                "Maneuver (hdg chg >= 30deg OR maxG >= 2.0; heavy: waived); "
-               "Min alt >= 5000ft; No NaN";
+               "G >= 1.5 during MissileEngage (if entered); Min alt >= 5000ft; No NaN";
     }
 
     std::string failureReason() const override {
@@ -182,8 +211,16 @@ public:
                    "ft with AIM-9 loadout — SMS path did not trigger MissileEngage "
                    "and WVR fallback did not engage either).";
         }
+        const double rangeFraction = isHeavy_ ? 0.7 : 0.5;
+        if (minRange_ > rangeFraction * initialRangeFt_) {
+            return "Min range was " + std::to_string(static_cast<int>(minRange_)) +
+                   "ft (needed <= " +
+                   std::to_string(static_cast<int>(rangeFraction * initialRangeFt_)) +
+                   "ft = " + std::to_string(rangeFraction * 100.0) +
+                   "% of initial) — aircraft did not close on the target.";
+        }
         if (isHeavy_) {
-            // Heavy: only mode + alt required, both passed
+            // Heavy: only mode + range + alt required, all passed
             return "";
         }
         const bool maneuvered = (maxHeadingChange_ >= 30.0 * DTR) || (maxG_ >= 2.0);
@@ -192,6 +229,14 @@ public:
                    "deg and max G was " + std::to_string(maxG_) +
                    " (needed hdg chg >= 30deg OR maxG >= 2.0) — "
                    "aircraft did not maneuver to track the target.";
+        }
+        if (enteredMissileEngage_ && framesInMissileEngage_ > 0 &&
+            maxGInMissileEngage_ < 1.5) {
+            return "Max G during MissileEngage mode was " +
+                   std::to_string(maxGInMissileEngage_) +
+                   " (needed >= 1.5) — AI entered MissileEngage but did not "
+                   "maneuver while in that mode (G was only achieved in "
+                   "other modes like GunsEngage/WVREngage).";
         }
         if (minAlt_ < 5000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
@@ -217,6 +262,10 @@ public:
             enteredMissileEngage_ ? "[PASS]" : "[FAIL]");
         std::printf("  Entered WVREngage:     %s (fallback)\n",
             enteredWVREngage_ ? "[PASS]" : "(n/a)");
+        const double rangeFraction = isHeavy_ ? 0.7 : 0.5;
+        std::printf("  Min range:             %.0f ft (need <= %.0f) %s\n",
+            minRange_, rangeFraction * initialRangeFt_,
+            minRange_ <= rangeFraction * initialRangeFt_ ? "[PASS]" : "[FAIL]");
         if (isHeavy_) {
             std::printf("  Max heading change:    %.1f deg (heavy: waived)\n",
                 maxHeadingChange_ * RTD);
@@ -227,7 +276,11 @@ public:
                 maxHeadingChange_ * RTD, maxG_,
                 maneuvered ? "[PASS]" : "[FAIL]");
         }
-        std::printf("  Min range:             %.0f ft (info)\n", minRange_);
+        if (enteredMissileEngage_) {
+            std::printf("  Max G in MissileEngage:%.2f (need >= 1.5) %s\n",
+                maxGInMissileEngage_,
+                maxGInMissileEngage_ >= 1.5 ? "[PASS]" : "[FAIL]");
+        }
         std::printf("  Min altitude:          %.0f ft (need >= 5000) %s\n",
             minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
@@ -239,9 +292,12 @@ private:
     StoresManagementSystem sms_;
     double nextPrint_{0.0};
     double minRange_{1e9};
+    double maxRange_{0.0};
     double minAlt_{1e9};
     double maxG_{0.0};
     double maxHeadingChange_{0.0};
+    double maxGInMissileEngage_{0.0};
+    int   framesInMissileEngage_{0};
     bool hasNaN_{false};
     bool enteredMissileEngage_{false};
     bool enteredWVREngage_{false};

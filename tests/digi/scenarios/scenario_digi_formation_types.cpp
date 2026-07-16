@@ -19,9 +19,11 @@
 //   - No NaN, no crash
 //
 // Formation definitions:
-//   Trail  : slot1=0°/1000ft,  slot2=0°/2000ft,  slot3=0°/3000ft (in trail)
-//   Echelon: slot1=30°/1000ft, slot2=30°/2000ft, slot3=30°/3000ft (right echelon)
-//   Spread : slot1=60°/1000ft, slot2=-60°/1000ft, slot3=0°/2000ft (4-ship spread)
+//   Trail  : slot1=180°/1000ft, slot2=180°/2000ft, slot3=180°/3000ft (in trail, behind)
+//   Echelon: slot1=135°/1000ft, slot2=135°/2000ft, slot3=135°/3000ft (right echelon, behind-right)
+//   Spread : slot1=90°/1000ft, slot2=-90°/1000ft, slot3=180°/2000ft (line abreast + trail)
+// relAz uses CW-from-nose convention (positive = right, 180° = behind).
+// See formation_geometry.h for the coordinate-system note.
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/digi.h"
@@ -105,8 +107,8 @@ public:
         const auto slot1 = formation::FormationTable::defaultInstance().slotGeometry(
             formType_, 1);
         const double leadSigma = lead_.yaw;
-        const double desX = lead_.x + slot1.range * std::cos(slot1.relAz + leadSigma);
-        const double desY = lead_.y + slot1.range * std::sin(slot1.relAz + leadSigma);
+        const double desX = lead_.x + slot1.range * std::cos(leadSigma - slot1.relAz);
+        const double desY = lead_.y + slot1.range * std::sin(leadSigma - slot1.relAz);
         const double desZ = lead_.z;
 
         const double dx = desX - as.kin.x;
@@ -261,27 +263,27 @@ private:
 inline formation::Formation trailFormation() {
     formation::Formation f{};
     f[0] = {0.0, 0.0, 0.0};
-    f[1] = {0.0, 0.0, 1000.0};   // slot 1: in trail, 1000 ft back
-    f[2] = {0.0, 0.0, 2000.0};   // slot 2: 2000 ft back
-    f[3] = {0.0, 0.0, 3000.0};   // slot 3: 3000 ft back
+    f[1] = {180.0 * M_PI / 180.0, 0.0, 1000.0};   // slot 1: in trail, 1000 ft behind
+    f[2] = {180.0 * M_PI / 180.0, 0.0, 2000.0};   // slot 2: 2000 ft behind
+    f[3] = {180.0 * M_PI / 180.0, 0.0, 3000.0};   // slot 3: 3000 ft behind
     return f;
 }
 
 inline formation::Formation echelonFormation() {
     formation::Formation f{};
-    f[0] = {0.0,                       0.0, 0.0};
-    f[1] = {30.0 * M_PI / 180.0,       0.0, 1000.0};   // right wing, 1000 ft
-    f[2] = {30.0 * M_PI / 180.0,       0.0, 2000.0};   // right wing, 2000 ft
-    f[3] = {30.0 * M_PI / 180.0,       0.0, 3000.0};   // right wing, 3000 ft
+    f[0] = {0.0,                        0.0, 0.0};
+    f[1] = {135.0 * M_PI / 180.0,       0.0, 1000.0};   // right echelon, 1000 ft (behind-right)
+    f[2] = {135.0 * M_PI / 180.0,       0.0, 2000.0};   // right echelon, 2000 ft
+    f[3] = {135.0 * M_PI / 180.0,       0.0, 3000.0};   // right echelon, 3000 ft
     return f;
 }
 
 inline formation::Formation spreadFormation() {
     formation::Formation f{};
-    f[0] = {0.0,                       0.0, 0.0};
-    f[1] = { 60.0 * M_PI / 180.0,      0.0, 1000.0};   // right wing, 1000 ft
-    f[2] = {-60.0 * M_PI / 180.0,      0.0, 1000.0};   // left wing, 1000 ft
-    f[3] = { 0.0,                      0.0, 2000.0};   // trail, 2000 ft
+    f[0] = {0.0,                        0.0, 0.0};
+    f[1] = { 90.0 * M_PI / 180.0,       0.0, 1000.0};   // right wing, line abreast, 1000 ft
+    f[2] = {-90.0 * M_PI / 180.0,       0.0, 1000.0};   // left wing, line abreast, 1000 ft
+    f[3] = {180.0 * M_PI / 180.0,       0.0, 2000.0};   // trail, 2000 ft behind
     return f;
 }
 

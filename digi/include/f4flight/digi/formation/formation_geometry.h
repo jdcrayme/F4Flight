@@ -52,16 +52,27 @@ enum class FormationType : int {
 //
 // All angles in RADIANS, range in FEET. The geometry is relative to the
 // flight lead's velocity vector:
-//   relAz   : bearing from lead's nose (positive = right)
+//   relAz   : bearing CLOCKWISE from lead's nose (positive = right)
+//             0     = directly ahead of lead's nose (forward)
+//             +pi/2 = directly to the right of lead
+//             +pi   = directly behind lead (trail)
+//             -pi/2 = directly to the left of lead
 //   relEl   : elevation from lead's plane (positive = above)
 //   range   : straight-line distance from lead
 //
-// The wingman's desired world position is computed as:
-//   leadPos + leadDcm * (range * cos(relEl) * sin(relAz),
-//                         range * cos(relEl) * cos(relAz),
-//                        -range * sin(relEl))
+// COORDINATE SYSTEM NOTE: F4Flight uses (x=east, y=north, z=down) with
+// heading sigma measured CCW from +x (standard math). FreeFalcon uses
+// (x=north, y=east, z=down) with sigma measured CW from +x (navigation).
+// FreeFalcon's formula `cos/sin(relAz + sigma)` assumes its own convention;
+// in F4Flight's convention that formula places relAz=0 FORWARD and makes
+// positive relAz = LEFT (CCW), which is the opposite of the intended
+// "positive = right". The wingman code therefore uses the ADAPTED formula
+//   trackX = leadX + range * cos(sigma - relAz*formSide)
+//   trackY = leadY + range * sin(sigma - relAz*formSide)
+// which reproduces FreeFalcon's intended geometry (positive relAz = right)
+// in F4Flight's coordinate system. See wingman_ai.cpp for details.
 struct PositionData {
-    double relAz{0.0};    // radians, positive = right of lead's nose
+    double relAz{0.0};    // radians, CW from lead's nose (positive = right)
     double relEl{0.0};    // radians, positive = above lead's plane
     double range{1000.0}; // feet
 };
@@ -73,22 +84,28 @@ constexpr int kMaxFormationSlots = 4;
 // the lead (relAz=0, relEl=0, range=0).
 using Formation = std::array<PositionData, kMaxFormationSlots>;
 
-// Default wedge formation — 4-ship, 1000 ft trail, 30° spread.
-// Matches FreeFalcon's default wedge (formdat.fil first entry).
+// Default wedge formation — 4-ship fighter wedge.
+//   slot 0: lead (at center)
+//   slot 1: right wing — 45° aft of line abreast, 1000 ft
+//   slot 2: left wing  — 45° aft of line abreast, 1000 ft
+//   slot 3: trail      — directly behind lead, 2000 ft
+// relAz uses the CW-from-nose convention: +135° = behind-right, -135° = behind-left,
+// +180° = directly behind. This matches the standard fighter wedge where
+// wingmen are BEHIND and to the sides of the lead (not in front).
 inline Formation defaultWedge() {
     Formation f{};
-    f[0] = {0.0,                       0.0, 0.0};
-    f[1] = {30.0 * M_PI / 180.0,       0.0, 1000.0};
-    f[2] = {-30.0 * M_PI / 180.0,      0.0, 1000.0};
-    f[3] = {0.0,                       0.0, 2000.0};
+    f[0] = {0.0,                       0.0, 0.0};      // lead
+    f[1] = {135.0 * M_PI / 180.0,      0.0, 1000.0};   // right wing (behind-right)
+    f[2] = {-135.0 * M_PI / 180.0,     0.0, 1000.0};   // left wing  (behind-left)
+    f[3] = {180.0 * M_PI / 180.0,      0.0, 2000.0};   // trail (directly behind)
     return f;
 }
 
-// Default 2-ship trail — wingman 1000 ft behind lead.
+// Default 2-ship trail — wingman 1000 ft directly behind lead.
 inline Formation defaultTwoShipTrail() {
     Formation f{};
     f[0] = {0.0, 0.0, 0.0};
-    f[1] = {0.0, 0.0, 1000.0};
+    f[1] = {180.0 * M_PI / 180.0, 0.0, 1000.0};  // directly behind
     return f;
 }
 
@@ -96,7 +113,7 @@ inline Formation defaultTwoShipTrail() {
 inline Formation defaultTwoShipLineAbreast() {
     Formation f{};
     f[0] = {0.0, 0.0, 0.0};
-    f[1] = {90.0 * M_PI / 180.0, 0.0, 1000.0};
+    f[1] = {90.0 * M_PI / 180.0, 0.0, 1000.0};  // directly to the right
     return f;
 }
 
@@ -143,6 +160,50 @@ public:
     // state. Reads formationId + slot from the digi state.
     static PositionData forWingman(int formationId, int slot) {
         return defaultInstance().slotGeometry(static_cast<FormationType>(formationId), slot);
+    }
+
+    // --- FreeFalcon formdat.fil loader ---
+    //
+    // FreeFalcon loads formation definitions from `formdat.fil` — a flat
+    // text file. F4Flight doesn't ship the file, but hosts can supply one
+    // (e.g. extracted from a Falcon 4 installation) and call loadFromFile()
+    // to register all formations at once. This allows hosts to customize
+    // formations without recompiling.
+    //
+    // File format (whitespace-separated tokens):
+    //   numFormations
+    //   num4Slots num2Slots formNum formationName
+    //     relAz_deg relEl_deg range_NM    (repeated num4Slots times)
+    //     relAz_deg relEl_deg range_NM    (repeated num2Slots times, if > 0)
+    //   ... (repeated for each formation)
+    //
+    // relAz is in DEGREES (converted to radians internally).
+    // relEl is in DEGREES (converted to radians internally).
+    // range is in NAUTICAL MILES (converted to feet internally).
+    //
+    // The formNum is FreeFalcon's FalconWingmanMsg enum value. It's stored
+    // as-is as the integer key — the host maps it to F4Flight's FormationType
+    // via registerFormation(FormationType, ...) or looks it up directly via
+    // slotGeometryById(formNum, slot).
+    //
+    // Returns the number of formations loaded, or -1 on error.
+    int loadFromFile(const char* filename);
+
+    // Look up a slot by raw integer key (e.g. FreeFalcon formNum).
+    PositionData slotGeometryById(int formId, int slot) const {
+        if (slot < 0 || slot >= kMaxFormationSlots) {
+            return PositionData{0.0, 0.0, 0.0};
+        }
+        auto it = formations_.find(formId);
+        if (it == formations_.end()) {
+            return PositionData{0.0, 0.0, 0.0};
+        }
+        return it->second[slot];
+    }
+
+    // Register a formation by raw integer key (for FreeFalcon formNum).
+    void registerFormationById(int formId, const Formation& f) {
+        formations_[formId] = f;
     }
 
     // Shared default instance for hosts that don't want to manage their own

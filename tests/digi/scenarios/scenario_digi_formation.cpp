@@ -75,20 +75,21 @@ public:
         lead_.dcm = dcmFromEuler(lead_.yaw, 0.0, 0.0);
 
         // Ghost wingmen (slots 2, 3) start in their perfect formation positions.
-        // Slot 2: left wing (relAz=-30°, range=1000)
-        // Slot 3: trail (relAz=0°, range=2000)
+        // Slot 2: left wing (relAz=-135°, range=1000) — behind-left
+        // Slot 3: trail (relAz=180°, range=2000) — directly behind
+        // Uses the ADAPTED formula (sigma - relAz) matching wingman_ai.cpp.
         const double leadSigma = lead_.yaw;
         const auto slot2 = formation::FormationTable::defaultInstance().slotGeometry(
             formation::FormationType::Wedge, 2);
         const auto slot3 = formation::FormationTable::defaultInstance().slotGeometry(
             formation::FormationType::Wedge, 3);
-        ghost2_.x = lead_.x + slot2.range * std::cos(slot2.relAz + leadSigma);
-        ghost2_.y = lead_.y + slot2.range * std::sin(slot2.relAz + leadSigma);
+        ghost2_.x = lead_.x + slot2.range * std::cos(leadSigma - slot2.relAz);
+        ghost2_.y = lead_.y + slot2.range * std::sin(leadSigma - slot2.relAz);
         ghost2_.z = lead_.z;
         ghost2_.speed = leadVt;
         ghost2_.yaw = leadSigma;
-        ghost3_.x = lead_.x + slot3.range * std::cos(slot3.relAz + leadSigma);
-        ghost3_.y = lead_.y + slot3.range * std::sin(slot3.relAz + leadSigma);
+        ghost3_.x = lead_.x + slot3.range * std::cos(leadSigma - slot3.relAz);
+        ghost3_.y = lead_.y + slot3.range * std::sin(leadSigma - slot3.relAz);
         ghost3_.z = lead_.z;
         ghost3_.speed = leadVt;
         ghost3_.yaw = leadSigma;
@@ -107,24 +108,25 @@ public:
         // Move the lead forward
         lead_.y += lead_.speed * dt;
 
-        // Move ghost wingmen to maintain perfect formation relative to lead
+        // Move ghost wingmen to maintain perfect formation relative to lead.
+        // Uses the ADAPTED formula (sigma - relAz) matching wingman_ai.cpp.
         const double leadSigma = lead_.yaw;
         const auto slot2 = formation::FormationTable::defaultInstance().slotGeometry(
             formation::FormationType::Wedge, 2);
         const auto slot3 = formation::FormationTable::defaultInstance().slotGeometry(
             formation::FormationType::Wedge, 3);
-        ghost2_.x = lead_.x + slot2.range * std::cos(slot2.relAz + leadSigma);
-        ghost2_.y = lead_.y + slot2.range * std::sin(slot2.relAz + leadSigma);
+        ghost2_.x = lead_.x + slot2.range * std::cos(leadSigma - slot2.relAz);
+        ghost2_.y = lead_.y + slot2.range * std::sin(leadSigma - slot2.relAz);
         ghost2_.z = lead_.z;
-        ghost3_.x = lead_.x + slot3.range * std::cos(slot3.relAz + leadSigma);
-        ghost3_.y = lead_.y + slot3.range * std::sin(slot3.relAz + leadSigma);
+        ghost3_.x = lead_.x + slot3.range * std::cos(leadSigma - slot3.relAz);
+        ghost3_.y = lead_.y + slot3.range * std::sin(leadSigma - slot3.relAz);
         ghost3_.z = lead_.z;
 
         // Track the AI wingman's distance to its desired formation slot (slot 1).
         const auto slot1 = formation::FormationTable::defaultInstance().slotGeometry(
             formation::FormationType::Wedge, 1);
-        const double desX = lead_.x + slot1.range * std::cos(slot1.relAz + leadSigma);
-        const double desY = lead_.y + slot1.range * std::sin(slot1.relAz + leadSigma);
+        const double desX = lead_.x + slot1.range * std::cos(leadSigma - slot1.relAz);
+        const double desY = lead_.y + slot1.range * std::sin(leadSigma - slot1.relAz);
         const double desZ = lead_.z;
 
         const double dx = desX - as.kin.x;
@@ -133,7 +135,23 @@ public:
         const double distToSlot = std::sqrt(dx * dx + dy * dy + dz * dz);
 
         minDistToSlot_ = std::min(minDistToSlot_, distToSlot);
-        maxSpeedErr_ = std::max(maxSpeedErr_, std::fabs(as.vcas - speed_));
+        // Speed error: compare TRUE airspeeds (wingman TAS vs lead TAS), not
+        // CAS vs cornerVcas. At altitude CAS < TAS, so the old metric reported
+        // a huge phantom error even when the wingman matched the lead's speed.
+        const double wingTasKts = as.kin.vt / KNOTS_TO_FTPSEC;
+        const double leadTasKts = lead_.speed / KNOTS_TO_FTPSEC;
+        maxSpeedErr_ = std::max(maxSpeedErr_, std::fabs(wingTasKts - leadTasKts));
+
+        // Track SUSTAINED in-position time (not just momentary). The wingman
+        // must hold formation, not just sweep through the slot once.
+        if (distToSlot < kSustainedProximityFt) {
+            timeInProximity_ += dt;
+        }
+        // Track final-window proximity (last 10 seconds).
+        if (phaseTime_ > maxTime_ - 10.0) {
+            finalWindowTime_ += dt;
+            if (distToSlot < kSustainedProximityFt) finalWindowInPos_ += dt;
+        }
 
         if (sc_brain_->activeMode() == DigiMode::Wingy) enteredWingy_ = true;
         if (sc_brain_->state().formation.wingman.inPosition) inPosition_ = true;
@@ -146,7 +164,7 @@ public:
         curSlotZ_ = desZ;
         // Per-frame sample data (for trace)
         curDistToSlot_ = distToSlot;
-        curSpeedErr_ = std::fabs(as.vcas - speed_);
+        curSpeedErr_ = std::fabs(wingTasKts - leadTasKts);
         curInPosition_ = sc_brain_->state().formation.wingman.inPosition;
         curMode_ = sc_brain_->activeMode();
 
@@ -188,15 +206,28 @@ public:
     bool IsPassed() const override {
         if (hasNaN_) return false;
         if (!enteredWingy_) return false;
-        if (minDistToSlot_ > 800.0) return false;
+        // Must close to the slot at least once.
+        if (minDistToSlot_ > 300.0) return false;
+        // Must reach the brain's in-position flag at least once.
         if (!inPosition_) return false;
-        if (maxSpeedErr_ > 90.0) return false;
+        // Must SUSTAIN proximity: hold within 500 ft for >= 15 seconds total.
+        // This catches the oscillation bug — a wingman that sweeps through
+        // the slot once and then oscillates 1000+ ft away does NOT pass.
+        if (timeInProximity_ < 15.0) return false;
+        // Must be stable in the final 10 seconds: >= 50% of the final window
+        // within 500 ft. This proves the wingman has settled, not just passed
+        // through briefly at the end.
+        if (finalWindowTime_ > 0.0 &&
+            finalWindowInPos_ / finalWindowTime_ < 0.5) return false;
+        // Speed match (TAS vs TAS, not CAS vs cornerVcas).
+        if (maxSpeedErr_ > 30.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter Wingy mode; Get within 800ft of slot; "
-               "Reach in-position (< 800ft); Speed error < 90kts; No NaN";
+        return "Enter Wingy; Close to <300ft of slot; Reach in-position; "
+               "Sustain <500ft for >=15s; >=50% of final 10s within 500ft; "
+               "TAS match <30kts; No NaN";
     }
 
     std::string failureReason() const override {
@@ -206,19 +237,31 @@ public:
                    std::string(digiModeName(curMode_)) +
                    ") — formation role was not activated.";
         }
-        if (minDistToSlot_ > 800.0) {
+        if (minDistToSlot_ > 300.0) {
             return "Min distance to slot was " +
                    std::to_string(static_cast<int>(minDistToSlot_)) +
-                   "ft (needed < 800ft) — wingman never closed to formation position.";
+                   "ft (needed < 300ft) — wingman never closed to formation position.";
         }
         if (!inPosition_) {
             return "Never reached in-position flag (got within " +
                    std::to_string(static_cast<int>(minDistToSlot_)) +
                    "ft of slot, but brain never set inPosition=true).";
         }
-        if (maxSpeedErr_ > 90.0) {
-            return "Max speed error was " + std::to_string(maxSpeedErr_) +
-                   "kts (needed < 90kts) — wingman did not match lead's speed.";
+        if (timeInProximity_ < 15.0) {
+            return "Only held within 500ft of slot for " +
+                   std::to_string(static_cast<int>(timeInProximity_)) +
+                   "s (needed >= 15s) — wingman is oscillating, not holding formation.";
+        }
+        if (finalWindowTime_ > 0.0 &&
+            finalWindowInPos_ / finalWindowTime_ < 0.5) {
+            return "In final 10s, only " +
+                   std::to_string(static_cast<int>(
+                       100.0 * finalWindowInPos_ / finalWindowTime_)) +
+                   "% of time within 500ft (needed >= 50%) — wingman did not settle.";
+        }
+        if (maxSpeedErr_ > 30.0) {
+            return "Max TAS error was " + std::to_string(static_cast<int>(maxSpeedErr_)) +
+                   "kts (needed < 30kts) — wingman did not match lead's true airspeed.";
         }
         return "";
     }
@@ -235,15 +278,24 @@ public:
     void Finish() const override {
         std::printf("  --- Summary ---\n");
         std::printf("  Entered Wingy mode:   %s\n", enteredWingy_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Min dist to slot:     %.0f ft (need < 800) %s\n",
-            minDistToSlot_, minDistToSlot_ < 800.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Min dist to slot:     %.0f ft (need < 300) %s\n",
+            minDistToSlot_, minDistToSlot_ < 300.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Reached in-position:  %s\n", inPosition_ ? "[PASS]" : "[FAIL]");
-        std::printf("  Max speed error:      %.1f kts (need < 90) %s\n",
-            maxSpeedErr_, maxSpeedErr_ < 90.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Time within 500ft:    %.1f s (need >= 15) %s\n",
+            timeInProximity_, timeInProximity_ >= 15.0 ? "[PASS]" : "[FAIL]");
+        if (finalWindowTime_ > 0.0) {
+            std::printf("  Final 10s in-pos:     %.0f%% (need >= 50) %s\n",
+                100.0 * finalWindowInPos_ / finalWindowTime_,
+                finalWindowInPos_ / finalWindowTime_ >= 0.5 ? "[PASS]" : "[FAIL]");
+        }
+        std::printf("  Max TAS error:        %.1f kts (need < 30) %s\n",
+            maxSpeedErr_, maxSpeedErr_ < 30.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
 private:
+    static constexpr double kSustainedProximityFt = 500.0;
+
     double nextPrint_{0.0};
     double alt_{0.0};
     double speed_{0.0};
@@ -255,6 +307,9 @@ private:
 
     double minDistToSlot_{1e9};
     double maxSpeedErr_{0.0};
+    double timeInProximity_{0.0};
+    double finalWindowTime_{0.0};
+    double finalWindowInPos_{0.0};
     bool enteredWingy_{false};
     bool inPosition_{false};
     bool hasNaN_{false};
@@ -294,7 +349,7 @@ public:
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
         tests.push_back(std::make_unique<FormationFollowPhase>(
-            "4-ship Wedge formation (AI=slot 1)", 60.0, alt, speed, 1000.0));
+            "4-ship Wedge formation (AI=slot 1)", 90.0, alt, speed, 1000.0));
         return tests;
     }
 };

@@ -3,12 +3,38 @@
 // Wingman AI implementation — formation following.
 //
 // Port of FreeFalcon's AiFollowLead (wingactions.cpp:295-420).
+//
+// COORDINATE-SYSTEM FIX (vs naive port):
+// FreeFalcon uses (x=north, y=east, z=down) with heading sigma measured
+// CLOCKWISE from +x (navigation convention). Its formation formula is:
+//     trackX += range * cos(relAz * formSide + sigma)
+//     trackY += range * sin(relAz * formSide + sigma)
+// In FF's convention, relAz=0 places the wingman FORWARD (along +x = north =
+// the lead's nose), and positive relAz rotates CLOCKWISE = to the RIGHT.
+//
+// F4Flight uses (x=east, y=north, z=down) with sigma measured CCW from +x
+// (standard math convention). If we naively reuse FF's formula, relAz=0
+// still places the wingman along the lead's velocity vector (forward), BUT
+// positive relAz rotates CCW = to the LEFT — the opposite of FF's intent.
+// This was the root cause of the "lead is in the back" bug: the default
+// wedge/trail formations used relAz=0 for "trail" (intended = behind), but
+// the formula placed the wingman FORWARD. The test aircraft therefore tried
+// to fly ahead of the lead, overshot, and oscillated.
+//
+// FIX: use the adapted formula
+//     trackX = leadX + range * cos(sigma - relAz * formSide)
+//     trackY = leadY + range * sin(sigma - relAz * formSide)
+// which reproduces FF's intended geometry (positive relAz = right, relAz=pi
+// = directly behind) in F4Flight's coordinate system. The default formation
+// definitions in formation_geometry.h now use this convention: trail = pi
+// (behind), right wing = +135° (behind-right), left wing = -135° (behind-left).
 
 #include "f4flight/digi/wingman/wingman_ai.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/steering.h"  // for headingError
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTasFps
 
 #include <algorithm>
 #include <cmath>
@@ -16,13 +42,19 @@
 namespace f4flight {
 namespace digi {
 
-// Constants from FreeFalcon wingactions.cpp
-// In-position threshold: FreeFalcon uses 250 ft, but F4Flight's FCS has more
-// oscillation (no SIMPLE_MODE_AF for wingmen), so we use 800 ft for a stable
-// "in position" flag. The wingman is still flying formation — 800 ft is well
-// within visual range and acceptable for a 2-ship wedge at 1000 ft spacing.
-static constexpr double kInPositionThresholdFt = 800.0;   // "in position" radius
-static constexpr double kFormAltStepFt = 1000.0;          // IncreaseRelAlt/DecreaseRelAlt step
+// In-position threshold. FreeFalcon uses 250 ft. F4Flight's FCS has more
+// lag than FF's simple-mode, so we use 400 ft — tight enough to prove the
+// wingman has actually closed to the slot, loose enough to account for FCS
+// deadband. The previous 800 ft was far too loose (the test passed even
+// when the wingman was sweeping 800 ft past the slot every cycle).
+static constexpr double kInPositionThresholdFt = 400.0;
+
+// Distance at which the wingman switches from "rejoin" (lead pursuit with
+// lead-ahead offset) to "station-keeping" (direct slot tracking with no
+// lead-ahead, damped closure). This prevents the overshoot oscillation
+// that occurred when the wingman kept aiming 600 ft ahead of the slot
+// even after it was already in position.
+static constexpr double kStationKeepingRadiusFt = 1500.0;
 
 // AiFollowLead — fly to the wingman's formation slot relative to the lead.
 bool AiFollowLead(DigiState& digi, const DigiEntity& self,
@@ -40,44 +72,27 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     }
 
     // --- Look up formation slot geometry ---
-    // The slot index is vehicleInUnit (0=lead, 1=wing 1, 2=wing 2, 3=wing 3).
-    // FormationTable::slotGeometry returns the (relAz, relEl, range) for this slot.
     const auto& form = digi.formation;
     const auto slot = formation::FormationTable::defaultInstance().slotGeometry(
         static_cast<formation::FormationType>(form.formationId),
         form.vehicleInUnit);
 
     // --- Apply lateral spacing factor ---
-    // FreeFalcon: rangeFactor = curPosition->range * (2.0 * mFormLateralSpaceFactor)
-    // The 2.0 is because FF's formdat.fil stores range in "half-spacing" units.
-    // F4Flight's FormationTable stores range in actual feet (defaultWedge
-    // uses 1000 ft = 1000 ft actual, not 500 ft half-spacing). So we DON'T
-    // multiply by 2.0 — just apply the formLateralSpaceFactor directly.
-    //
     // formLateralSpaceFactor defaults to 1.0 (normal spacing).
     // Kickout sets it to 2.0 (double spacing), Closeup to 0.5 (half spacing).
     const double rangeFactor = slot.range * form.wingman.formLateralSpaceFactor;
 
     // --- Compute desired world position relative to lead ---
-    // FreeFalcon uses lead's sigma (velocity-vector heading) as the rotation
-    // angle for the relative position. This means the formation rotates with
-    // the lead's heading — a wingman at relAz=30° stays at 30° off the lead's
-    // nose regardless of which way the lead is flying.
-    //
-    // The lead entity's `yaw` field is its velocity-vector heading (sigma),
-    // matching how buildSelfEntity populates it from AircraftState.kin.sigma.
+    // ADAPTED formula (see file header): cos/sin(sigma - relAz*formSide)
+    // reproduces FreeFalcon's geometry in F4Flight's coordinate system.
     const double leadSigma = lead->yaw;
 
     // Apply side mirror (formSide: +1 = right side, -1 = left side).
-    // Default is +1 (right). ToggleSide flips it.
     const double formSide = (form.wingman.formSide != 0)
                             ? static_cast<double>(form.wingman.formSide)
                             : 1.0;
 
-    // World-frame offset from lead:
-    //   x_offset = rangeFactor * cos(relAz * formSide + leadSigma)
-    //   y_offset = rangeFactor * sin(relAz * formSide + leadSigma)
-    const double azAngle = slot.relAz * formSide + leadSigma;
+    const double azAngle = leadSigma - slot.relAz * formSide;
     double trackX = lead->x + rangeFactor * std::cos(azAngle);
     double trackY = lead->y + rangeFactor * std::sin(azAngle);
 
@@ -94,74 +109,164 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     // Apply relative formation altitude (IncreaseRelAlt/DecreaseRelAlt commands).
     trackZ += form.wingman.formRelativeAltitude;
 
-    // --- Check in-position (before adding lead-ahead offset) ---
-    // The in-position check uses the actual formation slot position (without
-    // the lead-ahead offset), so "in position" means "at the correct slot
-    // relative to the lead" — not "at the lead-ahead trackpoint".
+    // --- Compute distance to the actual slot (before lead-ahead offset) ---
+    // This is used for in-position checks and to scale the lead-ahead offset.
+    const double slotDx = trackX - self.x;
+    const double slotDy = trackY - self.y;
+    const double slotDz = trackZ - self.z;
+    const double distToSlot = std::sqrt(slotDx * slotDx + slotDy * slotDy +
+                                        slotDz * slotDz);
+
+    // --- Check in-position (uses the actual slot position) ---
     AiCheckInPositionCall(digi, self, trackX, trackY, trackZ);
 
-    // --- Add lead-ahead offset ---
-    // FreeFalcon sets the trackpoint 1 NM ahead of the desired position in
-    // the lead's heading direction. This gives the wingman a "lead pursuit"
-    // trajectory — it flies toward where the formation slot will be, not
-    // where it was. This produces smoother formation following.
+    // --- Adaptive lead-ahead offset ---
+    // FreeFalcon sets the trackpoint 1 NM ahead of the slot in the lead's
+    // heading direction (lead pursuit). This is good for the rejoin phase
+    // (smooth approach), but causes overshoot when close to the slot: the
+    // wingman keeps aiming 600+ ft ahead and sweeps past the slot.
     //
-    // However, 1 NM is too aggressive for F4Flight's FCS — it causes the
-    // wingman to chase a point 6000+ ft ahead, leading to overspeed and
-    // oscillation. We use a smaller offset (0.1 NM) that provides enough
-    // lead pursuit for smooth following without destabilizing the controller.
+    // FIX: scale the lead-ahead by distance to slot. Full offset when far
+    // (smooth rejoin), zero offset when in station-keeping range (direct
+    // slot tracking). This eliminates the overshoot oscillation.
     constexpr double kLeadAheadNm = 0.1;
-    const double leadAheadFt = kLeadAheadNm * 6076.0;  // 0.1 NM in feet
+    const double leadAheadFtMax = kLeadAheadNm * 6076.0;  // 607.6 ft
+    const double leadAheadScale = std::min(1.0,
+        distToSlot / (kStationKeepingRadiusFt * 2.0));
+    const double leadAheadFt = leadAheadFtMax * leadAheadScale;
     trackX += leadAheadFt * std::cos(leadSigma);
     trackY += leadAheadFt * std::sin(leadSigma);
 
     // --- Fly to the desired position ---
-    // FreeFalcon uses SimpleTrack(SimpleTrackDist, 0.0) — a closure-rate
-    // based tracker. We use HeadingAndAltitudeHold + MachHold instead,
-    // which is more stable for F4Flight's FCS and produces smoother formation
-    // flying (no Phugoid oscillation from SimpleTrack's pure proportional
-    // elevation tracker).
-    //
-    // Compute the desired heading (bearing to the trackpoint) and desired
-    // altitude (trackZ converted to positive-up).
     const double dx = trackX - self.x;
     const double dy = trackY - self.y;
     const double desHeading = std::atan2(dy, dx);
     const double desAlt = -trackZ;  // NED: z negative up, alt positive up
 
-    // Desired speed: match the lead's speed, with a SMALL closure correction.
-    // The correction is based on the along-track error (how far behind/ahead
-    // we are relative to the slot), NOT the total distance to the trackpoint
-    // (which includes the lead-ahead offset and would cause overspeed).
+    // --- Speed control with PD closure damping ---
+    // The wingman matches the lead's speed, with two corrections:
+    //   1. Along-track position error (proportional): speeds up if behind,
+    //      slows down if ahead.
+    //   2. Along-track velocity error (derivative): damps the closure rate
+    //      to prevent overshoot. This is the key fix for the oscillation —
+    //      without derivative damping, the wingman builds up speed on
+    //      approach and can't brake in time (throttle-only deceleration is
+    //      weak; the wingman would sweep past the slot, then overshoot back).
     //
-    // Project the position error onto the lead's velocity direction to get
-    // the along-track error. Positive = behind the slot (need to speed up),
-    // negative = ahead of the slot (need to slow down).
-    //
-    // The correction is clamped to ±30 ft/s (~18 kts) to prevent overspeed
-    // when far from the slot. The gain is low (0.05) to prevent oscillation.
-    const double slotDx = (trackX - leadAheadFt * std::cos(leadSigma)) - self.x;
-    const double slotDy = (trackY - leadAheadFt * std::sin(leadSigma)) - self.y;
+    // Both terms use the lead's velocity direction as the "along-track" axis.
     const double alongTrackErr = slotDx * std::cos(leadSigma) +
                                   slotDy * std::sin(leadSigma);
-    const double closureCorrection = std::max(-30.0, std::min(30.0,
-        alongTrackErr * 0.05));  // 0.05 ft/s per ft of error
+
+    // Along-track velocity of the wingman RELATIVE to the lead. Positive =
+    // wingman pulling ahead of the lead (and thus ahead of the slot).
+    const double relVx = as.kin.xdot - lead->vx;
+    const double relVy = as.kin.ydot - lead->vy;
+    const double alongTrackVel = relVx * std::cos(leadSigma) +
+                                  relVy * std::sin(leadSigma);
+
+    // Proportional closure correction (speed up/slow down based on position).
+    // Gain is scaled down when close to the slot (station-keeping mode uses
+    // a gentler gain to prevent speed oscillation).
+    const double proxScale = std::min(1.0, distToSlot / kStationKeepingRadiusFt);
+    const double pGain = 0.08 * proxScale + 0.02;  // 0.02 close, 0.10 far
+    double closureCorrection = alongTrackErr * pGain;
+
+    // Derivative damping: oppose the along-track relative velocity. If the
+    // wingman is pulling ahead (alongTrackVel > 0), subtract speed. If
+    // falling behind (alongTrackVel < 0), add speed. This is a true PD
+    // controller on the along-track error (d/dt of alongTrackErr =
+    // -alongTrackVel, so the D term is -Kd * alongTrackVel).
+    closureCorrection -= alongTrackVel * 0.6;
+
+    // Clamp: allow more speed delta when far (rejoin), less when close.
+    const double clampLimit = 30.0 + 40.0 * proxScale;  // 30 close, 70 far
+    closureCorrection = std::max(-clampLimit, std::min(clampLimit, closureCorrection));
+
     const double desSpeed = std::max(150.0, lead->speed + closureCorrection);
 
-    // Use HeadingAndAltitudeHold to steer + hold altitude.
-    ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+    // --- Speed brakes ---
+    // Throttle-only deceleration is weak (no reverse thrust). When the
+    // wingman is significantly overshooting the slot (ahead and pulling
+    // further ahead), deploy speed brakes to bleed off energy faster.
+    // This is critical for preventing the growing oscillation: without
+    // brakes, the wingman can't slow down fast enough after overshooting.
+    if (alongTrackErr < -200.0 && alongTrackVel > 10.0) {
+        // Ahead of slot and still pulling ahead — full speed brake.
+        digi.commands.speedBrakeCmd = 1.0;
+    } else if (alongTrackErr < -50.0 && alongTrackVel > 0.0) {
+        // Slightly ahead and creeping — half speed brake.
+        digi.commands.speedBrakeCmd = 0.5;
+    } else {
+        // In position or behind — clean configuration.
+        digi.commands.speedBrakeCmd = -1.0;
+    }
+
+    // --- Steering: heading pursuit with proximity-scaled derivative damping ---
+    //
+    // The wingman always pursues the bearing to the lead-ahead trackpoint
+    // (this gives a smooth rejoin trajectory and naturally closes the gap).
+    // But when close to the slot, we add DERIVATIVE DAMPING on the lateral
+    // velocity: a heading correction that opposes the lateral motion. This
+    // brakes the lateral sweep as the wingman approaches the slot, preventing
+    // the overshoot oscillation that a pure heading-pursuit controller
+    // produces (the wingman turns toward the slot, builds lateral velocity,
+    // sweeps past, turns back, repeats).
+    //
+    // The damping is scaled by proximity: zero when far (don't fight the
+    // rejoin trajectory), full when close (brake the lateral sweep). This is
+    // analogous to the along-track derivative damping on the speed controller.
+    //
+    // Lateral axis: perpendicular to the lead's heading (right = positive).
+    // Right-direction in F4Flight: (sin(sigma), -cos(sigma))
+    const double sinSig = std::sin(leadSigma);
+    const double cosSig = std::cos(leadSigma);
+    const double lateralVel = relVx * sinSig - relVy * cosSig;
+
+    // Proximity scale: 0 when far, 1 when at the in-position threshold.
+    // The damping ramps in over the last 2x station-keeping radius.
+    const double dampScale = std::max(0.0, std::min(1.0,
+        1.0 - (distToSlot - kInPositionThresholdFt) /
+              (kStationKeepingRadiusFt * 2.0 - kInPositionThresholdFt)));
+
+    // Damping correction: turn AWAY from the lateral velocity. If the wingman
+    // is moving right (lateralVel > 0), turn left (negative correction) to
+    // brake the motion. Gain: ~0.29° of heading per ft/s of lateral velocity,
+    // clamped to ±25° to prevent excessive turns.
+    double dampCorr = -0.005 * lateralVel * dampScale;
+    dampCorr = std::max(-0.44, std::min(0.44, dampCorr));  // ±25°
+
+    // Blend: when very close to the slot, blend toward the lead's heading so
+    // the wingman flies parallel (not chasing a moving bearing). The blend
+    // factor ramps from 0 (far) to 0.6 (at the in-position threshold).
+    const double blendFactor = 0.6 * std::max(0.0, std::min(1.0,
+        1.0 - distToSlot / kStationKeepingRadiusFt));
+    const double dampedHeading = (1.0 - blendFactor) * desHeading +
+                                  blendFactor * leadSigma + dampCorr;
+
+    ManeuverPrimitives::HeadingAndAltitudeHold(dampedHeading, desAlt,
                                                 digi, as, fcs, fcsState,
                                                 digi.config.maxGs);
 
-    // Use MachHold to match speed. Convert desSpeed (ft/s) to kts for MachHold.
-    const double desSpeedKts = desSpeed / KNOTS_TO_FTPSEC;
-    ManeuverPrimitives::MachHold(desSpeedKts, as.vcas, false,
-                                  digi, as, 150.0, 800.0, digi.nav.dt, 100.0);
+    // Use MachHold to match speed.
+    //
+    // CAS/TAS CORRECTION: desSpeed is the lead's TRUE airspeed (ft/s).
+    // MachHold compares target vs as.vcas (CALIBRATED airspeed, kts). At
+    // altitude, TAS > CAS (lower air density), so naively converting the
+    // lead's TAS to kts and comparing with the wingman's CAS would make the
+    // wingman target a CAS equal to the lead's TAS — which is much faster
+    // than the lead's actual CAS. The wingman would always fly too fast and
+    // never stabilize in formation.
+    //
+    // FIX: use the typed CasKnots API. Convert the lead's TAS (ft/s) to
+    // CAS (kts) using casFromTasFps, which uses the wingman's own CAS/TAS
+    // ratio. The typed API makes it a compile error to pass TAS where CAS
+    // is expected.
+    const CasKnots desCas = casFromTasFps(tas_fps(desSpeed), as);
+    ManeuverPrimitives::machHoldCas(desCas, false,
+                                     digi, as, 150.0, 800.0, digi.nav.dt, 100.0);
 
     // Return true if "in position" (within threshold of the slot).
-    const double dz = trackZ - self.z;
-    const double dist3D = std::sqrt(dx * dx + dy * dy + dz * dz);
-    return dist3D < kInPositionThresholdFt;
+    return distToSlot < kInPositionThresholdFt;
 }
 
 // AiCheckInPositionCall — set the inPosition flag when within threshold.

@@ -96,11 +96,20 @@ public:
         const double dy = target_.y - as.kin.y;
         const double range = std::sqrt(dx * dx + dy * dy);
         minRange_ = std::min(minRange_, range);
+        maxRange_ = std::max(maxRange_, range);
 
         minAlt_ = std::min(minAlt_, -as.kin.z);
         maxG_ = std::max(maxG_, as.loads.nzcgs);
         maxHeadingChange_ = std::max(maxHeadingChange_,
             std::fabs(as.kin.sigma - initialHeading_));
+
+        // Track lateral separation from the collision course (x-axis). The
+        // target is on the x-axis (y=0); the aircraft starts on the x-axis
+        // (y=0). CollisionAvoid should move the aircraft OFF the x-axis
+        // (lateral evasion). The old test only checked heading change —
+        // which can be satisfied by turning in the wrong direction (toward
+        // the collision) or by pitching up without lateral movement.
+        maxLateralSep_ = std::max(maxLateralSep_, std::fabs(as.kin.y));
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
@@ -113,6 +122,7 @@ public:
         curHdgChg_ = std::fabs(as.kin.sigma - initialHeading_) * RTD;
         curG_ = as.loads.nzcgs;
         curInCollision_ = (mode == DigiMode::CollisionAvoid);
+        curLatSep_ = std::fabs(as.kin.y);
 
         if (phaseTime_ >= nextPrint_) {
             if (nextPrint_ == 0.0) {
@@ -144,14 +154,24 @@ public:
         //    the collision course. (Heavy aircraft may only manage 10°.)
         const double hdgThreshold = isHeavy_ ? 10.0 : 15.0;
         if (maxHeadingChange_ < hdgThreshold * DTR) return false;
-        // 3. Must not have lawn-darted.
+        // 3. Must have achieved LATERAL separation from the collision course.
+        //    The target is on the x-axis (y=0); the aircraft starts on the
+        //    x-axis. CollisionAvoid should move the aircraft OFF the x-axis.
+        //    The old test only checked heading change — a regression where
+        //    the AI turns but doesn't actually move laterally (e.g., pitches
+        //    up without rolling) would pass the heading check but fail this.
+        //    Require >= 200 ft lateral separation (the evasion trackpoint is
+        //    at 45° off the nose, which produces both x and y movement).
+        const double latSepThreshold = isHeavy_ ? 100.0 : 200.0;
+        if (maxLateralSep_ < latSepThreshold) return false;
+        // 4. Must not have lawn-darted.
         if (minAlt_ < 5000.0) return false;
         return true;
     }
 
     std::string criteria() const override {
         return "Enter CollisionAvoid mode; Heading change > 15deg (10deg heavy); "
-               "Min alt >= 5000ft; No NaN";
+               "Lateral separation >= 200ft (100ft heavy); Min alt >= 5000ft; No NaN";
     }
 
     std::string failureReason() const override {
@@ -171,6 +191,14 @@ public:
                    "deg (needed > " + std::to_string(hdgThreshold) +
                    "deg) — aircraft did not maneuver to avoid the collision.";
         }
+        const double latSepThreshold = isHeavy_ ? 100.0 : 200.0;
+        if (maxLateralSep_ < latSepThreshold) {
+            return "Max lateral separation from collision course was " +
+                   std::to_string(static_cast<int>(maxLateralSep_)) +
+                   "ft (needed >= " + std::to_string(static_cast<int>(latSepThreshold)) +
+                   "ft) — aircraft turned but did not move laterally off the "
+                   "collision line (evasion trackpoint not followed).";
+        }
         if (minAlt_ < 5000.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
                    "ft (needed >= 5000ft) — collision evasion pulled the aircraft too low.";
@@ -183,6 +211,7 @@ public:
             {"range",        curRange_,         "ft"},
             {"hdg_chg",      curHdgChg_,        "deg"},
             {"G",            curG_,             ""},
+            {"lat_sep",      curLatSep_,        "ft"},
             {"in_collision", curInCollision_ ? 1.0 : 0.0, ""},
         };
     }
@@ -191,13 +220,17 @@ public:
 
     void Finish() const override {
         const double hdgThreshold = isHeavy_ ? 10.0 : 15.0;
+        const double latSepThreshold = isHeavy_ ? 100.0 : 200.0;
         std::printf("  --- Summary ---\n");
         std::printf("  Entered CollisionAvoid: %s\n",
             enteredCollisionAvoid_ ? "[PASS]" : "[FAIL]");
         std::printf("  Max heading change:    %.1f deg (need > %.0f) %s\n",
             maxHeadingChange_ * RTD, hdgThreshold,
             maxHeadingChange_ > hdgThreshold * DTR ? "[PASS]" : "[FAIL]");
-        std::printf("  Min range:             %.0f ft (info)\n", minRange_);
+        std::printf("  Max lateral sep:       %.0f ft (need >= %.0f) %s\n",
+            maxLateralSep_, latSepThreshold,
+            maxLateralSep_ >= latSepThreshold ? "[PASS]" : "[FAIL]");
+        std::printf("  Range: %.0f..%.0f ft (info)\n", minRange_, maxRange_);
         std::printf("  Max G:                 %.2f\n", maxG_);
         std::printf("  Min altitude:          %.0f ft (need >= 5000) %s\n",
             minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
@@ -210,10 +243,12 @@ private:
     double nextPrint_{0.0};
     double initialHeading_{0.0};
     double minRange_{1e9};
+    double maxRange_{0.0};
     double minAlt_{1e9};
     double maxG_{0.0};
     double maxGs_{9.0};
     double maxHeadingChange_{0.0};
+    double maxLateralSep_{0.0};
     bool hasNaN_{false};
     bool enteredCollisionAvoid_{false};
     bool isHeavy_{false};
@@ -223,6 +258,7 @@ private:
     double curRange_{0.0};
     double curHdgChg_{0.0};
     double curG_{0.0};
+    double curLatSep_{0.0};
     DigiMode curMode_{DigiMode::NoMode};
     bool curInCollision_{false};
 };

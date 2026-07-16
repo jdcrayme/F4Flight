@@ -297,6 +297,15 @@ public:
         maxG_ = std::max(maxG_, as.loads.nzcgs);
         maxHeadingChange_ = std::max(maxHeadingChange_, std::fabs(as.kin.sigma));
 
+        // Track SIGNED heading extrema. The target starts at +y (north,
+        // sigma=+PI/2) and moves to -y (south, sigma=-PI/2). To track the
+        // target through its pass, the aircraft's heading should swing
+        // through BOTH +sigma (toward north) and -sigma (toward south).
+        // The old test only checked |sigma| > 45° — which passed even if
+        // the aircraft turned the WRONG WAY (away from the target).
+        maxPositiveHeading_ = std::max(maxPositiveHeading_, as.kin.sigma);
+        maxNegativeHeading_ = std::min(maxNegativeHeading_, as.kin.sigma);
+
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
         if (sc_brain_->activeMode() == DigiMode::WVREngage) enteredWVREngage_ = true;
 
@@ -336,6 +345,14 @@ public:
         // aircraft may only manage 20° in 20s.
         const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
         if (maxHeadingChange_ < hdgThreshold * DTR) return false;
+        // Must have turned TOWARD the target's initial bearing (north = +sigma).
+        // The target starts at +y (north); the aircraft should turn left
+        // (positive sigma) to track it. The old test only checked |sigma|,
+        // which passed even if the aircraft turned RIGHT (away from the
+        // target). Require the positive heading to reach >= 20° (15° heavy)
+        // at some point — proves the initial turn was in the right direction.
+        const double posHdgThreshold = isHeavy_ ? 15.0 : 20.0;
+        if (maxPositiveHeading_ < posHdgThreshold * DTR) return false;
         // Must have come close to the target at some point (proof the
         // AI turned toward it, not away). Heavy aircraft may not close
         // as aggressively — allow 80% of initial range.
@@ -347,6 +364,7 @@ public:
 
     std::string criteria() const override {
         return "Enter WVREngage mode; Max heading change >= 45° (20° heavy); "
+               "Turned toward target (positive heading >= 20°, 15° heavy); "
                "Min range <= 50% of initial (80% heavy); Min alt >= 5000ft; No NaN";
     }
 
@@ -364,6 +382,13 @@ public:
                    std::to_string(maxHeadingChange_ * RTD) +
                    "deg (needed >= " + std::to_string(hdgThreshold) +
                    "deg) — aircraft did not track the target through its pass.";
+        }
+        const double posHdgThreshold = isHeavy_ ? 15.0 : 20.0;
+        if (maxPositiveHeading_ < posHdgThreshold * DTR) {
+            return "Max positive heading (toward target's initial bearing) was " +
+                   std::to_string(maxPositiveHeading_ * RTD) +
+                   "deg (needed >= " + std::to_string(posHdgThreshold) +
+                   "deg) — aircraft turned the wrong way (away from the target).";
         }
         const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
         if (minRange_ > rangeFraction * initialRange_) {
@@ -392,6 +417,7 @@ public:
 
     void Finish() const override {
         const double hdgThreshold = isHeavy_ ? 20.0 : 45.0;
+        const double posHdgThreshold = isHeavy_ ? 15.0 : 20.0;
         const double rangeFraction = isHeavy_ ? 0.8 : 0.5;
         std::printf("  --- Summary ---\n");
         std::printf("  Entered WVREngage: %s\n", enteredWVREngage_ ? "[PASS]" : "[FAIL]");
@@ -401,6 +427,10 @@ public:
         std::printf("  Max heading chg:  %.1f deg (need >= %.0f) %s\n",
             maxHeadingChange_ * RTD, hdgThreshold,
             maxHeadingChange_ >= hdgThreshold * DTR ? "[PASS]" : "[FAIL]");
+        std::printf("  Max pos heading:  %.1f deg (need >= %.0f, toward target) %s\n",
+            maxPositiveHeading_ * RTD, posHdgThreshold,
+            maxPositiveHeading_ >= posHdgThreshold * DTR ? "[PASS]" : "[FAIL]");
+        std::printf("  Max neg heading:  %.1f deg (info)\n", maxNegativeHeading_ * RTD);
         std::printf("  Min altitude:     %.0f ft (need >= 5000) %s\n",
             minAlt_, minAlt_ >= 5000.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Max G: %.2f\n", maxG_);
@@ -415,6 +445,8 @@ private:
     double minAlt_{1e9};
     double maxG_{0.0};
     double maxHeadingChange_{0.0};
+    double maxPositiveHeading_{-std::numeric_limits<double>::max()};
+    double maxNegativeHeading_{std::numeric_limits<double>::max()};
     bool hasNaN_{false};
     bool enteredWVREngage_{false};
     bool isHeavy_{false};

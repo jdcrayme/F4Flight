@@ -18,9 +18,12 @@
 //   - WVREngage:    IMPLEMENTED (roll_and_pull.cpp)
 
 #include "f4flight/digi/digi_brain.h"
+#include "f4flight/digi/steering.h"  // for headingError
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/ground/ground_avoid.h"
 #include "f4flight/digi/ground/ground_ops.h"
+#include "f4flight/digi/decision/flight_lead.h"  // FlightLeadDecisions
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTasFps
 #include "f4flight/digi/defensive/missile_defeat.h"
 #include "f4flight/digi/defensive/guns_jink.h"
 #include "f4flight/digi/defensive/collision_avoid.h"
@@ -37,6 +40,7 @@
 #include "f4flight/digi/weapons/sms.h"
 #include "f4flight/digi/comms/message_bus.h"
 #include "f4flight/digi/atc/atc_messages.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // cas_kts (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -260,6 +264,58 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             HandleThreat(state_, *selfEntity, as, fcs, fcsState, dt);
 
         if (!threatHandled) {
+            // --- Set the flight phase for gain scheduling ---
+            //
+            // The flight phase determines which PID gains GammaHold/MachHold/
+            // HeadingAndAltitudeHold use. This is F4Flight's equivalent of
+            // FreeFalcon's landingGains flag, but more granular: instead of
+            // just "gear down = landing gains", we have 6 phases with
+            // distinct gain sets.
+            //
+            // The phase is set BEFORE the mode dispatch so the mode's
+            // maneuver primitives can read it. Individual modes can override
+            // the phase (e.g. Landing mode sets Approach/Flare based on the
+            // ground-ops sub-phase).
+            switch (curMode_) {
+                case DigiMode::Waypoint:
+                case DigiMode::Loiter:
+                case DigiMode::RTB:
+                case DigiMode::Bugout:
+                case DigiMode::Separate:
+                    state_.nav.flightPhase = FlightPhase::Cruise;
+                    break;
+                case DigiMode::MissileEngage:
+                case DigiMode::GunsEngage:
+                case DigiMode::Merge:
+                case DigiMode::Accel:
+                case DigiMode::BVREngage:
+                case DigiMode::WVREngage:
+                case DigiMode::MissileDefeat:
+                case DigiMode::GunsJink:
+                case DigiMode::CollisionAvoid:
+                    state_.nav.flightPhase = FlightPhase::Combat;
+                    break;
+                case DigiMode::Wingy:
+                case DigiMode::FollowOrders:
+                case DigiMode::Refueling:
+                    state_.nav.flightPhase = FlightPhase::Formation;
+                    break;
+                case DigiMode::Landing:
+                    // Landing phase is set by runLanding (Approach vs Flare
+                    // based on the ground-ops sub-phase). Default to Approach.
+                    state_.nav.flightPhase = FlightPhase::Approach;
+                    break;
+                case DigiMode::Takeoff:
+                    state_.nav.flightPhase = FlightPhase::GroundOps;
+                    break;
+                case DigiMode::GroundMnvr:
+                    state_.nav.flightPhase = FlightPhase::Combat;  // A/G attack
+                    break;
+                default:
+                    state_.nav.flightPhase = FlightPhase::Cruise;
+                    break;
+            }
+
             switch (curMode_) {
             case DigiMode::Waypoint:
                 runWaypoint(as, dt, fcs, fcsState);
@@ -347,8 +403,9 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             case DigiMode::Loiter:
                 // Loiter already exists as a ManeuverPrimitives method — use it.
                 ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.config.maxGs);
-                ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
-                                              state_, as, 200.0, 800.0, dt, 700.0);
+                // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+                ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                                 state_, as, 200.0, 800.0, dt, 700.0);
                 break;
             case DigiMode::Bugout:
             case DigiMode::Separate:
@@ -358,8 +415,9 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 ManeuverPrimitives::WvrBugOut(state_, as, fcs, fcsState, dt);
                 break;
             case DigiMode::Refueling:
-                // Not yet ported — fall through to Waypoint navigation.
-                runWaypoint(as, dt, fcs, fcsState);
+                // AAR (air-to-air refueling). Ported from FreeFalcon's
+                // AiRefuel (refuel.cpp), vastly simplified.
+                runRefueling(as, dt, fcs, fcsState);
                 break;
             case DigiMode::FollowOrders:
                 // PORTED (basic): execute the wingman's current tactical
@@ -381,8 +439,9 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
                 runWingy(as, dt, fcs, fcsState);
                 break;
             case DigiMode::GroundMnvr:
-                // Not yet ported — fall through to Waypoint navigation.
-                runWaypoint(as, dt, fcs, fcsState);
+                // A/G attack (dive-bomb profile). Ported from FreeFalcon's
+                // GroundAttackMode (gndattck.cpp), vastly simplified.
+                runGroundAttack(as, dt, fcs, fcsState);
                 break;
             }
         }  // end if (!threatHandled)
@@ -403,6 +462,8 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
     out.parkingBrake = state_.commands.parkingBrake;
     out.speedBrake   = state_.commands.speedBrakeCmd;
     out.gearHandle   = state_.commands.gearHandleCmd;
+    out.tefCmd       = state_.commands.tefCmd;
+    out.lefCmd       = state_.commands.lefCmd;
     out.refueling = false;
     // Map digi fire flags to PilotInput (host reads these to fire weapons)
     out.fireGun        = state_.weapon.gunFireFlag;
@@ -616,8 +677,28 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         } else if (state_.fuel.bingoFuelLbs > 0.0 && state_.fuel.fuelLbs <= state_.fuel.bingoFuelLbs) {
             state_.fuel.phase = DigiFuelState::Phase::Bingo;
             state_.damage.saidBingo = true;
+            // Radio call: "Bingo" (once-only)
+            {
+                const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Bingo);
+                if (!(state_.comm.callsMade & bit)) {
+                    if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Bingo,
+                                       simTime_, state_.comm.selfId)) {
+                        state_.comm.callsMade |= bit;
+                    }
+                }
+            }
         } else if (state_.fuel.jokerFuelLbs > 0.0 && state_.fuel.fuelLbs <= state_.fuel.jokerFuelLbs) {
             state_.fuel.phase = DigiFuelState::Phase::Joker;
+            // Radio call: "Joker" (once-only)
+            {
+                const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Joker);
+                if (!(state_.comm.callsMade & bit)) {
+                    if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Joker,
+                                       simTime_, state_.comm.selfId)) {
+                        state_.comm.callsMade |= bit;
+                    }
+                }
+            }
         } else {
             state_.fuel.phase = DigiFuelState::Phase::Normal;
         }
@@ -685,6 +766,22 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
                 case SeparateAction::None:
                     break;
             }
+        }
+    }
+
+    // ===================================================================
+    // --- FlightLeadDecisions (flight-lead tactical decisions) ---
+    // ===================================================================
+    // If this aircraft is a flight lead (not a wingman), make tactical
+    // decisions: engage/disengage, target prioritization, formation
+    // management. This sets state that the rest of resolveMode() uses.
+    // Port of FreeFalcon's flitlead.cpp + dlogic.cpp lead-specific parts.
+    {
+        const DigiEntity* leadTarget = wvrTarget_;
+        if (!leadTarget) leadTarget = frameInputs_.injectedTarget;
+        if (selfEntity) {
+            FlightLeadDecisions(state_, *selfEntity, leadTarget,
+                                sensorFusion_.picture(), dt);
         }
     }
 
@@ -854,6 +951,21 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         frameInputs_.injectedLead != nullptr;
     if (wingyActive) {
         addMode(DigiMode::Wingy);
+    } else if (frameInputs_.injectedTanker) {
+        // --- Refueling (AAR) ---
+        // If a tanker is injected, enter Refueling mode to fly to the
+        // tanker's boom position and hold for fuel transfer. Refueling (13)
+        // is higher priority than GroundMnvr (22) and Waypoint (12) —
+        // refueling takes precedence over navigation.
+        addMode(DigiMode::Refueling);
+    } else if (state_.ag.groundTarget) {
+        // --- GroundMnvr (A/G attack) ---
+        // If a ground target is injected (and we're not a wingman in
+        // formation), enter GroundMnvr mode to execute the dive-bomb
+        // attack profile. GroundMnvr (22) is lower priority than Wingy
+        // (20) — wingmen in formation don't break formation to attack
+        // ground targets unless explicitly ordered.
+        addMode(DigiMode::GroundMnvr);
     } else {
         // --- Waypoint (lowest-priority fallback) ---
         // FF RunDecisionRoutines ends by queuing WaypointMode as the default.
@@ -946,6 +1058,50 @@ void DigiBrain::resolveModeConflicts() {
     lastMode_ = curMode_;
     curMode_ = nextMode_;
     nextMode_ = DigiMode::NoMode;
+
+    // --- Radio calls on mode transitions ---
+    //
+    // When the active mode changes, generate a radio call appropriate to
+    // the new mode. Port of FreeFalcon's AiMakeRadioResponse calls scattered
+    // across dlogic.cpp, bvrengage.cpp, separate.cpp, etc.
+    //
+    // The calls are throttled (one per 5 seconds) and "once-only" (each call
+    // type is made at most once per scenario — reset clears the callsMade
+    // bitmask). This prevents radio spam during rapid mode oscillation.
+    if (curMode_ != lastMode_) {
+        const EntityId self = state_.comm.selfId;
+        auto tryCall = [&](RadioCallType type) {
+            const uint32_t bit = 1u << static_cast<uint32_t>(type);
+            if (!(state_.comm.callsMade & bit)) {
+                if (makeRadioCall(state_.comm.radioCalls, type, simTime_, self)) {
+                    state_.comm.callsMade |= bit;
+                }
+            }
+        };
+
+        switch (curMode_) {
+            case DigiMode::BVREngage:
+            case DigiMode::WVREngage:
+            case DigiMode::GunsEngage:
+            case DigiMode::MissileEngage:
+                tryCall(RadioCallType::Engage);
+                break;
+            case DigiMode::Wingy:
+                tryCall(RadioCallType::Rejoin);
+                break;
+            case DigiMode::RTB:
+                tryCall(RadioCallType::RTB);
+                break;
+            case DigiMode::MissileDefeat:
+                tryCall(RadioCallType::Missile);
+                break;
+            case DigiMode::Refueling:
+                // AAR contact/disconnect calls are handled by runRefueling
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 // ===========================================================================
@@ -956,8 +1112,9 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     if (curWp_ >= wps_.size()) {
         ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
                                                     state_, as, fcs, fcsState, state_.config.maxGs);
-        ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
-                                      state_, as, 200.0, 800.0, dt, 700.0);
+        // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+        ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                         state_, as, 200.0, 800.0, dt, 700.0);
         return;
     }
 
@@ -971,8 +1128,9 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
         if (curWp_ >= wps_.size()) {
             ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
                                                         state_, as, fcs, fcsState, state_.config.maxGs);
-            ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
-                                          state_, as, 200.0, 800.0, dt, 700.0);
+            // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+            ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                             state_, as, 200.0, 800.0, dt, 700.0);
             return;
         }
     }
@@ -981,8 +1139,9 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     const double desAlt = -wp.z;
     ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
                                                 state_, as, fcs, fcsState, state_.config.maxGs);
-    ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
-                                  state_, as, 200.0, 800.0, dt, 700.0);
+    // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+    ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                     state_, as, 200.0, 800.0, dt, 700.0);
 }
 
 void DigiBrain::runMissileDefeat(const AircraftState& as, double dt,
@@ -1114,6 +1273,25 @@ void DigiBrain::runTakeoff(const AircraftState& as, double dt,
 
 void DigiBrain::runLanding(const AircraftState& as, double dt,
                             FcsState& fcsState, double groundZ) {
+    // Set the flight phase based on the ground-ops sub-phase.
+    // This overrides the default Approach phase set in the mode dispatch.
+    switch (state_.ag.groundOps.phase) {
+        case GroundOpsPhase::Flare:
+        case GroundOpsPhase::Touchdown:
+            state_.nav.flightPhase = FlightPhase::Flare;
+            break;
+        case GroundOpsPhase::Rollout:
+        case GroundOpsPhase::VacatingRunway:
+        case GroundOpsPhase::TaxiToRunway:
+        case GroundOpsPhase::LiningUp:
+        case GroundOpsPhase::TakeoffRoll:
+        case GroundOpsPhase::Rotation:
+            state_.nav.flightPhase = FlightPhase::GroundOps;
+            break;
+        default:
+            state_.nav.flightPhase = FlightPhase::Approach;
+            break;
+    }
     RunLanding(state_, as, fcsState, dt, simTime_, groundZ);
 }
 
@@ -1163,12 +1341,605 @@ void DigiBrain::runRTB(const AircraftState& as, double dt,
     ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
                                                 state_, as, fcs, fcsState, state_.config.maxGs);
     // RTB cruise speed: corner speed (best range for most fighters).
-    ManeuverPrimitives::MachHold(state_.config.cornerSpeed, as.vcas, true,
-                                  state_, as, 200.0, 800.0, dt, 700.0);
+    // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
+    ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                     state_, as, 200.0, 800.0, dt, 700.0);
 
     // TODO (future): when within ~10 NM of the airbase, transition to
     // Landing mode and request landing clearance via the MessageBus. This
     // requires the AirbaseCheck port from FF separate.cpp / landme.cpp.
+}
+
+void DigiBrain::runRefueling(const AircraftState& as, double dt,
+                               const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Simplified air-to-air refueling (AAR) implementation.
+    //
+    // Port of FreeFalcon's AiRefuel (refuel.cpp:33-200), vastly simplified.
+    // FreeFalcon's version is 1030 lines covering tanker brain interaction,
+    // radio calls, boom/drogue geometry, multi-ship queueing, and fuel
+    // transfer. This implementation covers the core receiver behavior:
+    //   1. Approach: fly to the boom position (behind and below the tanker)
+    //   2. Contact: hold position at the boom for a set duration
+    //   3. Disconnect: descend and decelerate away from the tanker
+    //
+    // The host injects the tanker via FrameInputs.injectedTanker. The tanker
+    // must be a friendly aircraft flying straight and level.
+    const DigiEntity* tanker = frameInputs_.injectedTanker;
+    if (!tanker || tanker->isDead) {
+        // No tanker — fall back to waypoint navigation.
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    // Compute the boom position: behind and below the tanker.
+    // The boom is ~50 ft behind and ~20 ft below the tanker's center.
+    // In F4Flight's convention (x=east, y=north, z=down), "behind" = -velocity
+    // direction, "below" = +z.
+    constexpr double kBoomOffsetBackFt = 50.0;   // behind the tanker
+    constexpr double kBoomOffsetDownFt = 20.0;   // below the tanker
+    const double tankerSigma = tanker->yaw;
+    // Behind = opposite of heading direction.
+    // In F4Flight: heading direction = (cos(sigma), sin(sigma)).
+    // Behind = (-cos(sigma), -sin(sigma)).
+    state_.refuel.boomX = tanker->x - kBoomOffsetBackFt * std::cos(tankerSigma);
+    state_.refuel.boomY = tanker->y - kBoomOffsetBackFt * std::sin(tankerSigma);
+    state_.refuel.boomZ = tanker->z + kBoomOffsetDownFt;  // +z = below (NED)
+
+    // Compute distance to the boom position.
+    const double dx = state_.refuel.boomX - as.kin.x;
+    const double dy = state_.refuel.boomY - as.kin.y;
+    const double dz = state_.refuel.boomZ - as.kin.z;
+    const double dist3D = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+    // State machine for the refueling profile.
+    switch (state_.refuel.phase) {
+        case DigiRefuelState::Phase::None:
+            // Start with approach.
+            state_.refuel.phase = DigiRefuelState::Phase::Approach;
+            [[fallthrough]];
+
+        case DigiRefuelState::Phase::Approach: {
+            // Fly to the boom position. Use HeadingAndAltitudeHold to steer
+            // toward the boom, and fly FASTER than the tanker to close the gap.
+            const double desHeading = std::atan2(dy, dx);
+            const double desAlt = -state_.refuel.boomZ;  // NED: z negative up
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+
+            // Target speed: tanker's speed + closure correction.
+            // The closure correction is proportional to the distance (faster
+            // when far, tanker speed when close). This is the same PD approach
+            // used in formation following.
+            const double tankerTasKts = tanker->speed / KNOTS_TO_FTPSEC;
+            const double closureCorrection = std::max(0.0, std::min(100.0,
+                dist3D * 0.02));  // 2 kt per 100 ft, max +100 kts
+            const double targetTasKts = tankerTasKts + closureCorrection;
+            const CasKnots desCas = casFromTas(tas_kts(targetTasKts), as);
+            ManeuverPrimitives::machHoldCas(desCas, false,
+                state_, as, 150.0, 800.0, dt, 100.0);
+
+            // Transition to Contact when close to the boom.
+            if (dist3D < 500.0) {
+                state_.refuel.phase = DigiRefuelState::Phase::Contact;
+                state_.refuel.contactTimer = 0.0;
+                // Radio call: "Contact" (once-only)
+                {
+                    const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Contact);
+                    if (!(state_.comm.callsMade & bit)) {
+                        if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Contact,
+                                           simTime_, state_.comm.selfId)) {
+                            state_.comm.callsMade |= bit;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        case DigiRefuelState::Phase::Contact: {
+            // Hold position at the boom. Use a tight position controller:
+            // steer toward the boom (correcting any drift) and match speed.
+            const double desHeading = std::atan2(dy, dx);
+            const double desAlt = -state_.refuel.boomZ;
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+
+            // Match the tanker's speed exactly.
+            const CasKnots desCas = casFromTasFps(tas_fps(tanker->speed), as);
+            ManeuverPrimitives::machHoldCas(desCas, false,
+                state_, as, 150.0, 800.0, dt, 100.0);
+
+            // Count time in contact.
+            state_.refuel.contactTimer += dt;
+
+            // Transition to Disconnect after the contact duration.
+            if (state_.refuel.contactTimer >= state_.refuel.contactDuration) {
+                state_.refuel.phase = DigiRefuelState::Phase::Disconnect;
+                // Radio call: "Disconnect" (once-only)
+                {
+                    const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Disconnect);
+                    if (!(state_.comm.callsMade & bit)) {
+                        if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Disconnect,
+                                           simTime_, state_.comm.selfId)) {
+                            state_.comm.callsMade |= bit;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        case DigiRefuelState::Phase::Disconnect: {
+            // Depart the tanker: descend and decelerate. Fly away from the
+            // tanker (opposite direction) and descend 500 ft below.
+            const double awayHeading = tankerSigma + M_PI;  // opposite of tanker
+            const double desAlt = -tanker->z - 500.0;  // 500 ft below tanker
+            ManeuverPrimitives::HeadingAndAltitudeHold(awayHeading, desAlt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+
+            // Decelerate to approach speed.
+            const double approachSpeed = 250.0;  // kts CAS
+            ManeuverPrimitives::machHoldCas(cas_kts(approachSpeed), true,
+                state_, as, 150.0, 800.0, dt, 100.0);
+
+            // Clear the tanker after disconnect (the host can re-inject
+            // for another refueling session).
+            // We don't clear injectedTanker here (the host owns it), but
+            // we reset the phase so a new approach can start if the tanker
+            // is still injected.
+            // For now, fall back to waypoint nav after disconnect.
+            runWaypoint(as, dt, fcs, fcsState);
+            break;
+        }
+    }
+}
+
+void DigiBrain::runGroundAttack(const AircraftState& as, double dt,
+                                 const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Ground attack dispatcher.
+    //
+    // Port of FreeFalcon's GroundAttackMode (gndattck.cpp:96-4900), but
+    // vastly simplified. FreeFalcon's version is 4900 lines covering bombs,
+    // GBUs, AG missiles, rockets, strafing, CCIP/CCRP/DFT modes, target
+    // selection, weapon selection, and traffic-pattern attack profiles.
+    //
+    // Task 11 added a single dive-bomb profile; Task 15-a expands this to
+    // three profiles selected by state_.ag.agProfile (host injects via
+    // FrameInputs.injectedAgProfile). Each profile is a 4-phase state
+    // machine using state_.ag.agApproach as the phase counter (0..3).
+    //
+    //   DiveBomb       — approach → dive → pullout → egress (Task 11 default)
+    //   LevelDelivery  — approach → level → release → egress (Task 15-a)
+    //   TossBomb       — approach → pull-up → release → egress (Task 15-a)
+    //
+    // The host injects the ground target via FrameInputs.injectedGroundTarget.
+    // The brain stores it in state_.ag.groundTarget.
+
+    const DigiEntity* target = state_.ag.groundTarget;
+    if (!target || target->isDead) {
+        // No target — fall back to waypoint navigation.
+        runWaypoint(as, dt, fcs, fcsState);
+        return;
+    }
+
+    switch (state_.ag.agProfile) {
+        case AgAttackProfile::DiveBomb:
+            runDiveBombAttack(target, as, dt, fcs, fcsState);
+            break;
+        case AgAttackProfile::LevelDelivery:
+            runLevelDeliveryAttack(target, as, dt, fcs, fcsState);
+            break;
+        case AgAttackProfile::TossBomb:
+            runTossBombAttack(target, as, dt, fcs, fcsState);
+            break;
+    }
+}
+
+// ===========================================================================
+// runDiveBombAttack — the original Task 11 dive-bomb profile.
+// 4-phase state machine (state_.ag.agApproach):
+//   0 = approach, 1 = dive, 2 = pullout, 3 = egress.
+// ===========================================================================
+void DigiBrain::runDiveBombAttack(const DigiEntity* target,
+                                    const AircraftState& as, double dt,
+                                    const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Compute geometry relative to the target.
+    const double dx = target->x - as.kin.x;
+    const double dy = target->y - as.kin.y;
+    const double horizDist = std::sqrt(dx * dx + dy * dy);
+    const double altAGL = -as.kin.z;  // assuming groundZ = 0 for simplicity
+    const double desHeading = std::atan2(dy, dx);
+
+    // Attack parameters (dive-bomb profile).
+    constexpr double kDiveStartRangeFt  = 18000.0;  // 3 NM — start dive
+    constexpr double kDiveAngleDeg      = 30.0;     // 30° dive
+    constexpr double kReleaseAltFt      = 4000.0;   // release at 4000 ft AGL
+    constexpr double kPulloutAltFt      = 2000.0;   // pull out by 2000 ft AGL
+    constexpr double kSafeAltFt         = 12000.0;  // egress altitude
+    constexpr double kEgressRangeFt     = 30000.0;  // 5 NM — egress complete
+    constexpr double kDiveSpeedKts      = 450.0;    // target dive speed
+    constexpr double kApproachSpeedKts  = 350.0;    // approach speed
+
+    // State machine for the attack profile.
+    // We use agApproach as a simple phase counter (0=approach, 1=dive,
+    // 2=pullout, 3=egress) to avoid depending on the complex AgAttackPhase enum.
+    int& phase = state_.ag.agApproach;  // reuse this field as our phase counter
+
+    switch (phase) {
+        case 0: {
+            // --- Approach phase ---
+            // Fly toward the target at cruise altitude and approach speed.
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kSafeAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            // kApproachSpeedKts is a CAS-kts constant. Use the typed machHoldCas API.
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Transition to dive when within range.
+            if (horizDist < kDiveStartRangeFt) {
+                phase = 1;
+            }
+            break;
+        }
+
+        case 1: {
+            // --- Dive phase ---
+            // Dive toward the target at the dive angle. Steer toward the
+            // target and command a -30° flight path angle.
+            const double desGamma = -kDiveAngleDeg;
+            // Steer toward target heading.
+            const double headingErr = headingError(desHeading, as.kin.sigma);
+            state_.commands.rStick = std::max(-1.0, std::min(1.0,
+                headingErr * RTD * 2.0 * DTR));
+            // Command dive gamma via GammaHold.
+            state_.nav.gammaHoldIError = 0.0;
+            ManeuverPrimitives::GammaHold(desGamma, state_, as, state_.config.maxGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
+            // Speed: target dive speed (let speed build in the dive).
+            // kDiveSpeedKts is a CAS-kts constant. Use the typed machHoldCas API.
+            ManeuverPrimitives::machHoldCas(cas_kts(kDiveSpeedKts), false,
+                state_, as, 200.0, 800.0, dt, 700.0);
+            // Deploy speed brakes if too fast in the dive.
+            if (as.vcas > kDiveSpeedKts + 30.0) {
+                state_.commands.speedBrakeCmd = 1.0;
+            } else {
+                state_.commands.speedBrakeCmd = -1.0;
+            }
+
+            // Release weapon at the correct altitude.
+            // In a 30° dive at 450 kts, the horizontal range at 4000 ft AGL
+            // is ~4000/tan(30°) = ~6928 ft. We release when altitude drops
+            // to the release altitude.
+            if (altAGL <= kReleaseAltFt) {
+                state_.weapon.mslFireFlag = true;  // trigger weapon release
+                phase = 2;  // transition to pullout
+            }
+            // Safety: if we somehow get too low without releasing, pull out.
+            if (altAGL <= kPulloutAltFt) {
+                phase = 2;
+            }
+            break;
+        }
+
+        case 2: {
+            // --- Pullout phase ---
+            // Arrest the descent and climb back to safe altitude.
+            // Command a strong pitch-up (4G) to pull out of the dive.
+            state_.weapon.mslFireFlag = false;  // clear release
+            state_.commands.speedBrakeCmd = -1.0;  // clean for pullout
+
+            // Use GammaHold to command a climb back to safe altitude.
+            const double altErr = (kSafeAltFt + as.kin.z) - as.kin.zdot;
+            state_.nav.gammaHoldIError = 0.0;
+            ManeuverPrimitives::GammaHold(altErr * 0.02, state_, as, state_.config.maxGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
+
+            // Continue toward the target heading (fly over the target).
+            const double headingErr2 = headingError(desHeading, as.kin.sigma);
+            state_.commands.rStick = std::max(-1.0, std::min(1.0,
+                headingErr2 * RTD * 2.0 * DTR));
+
+            // Full throttle for the pullout (need energy).
+            state_.commands.throttle = 1.5;
+
+            // Transition to egress when back at safe altitude.
+            if (altAGL > kSafeAltFt - 500.0) {
+                phase = 3;
+            }
+            break;
+        }
+
+        case 3: {
+            // --- Egress phase ---
+            // Fly away from the target at safe altitude.
+            // Reverse heading (fly away from the target).
+            const double egressHeading = desHeading + M_PI;  // opposite direction
+            ManeuverPrimitives::HeadingAndAltitudeHold(egressHeading, kSafeAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            // kApproachSpeedKts is a CAS-kts constant. Use the typed machHoldCas API.
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Egress complete when far enough from the target.
+            if (horizDist > kEgressRangeFt) {
+                // Clear the ground target — attack complete.
+                state_.ag.groundTarget = nullptr;
+                state_.ag.groundTargetId = kInvalidEntityId;
+                phase = 0;  // reset for next attack
+                // Fall back to waypoint navigation.
+                runWaypoint(as, dt, fcs, fcsState);
+            }
+            break;
+        }
+
+        default:
+            phase = 0;
+            break;
+    }
+}
+
+// ===========================================================================
+// runLevelDeliveryAttack — Task 15-a level bombing profile.
+// 4-phase state machine (state_.ag.agApproach):
+//   0 = approach, 1 = level (descend to low altitude), 2 = release, 3 = egress.
+// ===========================================================================
+void DigiBrain::runLevelDeliveryAttack(const DigiEntity* target,
+                                         const AircraftState& as, double dt,
+                                         const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Geometry relative to the target.
+    const double dx = target->x - as.kin.x;
+    const double dy = target->y - as.kin.y;
+    const double horizDist = std::sqrt(dx * dx + dy * dy);
+    const double altAGL = -as.kin.z;  // groundZ = 0
+    const double desHeading = std::atan2(dy, dx);
+    // Attack parameters (level-delivery profile).
+    //
+    // NOTE: the task spec calls for a 500 ft AGL level run. However, the
+    // brain's GroundAvoid overlay (ground_avoid.cpp) triggers a pull-up
+    // whenever the 5-second predicted altitude drops below 500 ft — which
+    // makes a sustained 500 ft AGL level run impossible (any Phugoid dip
+    // triggers an immediate 9G pull-up that pre-empts the A/G state machine).
+    // We use 1500 ft AGL for the level run instead — still low enough to be a
+    // tactical level delivery, but above the ground-avoid trigger. The
+    // descent uses a limited -12° gamma (instead of HeadingAndAltitudeHold,
+    // which commands up to -60° for large alt errors) to keep the descent
+    // rate manageable and avoid triggering ground avoid during the dive.
+    constexpr double kApproachAltFt      = 8000.0;   // cruise-in altitude
+    constexpr double kLevelAltFt         = 1500.0;   // level run altitude (AGL)
+    constexpr double kDescentGammaDeg    = -12.0;    // shallow descent gamma
+    constexpr double kLevelStartRangeFt  = 18228.0;  // 3 NM — start descent
+    constexpr double kReleaseRangeFt     = 800.0;    // release when over tgt
+    constexpr double kApproachSpeedKts   = 400.0;    // approach speed
+    constexpr double kLevelSpeedKts      = 400.0;    // level run speed
+    constexpr double kEgressRangeFt      = 18228.0;  // 3 NM — egress complete
+
+    int& phase = state_.ag.agApproach;
+
+    switch (phase) {
+        case 0: {
+            // --- Approach phase ---
+            // Fly toward the target at cruise altitude and approach speed.
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kApproachAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Transition to level descent when within 2 NM.
+            if (horizDist < kLevelStartRangeFt) {
+                phase = 1;
+            }
+            break;
+        }
+
+        case 1: {
+            // --- Level descent + run phase ---
+            // Descend to the level-run altitude using a LIMITED shallow gamma
+            // (not HeadingAndAltitudeHold, which would command up to -60° for
+            // the 6500 ft alt error and trigger GroundAvoid). Once at the
+            // level altitude, switch to HeadingAndAltitudeHold to maintain it.
+            //
+            // Steer toward the target heading throughout.
+            const double headingErr = headingError(desHeading, as.kin.sigma);
+            state_.commands.rStick = std::max(-1.0, std::min(1.0,
+                headingErr * RTD * 2.0 * DTR));
+
+            if (altAGL > kLevelAltFt + 200.0) {
+                // Still descending — use limited gamma toward the target alt.
+                state_.nav.gammaHoldIError = 0.0;
+                ManeuverPrimitives::GammaHold(kDescentGammaDeg, state_, as,
+                    state_.config.maxGs);
+                ManeuverPrimitives::PhugoidDamper(state_, as);
+            } else {
+                // At level altitude — hold it.
+                ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kLevelAltFt,
+                    state_, as, fcs, fcsState, state_.config.maxGs);
+                ManeuverPrimitives::PhugoidDamper(state_, as);
+            }
+            ManeuverPrimitives::machHoldCas(cas_kts(kLevelSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Release when directly over the target.
+            if (horizDist < kReleaseRangeFt) {
+                phase = 2;
+            }
+            // Safety: if we somehow descend below 500 ft AGL, bail to egress.
+            if (altAGL < 500.0) {
+                phase = 3;
+            }
+            break;
+        }
+
+        case 2: {
+            // --- Release phase ---
+            // Release the bomb when directly over the target. Continue
+            // straight and level momentarily so the release geometry is
+            // stable, then transition to egress.
+            state_.weapon.mslFireFlag = true;  // trigger weapon release
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kLevelAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
+            ManeuverPrimitives::machHoldCas(cas_kts(kLevelSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Transition to egress immediately after release (one frame of
+            // release-consent is enough — the host reads the flag this frame).
+            phase = 3;
+            break;
+        }
+
+        case 3: {
+            // --- Egress phase ---
+            // Continue straight ahead (same heading — overfly the target),
+            // climb back to the approach altitude, accelerate to cruise.
+            state_.weapon.mslFireFlag = false;  // clear release
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kApproachAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Egress complete when far enough past the target.
+            if (horizDist > kEgressRangeFt) {
+                state_.ag.groundTarget = nullptr;
+                state_.ag.groundTargetId = kInvalidEntityId;
+                phase = 0;
+                runWaypoint(as, dt, fcs, fcsState);
+            }
+            break;
+        }
+
+        default:
+            phase = 0;
+            break;
+    }
+}
+
+// ===========================================================================
+// runTossBombAttack — Task 15-a toss (loft) bombing profile.
+// 4-phase state machine (state_.ag.agApproach):
+//   0 = approach, 1 = pull-up, 2 = release, 3 = egress.
+// ===========================================================================
+void DigiBrain::runTossBombAttack(const DigiEntity* target,
+                                    const AircraftState& as, double dt,
+                                    const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Geometry relative to the target.
+    const double dx = target->x - as.kin.x;
+    const double dy = target->y - as.kin.y;
+    const double horizDist = std::sqrt(dx * dx + dy * dy);
+    const double altAGL = -as.kin.z;  // groundZ = 0
+    const double desHeading = std::atan2(dy, dx);
+
+    // Attack parameters (toss-bomb profile).
+    //
+    // NOTE: the task spec calls for a 500 ft AGL / 450 kts approach. However,
+    // the brain's GroundAvoid overlay (ground_avoid.cpp) triggers a pull-up
+    // whenever the 5-second predicted altitude drops below 500 ft. At 500 ft
+    // AGL, any Phugoid dip or machHold pitch-down transient triggers an
+    // immediate 9G pull-up that pre-empts the A/G state machine. We use
+    // 1500 ft AGL for the approach instead — still low enough to be a
+    // tactical toss-bomb approach, but above the ground-avoid trigger.
+    // We also use 400 kts (corner speed) instead of 450 to avoid the
+    // high-speed pitch-up transient that the F-16 FCS produces at 450 kts /
+    // 500 ft (the thrust line is above the CG, so high throttle at low alt
+    // produces a nose-up moment that the FCS can't trim out).
+    constexpr double kApproachAltFt      = 1500.0;   // 1500 ft AGL run-in
+    constexpr double kApproachSpeedKts   = 400.0;    // fast run-in
+    constexpr double kPullupRangeFt      = 18228.0;  // 3 NM — start pull-up
+    constexpr double kPullupGammaDeg     = 30.0;     // command 30° flight path
+    constexpr double kPullupGs           = 4.0;      // 4G climb
+    constexpr double kReleasePitchDeg    = 45.0;     // release at 45° pitch attitude
+    constexpr double kReleaseAltFt       = 3000.0;   // OR release at 3000 ft AGL
+    constexpr double kEgressAltFt        = 10000.0;  // climb to 10000 ft
+    constexpr double kEgressRangeFt      = 30000.0;  // 5 NM — egress complete
+    constexpr double kEgressSpeedKts     = 400.0;    // egress cruise speed
+
+    int& phase = state_.ag.agApproach;
+
+    switch (phase) {
+        case 0: {
+            // --- Approach phase ---
+            // Fly toward the target at 500 ft AGL / 450 kts.
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kApproachAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Transition to pull-up when within 3 NM.
+            if (horizDist < kPullupRangeFt) {
+                state_.nav.gammaHoldIError = 0.0;
+                phase = 1;
+            }
+            break;
+        }
+
+        case 1: {
+            // --- Pull-up phase ---
+            // Pull up into a 4G climb (command 30° gamma). Steer toward the
+            // target heading to keep the bomb's ballistic trajectory aimed
+            // at the target.
+            const double headingErr = headingError(desHeading, as.kin.sigma);
+            state_.commands.rStick = std::max(-1.0, std::min(1.0,
+                headingErr * RTD * 2.0 * DTR));
+            // GammaHold with maxGs = 4.0 limits the pull to ~4G.
+            ManeuverPrimitives::GammaHold(kPullupGammaDeg, state_, as, kPullupGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
+            // Full throttle during the pull-up (need energy for the climb).
+            state_.commands.throttle = 1.5;
+
+            // Release at 45° pitch attitude OR 3000 ft AGL (whichever first).
+            // as.kin.theta is body pitch (radians) — convert to degrees.
+            const double pitchDeg = as.kin.theta * RTD;
+            if (pitchDeg >= kReleasePitchDeg || altAGL >= kReleaseAltFt) {
+                state_.weapon.mslFireFlag = true;  // trigger weapon release
+                phase = 2;
+            }
+            // Safety: if we get too high without triggering, transition anyway.
+            if (altAGL > kEgressAltFt) {
+                state_.weapon.mslFireFlag = true;
+                phase = 2;
+            }
+            break;
+        }
+
+        case 2: {
+            // --- Release phase (transient) ---
+            // One frame of release-consent, then transition to egress. The
+            // host reads mslFireFlag this frame.
+            state_.weapon.mslFireFlag = true;
+            // Continue the climb momentarily to preserve release geometry.
+            ManeuverPrimitives::GammaHold(kPullupGammaDeg, state_, as, kPullupGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
+            state_.commands.throttle = 1.5;
+            phase = 3;
+            break;
+        }
+
+        case 3: {
+            // --- Egress phase ---
+            // Continue the climb to 10000 ft, then level off and fly away
+            // from the target. We continue on the same heading (toward the
+            // target's bearing) since the bomb's ballistic trajectory
+            // carries it forward to the target — the aircraft also continues
+            // forward and away from the (now overflown) target area.
+            state_.weapon.mslFireFlag = false;
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kEgressAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kEgressSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Egress complete when far enough past the target.
+            if (altAGL > kEgressAltFt - 500.0 && horizDist > kEgressRangeFt) {
+                state_.ag.groundTarget = nullptr;
+                state_.ag.groundTargetId = kInvalidEntityId;
+                phase = 0;
+                runWaypoint(as, dt, fcs, fcsState);
+            }
+            break;
+        }
+
+        default:
+            phase = 0;
+            break;
+    }
 }
 
 void DigiBrain::runFollowOrders(const AircraftState& as, double dt,

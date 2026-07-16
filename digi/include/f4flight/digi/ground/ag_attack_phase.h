@@ -53,5 +53,37 @@ inline const char* agAttackPhaseName(AgAttackPhase p) {
     return "Unknown";
 }
 
+// AgAttackProfile — which delivery geometry runGroundAttack() executes.
+//
+// Task 11 added a single dive-bomb profile; Task 15-a expands this to three
+// profiles. The host selects the profile via FrameInputs.injectedAgProfile
+// (committed to state_.ag.agProfile by DigiBrain::setFrameInputs).
+//
+//   DiveBomb       — the original Task 11 profile (default for backward
+//                    compatibility). 4-phase state machine:
+//                    approach → dive → pullout → egress.
+//   LevelDelivery  — level bombing against soft/area targets. Flies level
+//                    over the target at low altitude and releases when
+//                    directly overhead. approach → level → release → egress.
+//   TossBomb       — loft (toss) bombing for standoff delivery. Approaches
+//                    low and fast, pulls up into a 4G climb, releases at
+//                    the apex (45° pitch or 3000 ft AGL), and continues the
+//                    climb to egress altitude.
+//                    approach → pull-up → release → egress.
+enum class AgAttackProfile : int {
+    DiveBomb       = 0,
+    LevelDelivery  = 1,
+    TossBomb       = 2,
+};
+
+inline const char* agAttackProfileName(AgAttackProfile p) {
+    switch (p) {
+        case AgAttackProfile::DiveBomb:      return "DiveBomb";
+        case AgAttackProfile::LevelDelivery: return "LevelDelivery";
+        case AgAttackProfile::TossBomb:      return "TossBomb";
+    }
+    return "Unknown";
+}
+
 } // namespace digi
 } // namespace f4flight

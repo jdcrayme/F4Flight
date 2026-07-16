@@ -359,6 +359,33 @@ void FlightModel::update(double dt, const PilotInput& input,
     // convention. We need to convert PilotInput.speedBrake to dbrake here.
     state_.aero.dbrake = limit((input.speedBrake + 1.0) * 0.5, 0.0, 1.0);
 
+    // --- Flap actuation ---
+    // Move tefPos/lefPos toward the commanded position at a realistic rate.
+    // TEF (trailing-edge flap): ~3s for full travel (0→1), typical of fighter
+    //   hydro-mechanical actuators.
+    // LEF (leading-edge flap): ~1.5s for full travel (faster — lighter surfaces).
+    // The previous code had tefPos/lefPos fields but never set them — they were
+    // always 0, so flaps had no aerodynamic effect. Now the digi AI can command
+    // flaps for landing (FreeFalcon's af->SetFlaps(true) equivalent).
+    {
+        constexpr double kTefRate = 1.0 / 3.0;   // full travel in 3s
+        constexpr double kLefRate = 1.0 / 1.5;   // full travel in 1.5s
+        const double tefCmd = limit(input.tefCmd, 0.0, 1.0);
+        const double lefCmd = limit(input.lefCmd, 0.0, 1.0);
+        const double tefStep = kTefRate * dt;
+        const double lefStep = kLefRate * dt;
+        if (tefCmd > state_.aero.tefPos) {
+            state_.aero.tefPos = std::min(tefCmd, state_.aero.tefPos + tefStep);
+        } else {
+            state_.aero.tefPos = std::max(tefCmd, state_.aero.tefPos - tefStep);
+        }
+        if (lefCmd > state_.aero.lefPos) {
+            state_.aero.lefPos = std::min(lefCmd, state_.aero.lefPos + lefStep);
+        } else {
+            state_.aero.lefPos = std::max(lefCmd, state_.aero.lefPos - lefStep);
+        }
+    }
+
     // Update gear state once per major frame
     updateGear(dt);
 

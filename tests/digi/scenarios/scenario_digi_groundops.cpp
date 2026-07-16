@@ -244,11 +244,7 @@ public:
 
     void Init(SteeringController& sc, FlightModel& fm) override {
         // Start 3 NM south of threshold, ON the 3° glideslope, at approach
-        // speed. The previous setup started at 2000 ft / 250 kts — 1044 ft
-        // above the glideslope and 80 kts too fast. The AI then had to dive
-        // to intercept, building a 180+ ft/s descent rate that the flare
-        // couldn't arrest. Starting on-glideslope at approach speed lets
-        // the TrackPointLanding primitive hold a stable ~22 ft/s descent.
+        // speed. 3 NM is a standard ILS final approach distance.
         const double initialRange = 3.0 * 6076.0;  // 3 NM
         const double gsAngle = 3.0 * DTR;          // 3° glideslope
         const double initialAlt = initialRange * std::tan(gsAngle);  // ~956 ft
@@ -277,11 +273,22 @@ public:
         fm.state().kin.z = -initialAlt;
 
         // Set initial pitch + flight path to match the 3° glideslope.
-        // fm.init defaults to 10° pitch (level flight) which causes the
-        // aircraft to climb above the glideslope, then dive to correct.
-        // Setting theta=0 + gamma=-3° starts the aircraft descending
-        // smoothly on the glideslope.
-        fm.state().kin.theta = 0.0;
+        //
+        // fm.init trims the aircraft for LEVEL flight at the given speed,
+        // setting theta to the trimmed pitch (alpha_trim, since gamma=0 in
+        // trim). For a -3° glideslope descent at the SAME alpha (so lift still
+        // equals weight), we need:
+        //   theta = alpha_trim + gamma = theta_trim + (-3°) = theta_trim - 3°
+        //
+        // The previous code set theta=0 "to avoid the initial climb", but that
+        // gave alpha = theta - gamma = 0 - (-3°) = 3° — far below the trimmed
+        // alpha (typically 8-12° at approach speed). The aircraft had
+        // insufficient lift, sank rapidly, and the glideslope tracker couldn't
+        // arrest the dive. The aircraft arrived at flare altitude with a
+        // 100+ ft/s descent rate (6x the correct 15 ft/s) and the flare
+        // couldn't save it — producing a nose-first "landing" with no flare.
+        const double thetaTrim = fm.state().kin.theta;  // alpha_trim for level flight
+        fm.state().kin.theta = thetaTrim - gsAngle;     // theta for -3° descent at trimmed alpha
         fm.state().kin.gmma = -gsAngle;  // descending at 3°
         fm.state().kin.singam = -std::sin(gsAngle);
         fm.state().kin.cosgam = std::cos(gsAngle);
@@ -301,9 +308,10 @@ public:
         // aircraft's approach heading and the drawn runway geometry.
         sc.brain().commandLanding(270, PI / 2.0, 0.0, 0.0, 0.0);
 
-        // The brain now clears pullupTimer/groundAvoidNeeded itself when
-        // it detects a landing phase in compute() (matching FreeFalcon's
-        // dlogic.cpp:49-52 which disables GroundCheck for LandingMode).
+        // Note: the scenario framework now calls resetPhaseState() before
+        // each phase's Init(), which clears the GammaHold + autoThrottle
+        // integrators and stick commands. The previous manual reset here
+        // is no longer needed (and was a workaround for the framework gap).
 
         sc_brain_ = &sc.brain();
     }
@@ -320,9 +328,12 @@ public:
         if (altAGL < 10.0 && !touchedDown_) {
             touchedDown_ = true;
             touchdownSpeed_ = as.vcas;  // capture speed at moment of touchdown
+            touchdownPitch_ = as.kin.theta * RTD;  // pitch attitude (deg)
+            touchdownDescentRate_ = as.kin.zdot;   // ft/s (+ = descending)
         }
         if (touchedDown_ && as.vcas < 30.0) stopped_ = true;
         if (sc_brain_->activeMode() == DigiMode::Landing) enteredLanding_ = true;
+        if (sc_brain_->state().ag.groundOps.phase == GroundOpsPhase::Flare) enteredFlare_ = true;
 
         if (std::isnan(as.kin.vt) || std::isnan(as.kin.z)) hasNaN_ = true;
 
@@ -366,37 +377,42 @@ public:
         if (hasNaN_) return false;
         // 1. Must have entered Landing mode.
         if (!enteredLanding_) return false;
-        // 2. Must have descended (not just cruised). The old threshold of
-        //    initialAlt-100 was too generous (a 100-ft descent over 90 s
-        //    is level flight noise). Require descent of at least 500 ft.
+        // 2. Must have descended (not just cruised). Require descent of at
+        //    least 500 ft — the old threshold of initialAlt-100 was too
+        //    generous (100-ft descent over 90s is level-flight noise).
         if (minAlt_ > initialAlt_ - 500.0) return false;
-        // 3. Must not have climbed excessively. The TrackPointLanding
-        //    primitive (ported from FreeFalcon mnvers.cpp:33) is a pure
-        //    proportional tracker — no integral, no gamma feedback. In
-        //    F4Flight's flight model this still produces a ~200-300 ft
-        //    Phugoid transient at capture (the aircraft pitches up first,
-        //    then descends — see DIGI_AUDIT.md "Known library gaps").
-        //    The old test allowed +500 ft (a go-around would pass); we
-        //    tighten to +400 ft (accepts the Phugoid, still catches a
-        //    true go-around).
+        // 3. Must not have climbed excessively. A 200-300 ft Phugoid transient
+        //    at capture is acceptable; a go-around is not.
         if (maxAlt_ > initialAlt_ + 400.0) return false;
         // 4. Must touch down (altAGL <= 10 at some point).
         if (!touchedDown_) return false;
         // 5. Must not go excessively underground (no ground reaction bug).
         if (minAlt_ < -500.0) return false;
-        // 6. Must have decelerated after touchdown. The rollout logic sets
-        //    throttle=0 + wheel brakes + speed brakes. Heavy aircraft have
-        //    weak deceleration (low braking effectiveness relative to mass
-        //    + residual idle thrust). Require at least 20 kts of deceleration
-        //    (proves the rollout phase engaged and throttle went to idle).
-        //    The old threshold of 30 kts was too tight for heavy aircraft.
+        // 6. Must have entered the Flare phase. The previous test accepted a
+        //    landing that went Approach → Touchdown without ever flaring —
+        //    i.e. the aircraft slammed into the ground nose-first. Requiring
+        //    Flare entry catches the "lands nose down without flaring" bug.
+        if (!enteredFlare_) return false;
+        // 7. Must touch down nose-up (positive pitch). A nose-down or level
+        //    touchdown means the flare didn't raise the pitch attitude. Real
+        //    landings touch down at 2-8° nose up (main gear first). We require
+        //    > 0° (any nose-up) — a minimal bar that the old test didn't check.
+        if (touchedDown_ && touchdownPitch_ <= 0.0) return false;
+        // 8. Must not touch down with excessive descent rate. A proper flare
+        //    reduces the descent to < 10 ft/s at touchdown. We require < 25
+        //    ft/s (allows for imperfect flare but catches a slam). The old
+        //    test didn't check this at all — a 100+ ft/s slam would pass.
+        if (touchedDown_ && touchdownDescentRate_ > 25.0) return false;
+        // 9. Must have decelerated after touchdown. Require at least 20 kts
+        //    decel (proves rollout engaged brakes/idle).
         if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 20.0) return false;
         return true;
     }
 
     std::string criteria() const override {
-        return "Enter Landing mode; Descend >= 500ft; Max alt <= initial+400ft; "
-               "Touch down; Min alt >= -500ft; Decel >= 20kts after touchdown; No NaN";
+        return "Enter Landing; Descend >= 500ft; Max alt <= initial+400ft; "
+               "Touch down; Enter Flare; Touchdown nose-up (pitch > 0); "
+               "Touchdown descent < 25ft/s; Decel >= 20kts; No NaN";
     }
 
     std::string failureReason() const override {
@@ -424,6 +440,21 @@ public:
         if (minAlt_ < -500.0) {
             return "Min altitude was " + std::to_string(static_cast<int>(minAlt_)) +
                    "ft (needed >= -500ft) — ground reaction bug let the aircraft sink underground.";
+        }
+        if (!enteredFlare_) {
+            return "Never entered Flare phase — aircraft went Approach → Touchdown "
+                   "directly (slammed into the ground without flaring).";
+        }
+        if (touchedDown_ && touchdownPitch_ <= 0.0) {
+            return "Touchdown pitch was " + std::to_string(touchdownPitch_) +
+                   "° (needed > 0°) — aircraft touched down nose-down or level, "
+                   "flare did not raise the pitch attitude.";
+        }
+        if (touchedDown_ && touchdownDescentRate_ > 25.0) {
+            return "Touchdown descent rate was " +
+                   std::to_string(static_cast<int>(touchdownDescentRate_)) +
+                   "ft/s (needed < 25ft/s) — flare did not arrest the descent "
+                   "(hard landing / slam).";
         }
         if (touchedDown_ && minSpeed_ > touchdownSpeed_ - 20.0) {
             return "Deceleration after touchdown was insufficient (touchdown " +
@@ -456,7 +487,12 @@ public:
             touchedDown_ ? "[PASS]" : "[FAIL]");
         std::printf("  Descended >= 500 ft: %s\n",
             minAlt_ <= initialAlt_ - 500.0 ? "[PASS]" : "[FAIL]");
+        std::printf("  Entered Flare:       %s\n", enteredFlare_ ? "[PASS]" : "[FAIL]");
         if (touchedDown_) {
+            std::printf("  Touchdown pitch:     %.1f deg (need > 0) %s\n",
+                touchdownPitch_, touchdownPitch_ > 0.0 ? "[PASS]" : "[FAIL]");
+            std::printf("  Touchdown descent:   %.0f ft/s (need < 25) %s\n",
+                touchdownDescentRate_, touchdownDescentRate_ < 25.0 ? "[PASS]" : "[FAIL]");
             std::printf("  Decel after TD:      %.0f -> %.0f kts (need >= 20 kts decel) %s\n",
                 touchdownSpeed_, minSpeed_,
                 minSpeed_ <= touchdownSpeed_ - 20.0 ? "[PASS]" : "[FAIL]");
@@ -471,11 +507,14 @@ private:
     double maxSpeed_{0.0};
     double minSpeed_{1e9};
     double touchdownSpeed_{0.0};
+    double touchdownPitch_{0.0};      // pitch at touchdown (deg)
+    double touchdownDescentRate_{0.0}; // descent rate at touchdown (ft/s)
     double initialAlt_{0.0};  // set in Init (on-glideslope altitude)
     bool touchedDown_{false};
     bool stopped_{false};
     bool hasNaN_{false};
     bool enteredLanding_{false};
+    bool enteredFlare_{false};
     const DigiBrain* sc_brain_{nullptr};
 
     // Per-frame sample data (updated in Evaluate, read in traceSamples)

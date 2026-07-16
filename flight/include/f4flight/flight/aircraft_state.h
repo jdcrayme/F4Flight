@@ -38,6 +38,16 @@ struct PilotInput {
     double gearHandle{1.0}; // -1 (up) .. +1 (down) -- default down
     double hookHandle{0.0}; // -1 (up) .. +1 (down)
 
+    // --- Flap commands (normalized 0..1) ---
+    // 0 = retracted (clean), 1 = fully extended.
+    // The flight model moves tefPos/lefPos toward these targets at a
+    // realistic actuation rate (~3s full travel for TEF, ~1.5s for LEF).
+    // FreeFalcon uses af->SetFlaps(bool) which toggles between 0 and 1;
+    // F4Flight uses a continuous 0..1 for finer control (approach flaps
+    // vs full flaps vs clean).
+    double tefCmd{0.0};     // trailing-edge flap command, 0..1
+    double lefCmd{0.0};     // leading-edge flap command, 0..1
+
     bool   wheelBrakes{false};
     bool   parkingBrake{false};
     bool   noseSteerOn{true};

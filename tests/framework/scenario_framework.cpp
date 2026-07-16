@@ -213,6 +213,14 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         const double preR = fm.state().kin.r;
 
         sc.brain().setFrameInputs({});
+        // Reset per-phase navigation state (integrators + stick commands).
+        // Without this, a previous phase's wound-up GammaHold integrator and
+        // smoothed stick commands carry over to the next phase, causing
+        // transients (e.g. Takeoff's full-throttle + nose-up command leaks
+        // into Landing, exciting the Phugoid). The mode, config, and
+        // waypoints are preserved — only transient control state is cleared.
+        // Each phase's Init() can still override anything it needs.
+        sc.brain().resetPhaseState();
         test->Init(sc, fm);
 
         const double dx = fm.state().kin.x - preX;

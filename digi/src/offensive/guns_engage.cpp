@@ -10,6 +10,7 @@
 #include "f4flight/digi/offensive/guns_engage.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/offensive/roll_and_pull.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTasFps
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -200,8 +201,13 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
     }
 
     // Hold speed
-    ManeuverPrimitives::MachHold(speed, as.vcas, false,
-                                  digi, as, 100.0, 400.0, dt, 100.0);
+    //
+    // `speed` is CALIBRATED airspeed in kts (the caller passes CAS-kts —
+    // either cornerSpeed or a CAS-converted target speed, see GunsEngage
+    // below). Use the typed machHoldCas API to enforce the CAS contract at
+    // compile time.
+    ManeuverPrimitives::machHoldCas(cas_kts(speed), false,
+                                     digi, as, 100.0, 400.0, dt, 100.0);
 }
 
 // ===========================================================================
@@ -239,29 +245,47 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
         const double rngdot = -rg.rangedot * FTPSEC_TO_KNOTS;
         double closure = ((rng - rngdot * 5.0) / 1000.0) * 50.0;
         closure = std::max(std::min(closure, 1000.0), -350.0);
-        closure = std::min(closure, target.speed + 50.0);
+        // CAS/TAS CORRECTION: target.speed is TRUE airspeed in ft/s
+        // (DigiEntity.speed, populated from as.kin.vt). closure is in kts,
+        // so the clamp must compare kts-to-kts. Convert target TAS (ft/s)
+        // to kts. For the rate clamp, TAS-kts is the physically meaningful
+        // speed (we're comparing scalar speeds, not CAS targets).
+        const double targetTasKts = target.speed * FTPSEC_TO_KNOTS;
+        closure = std::min(closure, targetTasKts + 50.0);
         const double desiredClosure = closure;
         const double actualClosure = rngdot;
+
+        // For CAS-target MachHold / FineGunsTrack speeds, also compute the
+        // target's equivalent CAS at OUR altitude. FineGunsTrack ultimately
+        // passes its `speed` argument to machHoldCas(cas_kts(speed), ...),
+        // which expects CAS-kts. Naively passing target.speed (ft/s TAS) or
+        // targetTasKts (TAS-kts) would command a CAS equal to the target's
+        // TAS — at altitude that is much higher than the target's actual
+        // CAS, causing the AI to fly faster than the target and overshoot.
+        // Conversion uses OUR CAS/TAS ratio (matches the wingman_ai.cpp fix)
+        // via the typed casFromTasFps helper.
+        const CasKnots targetCas = casFromTasFps(tas_fps(target.speed), as);
+        const double targetCasKts = targetCas.count();
 
         double lagAngle = 0.0;
         if (rg.range < 2000.0) {
             if (actualClosure > desiredClosure) {
                 // Too close and too fast — slow down + BFM
-                ManeuverPrimitives::MachHold(target.speed - 100.0, as.vcas,
-                                              false, digi, as, 100.0, 400.0,
-                                              dt, 100.0);
+                ManeuverPrimitives::machHoldCas(cas_kts(targetCasKts - 100.0),
+                                                 false, digi, as, 100.0, 400.0,
+                                                 dt, 100.0);
                 if (rg.range < 800.0) {
                     // Very close — RollAndPull BFM
                     RollAndPull(digi, self, target, as, fcs, fcsState, dt);
                 }
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(target.speed, as.vcas +
+                              std::min(targetCasKts, as.vcas +
                                        (desiredClosure - actualClosure)),
                               dt, lagAngle);
             } else {
                 // Too close and slow — point to shoot
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(target.speed, as.vcas +
+                              std::min(targetCasKts, as.vcas +
                                        (desiredClosure - actualClosure)),
                               dt, lagAngle);
             }
@@ -270,13 +294,13 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
             if (actualClosure > desiredClosure) {
                 // Too far and fast — point to shoot and slow
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(target.speed, as.vcas +
+                              std::min(targetCasKts, as.vcas +
                                        (desiredClosure - actualClosure)),
                               dt, lagAngle);
             } else {
                 // Too far and slow — point to shoot, overbank if lagging
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(target.speed + 30.0, as.vcas +
+                              std::min(targetCasKts + 30.0, as.vcas +
                                        (desiredClosure - actualClosure)),
                               dt, lagAngle);
                 // (OverBMode would be added here in full FF port —

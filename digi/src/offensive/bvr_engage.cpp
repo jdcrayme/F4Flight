@@ -8,6 +8,7 @@
 
 #include "f4flight/digi/offensive/bvr_engage.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
+#include "f4flight/flight/core/airspeed_conversions.h"  // casFromTasFps
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 
@@ -146,8 +147,12 @@ void StickandThrottle(DigiState& digi, const DigiEntity& self,
     ManeuverPrimitives::AutoTrack(digi, as, fcsState, digi.config.maxGs);
 
     // Hold speed
-    ManeuverPrimitives::MachHold(desiredSpeedKts, as.vcas, true,
-                                  digi, as, 200.0, 800.0, dt, 700.0);
+    //
+    // desiredSpeedKts is CALIBRATED airspeed in kts (the callers in this
+    // file pass CAS — cornerSpeed, targetCasKts + 100, as.vcas). Use the
+    // typed machHoldCas API to make this contract explicit at compile time.
+    ManeuverPrimitives::machHoldCas(cas_kts(desiredSpeedKts), true,
+                                     digi, as, 200.0, 800.0, dt, 700.0);
 }
 
 // ===========================================================================
@@ -167,8 +172,21 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
         digi.nav.trackX = target.x;
         digi.nav.trackY = target.y;
         digi.nav.trackZ = target.z;
+        // CAS/TAS CORRECTION: target.speed is TRUE airspeed in ft/s (see
+        // DigiEntity.speed, populated from as.kin.vt). StickandThrottle's
+        // desiredSpeedKts parameter is compared against as.vcas (CALIBRATED
+        // airspeed in kts), so we must convert the target's TAS to the
+        // equivalent CAS at our altitude before adding the 100 kt margin.
+        // Without this conversion the BVR pursuit would target a CAS equal
+        // to (target_TAS_ftps + 100) kts — far above the target's actual CAS,
+        // forcing the AI into full afterburner and overspeed.
+        //
+        // Use the typed casFromTasFps helper, which converts target's TAS
+        // (ft/s) to CAS-kts using the wingman's own CAS/TAS ratio. This
+        // replaces the manual casToTasRatio idiom that was copy-pasted here.
+        const CasKnots targetCas = casFromTasFps(tas_fps(target.speed), as);
         StickandThrottle(digi, self, as, fcs, fcsState,
-                         target.speed + 100.0, -target.z, dt);
+                         targetCas.count() + 100.0, -target.z, dt);
         return;
     }
 
