@@ -1211,7 +1211,7 @@ function updatePlayhead(){
     const span3D=Math.max(detailBounds.maxX-detailBounds.minX,
                           detailBounds.maxY-detailBounds.minY,
                           detailBounds.maxAlt-detailBounds.minAlt,1);
-    const size=span3D*0.04; // aircraft size relative to data span (large enough to see bank/pitch)
+    const size=span3D*0.005; // aircraft size relative to data span (large enough to see bank/pitch)
     const psi=f.psi, theta=f.theta, phi=f.phi;
     const cP=Math.cos(psi), sP=Math.sin(psi);
     const cT=Math.cos(theta), sT=Math.sin(theta);
@@ -1513,7 +1513,7 @@ function render3D(tr){
   //      vertices → no gaps at corners.
   //   3. ANTI-ALIASING: same-color stroke on each quad prevents 1px gaps.
   const ranges=phaseRanges(tr);
-  const rw3D=span*0.015*state.zoom; // 3D half-width in world feet (wide enough to see at all zoom levels)
+  const rw3D=span*0.004; // 3D half-width in world feet (wide enough to see at all zoom levels)
   const allQuads=[]; // {pts, color, opacity, avgZr} — collected, then depth-sorted
   for(const pi of segPhases){
     if(pi>=ranges.length)continue;
