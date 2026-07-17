@@ -51,11 +51,19 @@ add_library(f4flight_trace STATIC
 target_link_libraries(f4flight_trace PUBLIC f4flight::flight f4flight::digi)
 target_include_directories(f4flight_trace PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/viz)
+target_compile_definitions(f4flight_trace PRIVATE F4FLIGHT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(MSVC)
     target_compile_options(f4flight_trace PRIVATE /W4 /utf-8)
 else()
     target_compile_options(f4flight_trace PRIVATE -Wall -Wextra)
 endif()
+
+# Copy template.html to the build directory so it is next to binary targets
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/viz/template.html
+    ${CMAKE_CURRENT_BINARY_DIR}/template.html
+    COPYONLY
+)
 
 add_executable(trace2svg viz/trace2svg.cpp)
 target_link_libraries(trace2svg PRIVATE f4flight_trace)
