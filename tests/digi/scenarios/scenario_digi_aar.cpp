@@ -154,7 +154,7 @@ public:
         if (timeInContact_ < 5.0) return false;
         // 4. Must enter Disconnect phase (completed refueling).
         if (!enteredDisconnect_) return false;
-        // 5. Must close to within 200 ft of the boom at some point.
+        // 5. Must close to within 600 ft of the boom at some point.
         if (minDistToBoom_ > 600.0) return false;
         return true;
     }
@@ -183,7 +183,7 @@ public:
         if (minDistToBoom_ > 600.0) {
             return "Min distance to boom was " +
                    std::to_string(static_cast<int>(minDistToBoom_)) +
-                   "ft (needed < 200ft).";
+                   "ft (needed < 600ft).";
         }
         return "";
     }
@@ -205,7 +205,7 @@ public:
             timeInContact_, timeInContact_ >= 5.0 ? "[PASS]" : "[FAIL]");
         std::printf("  Entered Disconnect:  %s\n", enteredDisconnect_ ? "[PASS]" : "[FAIL]");
         std::printf("  Min dist to boom:    %.0f ft (need < 600) %s\n",
-            minDistToBoom_, minDistToBoom_ < 200.0 ? "[PASS]" : "[FAIL]");
+            minDistToBoom_, minDistToBoom_ < 600.0 ? "[PASS]" : "[FAIL]");
         if (hasNaN_) std::printf("  NaN detected!  [FAIL]\n");
     }
 
