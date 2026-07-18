@@ -1200,7 +1200,7 @@ function initThreeJS(tr) {
       const theta = f.theta || 0;
       const phi = f.phi || 0;
       const psi = f.psi || 0;
-      const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+      const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
       const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
       const wing_half_width = span * 0.0035;
 
@@ -1387,7 +1387,7 @@ function render3D(tr){
   const theta = acFrame.theta || 0;
   const phi = acFrame.phi || 0;
   const psi = acFrame.psi || 0;
-  const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+  const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
   threeState.aircraft.rotation.copy(euler);
 
   // Update playhead altitude tadpole
