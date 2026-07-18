@@ -182,6 +182,7 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     if (rec) {
         rec->start(aircraftName, scenario.name());
+        rec->setTestMetadata(scenario.GetTestGroup(), scenario.GetTestLevel());
         // Capture scene geometry (runway, taxiways, etc.) once per scenario.
         for (const auto& line : scenario.sceneGeometry()) {
             rec->addSceneLine(line);
@@ -373,7 +374,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             }
             rec->markPhase(test->name(), phaseStartT, phaseEndT,
                            test->IsPassed(), /*skipped=*/false,
-                           reinitializes, test->criteria(), failReason);
+                           reinitializes, test->criteria(), failReason,
+                           test->conditions(), test->additionalResults());
         }
 
         test->Finish();

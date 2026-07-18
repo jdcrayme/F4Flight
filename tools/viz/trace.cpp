@@ -76,11 +76,18 @@ void TraceRecorder::addEvent(double t, const std::string& category,
     trace_.events.push_back({t, category, message, severity});
 }
 
+void TraceRecorder::setTestMetadata(const std::string& testGroup, const std::string& testLevel) {
+    trace_.testGroup = testGroup;
+    trace_.testLevel = testLevel;
+}
+
 void TraceRecorder::markPhase(const std::string& name, double start_s, double end_s,
                                bool passed, bool skipped, bool reinitializes,
                                const std::string& criteria,
-                               const std::string& failureReason) {
-    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria, failureReason});
+                               const std::string& failureReason,
+                               const std::vector<TestCondition>& conditions,
+                               const std::vector<AdditionalResult>& additionalResults) {
+    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria, failureReason, conditions, additionalResults});
 }
 
 void TraceRecorder::setWaypoints(const std::vector<Waypoint>& wps) {
@@ -112,6 +119,10 @@ void traceToJson(const Trace& trace, std::string& out) {
     detail::writeJsonString(out, trace.aircraft);
     out += ",\"scenario\":";
     detail::writeJsonString(out, trace.scenario);
+    out += ",\"testGroup\":";
+    detail::writeJsonString(out, trace.testGroup);
+    out += ",\"testLevel\":";
+    detail::writeJsonString(out, trace.testLevel);
     out += ",\"duration_s\":";
     out += std::to_string(trace.duration_s);
 
@@ -136,6 +147,35 @@ void traceToJson(const Trace& trace, std::string& out) {
         detail::writeJsonString(out, p.criteria);
         out += ",\"failureReason\":";
         detail::writeJsonString(out, p.failureReason);
+
+        // conditions
+        out += ",\"conditions\":[";
+        for (size_t j = 0; j < p.conditions.size(); ++j) {
+            if (j > 0) out += ',';
+            const auto& c = p.conditions[j];
+            out += "{\"name\":";
+            detail::writeJsonString(out, c.name);
+            out += ",\"description\":";
+            detail::writeJsonString(out, c.description);
+            out += ",\"passed\":";
+            out += c.passed ? "true" : "false";
+            out += '}';
+        }
+        out += ']';
+
+        // additionalResults
+        out += ",\"additionalResults\":[";
+        for (size_t j = 0; j < p.additionalResults.size(); ++j) {
+            if (j > 0) out += ',';
+            const auto& r = p.additionalResults[j];
+            out += "{\"text\":";
+            detail::writeJsonString(out, r.text);
+            out += ",\"color\":";
+            detail::writeJsonString(out, r.color);
+            out += '}';
+        }
+        out += ']';
+
         out += '}';
     }
     out += ']';
@@ -182,12 +222,20 @@ void traceToJson(const Trace& trace, std::string& out) {
                 const auto& e = f.threats[j];
                 out += "{\"type\":";
                 detail::writeJsonString(out, e.type);
+                out += ",\"name\":";
+                detail::writeJsonString(out, e.name);
                 out += ",\"x\":";
                 out += std::to_string(e.x);
                 out += ",\"y\":";
                 out += std::to_string(e.y);
                 out += ",\"z\":";
                 out += std::to_string(e.z);
+                out += ",\"psi\":";
+                out += std::to_string(e.psi);
+                out += ",\"theta\":";
+                out += std::to_string(e.theta);
+                out += ",\"phi\":";
+                out += std::to_string(e.phi);
                 out += ",\"speed\":";
                 out += std::to_string(e.speed);
                 out += '}';
@@ -275,6 +323,30 @@ void traceToJson(const Trace& trace, std::string& out) {
             detail::writeJsonString(out, s.color);
             out += ",\"width\":";
             out += std::to_string(s.width);
+            out += '}';
+        }
+        out += ']';
+    }
+
+    // Generalized static test geometry
+    if (!trace.geometry.empty()) {
+        out += ",\"geometry\":[";
+        for (size_t i = 0; i < trace.geometry.size(); ++i) {
+            if (i > 0) out += ',';
+            const auto& g = trace.geometry[i];
+            out += "{\"name\":";
+            detail::writeJsonString(out, g.name);
+            out += ",\"type\":";
+            detail::writeJsonString(out, g.type);
+            out += ",\"coords\":[";
+            for (size_t j = 0; j < g.coords.size(); ++j) {
+                if (j > 0) out += ',';
+                out += std::to_string(g.coords[j]);
+            }
+            out += "],\"color\":";
+            detail::writeJsonString(out, g.color);
+            out += ",\"width\":";
+            out += std::to_string(g.width);
             out += '}';
         }
         out += ']';

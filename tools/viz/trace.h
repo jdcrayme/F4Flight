@@ -28,12 +28,37 @@
 
 namespace f4flight {
 
-// ThreatEntity — a per-frame snapshot of a threat/target for the trace.
-// Used for missiles, guns threats, and offensive targets.
+// ThreatEntity — a per-frame snapshot of a moving track for the trace.
+// Generalizes over aircraft, missiles, bombs, slots, and ghost wingmen.
 struct ThreatEntity {
-    std::string type;   // "missile", "guns", "target"
+    std::string type;   // "aircraft", "missile", "bomb", "guns", "target", "slot", "wingman", etc.
     double x{0.0}, y{0.0}, z{0.0};
     double speed{0.0};  // ft/s
+    std::string name;   // Name of the track, e.g., "Lead", "Slot 1" (optional)
+    double psi{0.0}, theta{0.0}, phi{0.0}; // Euler yaw, pitch, roll orientation (radians)
+};
+
+// TraceGeometry — static test geometry overlays to display in the 3D/2D views.
+// Generalizes over waypoints, runways, taxiways, fixed targets, and airspace corridors.
+struct TraceGeometry {
+    std::string name;
+    std::string type;   // "waypoint", "runway", "taxiway", "target", "corridor", etc.
+    std::vector<double> coords; // x1,y1,z1, x2,y2,z2 or list of points for multi-point geometry
+    std::string color;  // Hex code "#FFFFFF"
+    double width{0.0};  // Stroke width/weight
+};
+
+// TestCondition — a single condition required for a test phase/scenario to pass.
+struct TestCondition {
+    std::string name;
+    std::string description;
+    bool passed{false};
+};
+
+// AdditionalResult — any additional per-test outcome, metric, or summary point.
+struct AdditionalResult {
+    std::string text;
+    std::string color;  // "success", "warning", "danger", or empty
 };
 
 // Waypoint — a navigation waypoint for the trace (scenario-level, not
@@ -121,17 +146,22 @@ struct PhaseResult {
     std::string failureReason;  // human-readable explanation of WHY the phase
                                 // failed (empty if passed). e.g. "Never entered
                                 // GunsEngage mode (stayed in WVREngage)"
+    std::vector<TestCondition> conditions; // checklist of individual pass/fail conditions
+    std::vector<AdditionalResult> additionalResults; // additional metrics/results to print
 };
 
 // Trace — a complete maneuver trace.
 struct Trace {
     std::string aircraft;       // aircraft name (e.g., "f16bk50")
     std::string scenario;       // scenario name (e.g., "digi_groundops")
+    std::string testGroup;      // test group, e.g. "Fighter Formation", "Ground Ops"
+    std::string testLevel;      // test level, e.g. "Low Level", "High Level", "End-to-End"
     double duration_s{0.0};
     std::vector<PhaseResult> phases;
     std::vector<TraceFrame> frames;
     std::vector<Waypoint> waypoints;    // navigation waypoints (scenario-level)
     std::vector<SceneLine> sceneLines;  // static geometry (runway, taxiways, etc.)
+    std::vector<TraceGeometry> geometry; // generalized static test geometry
     std::vector<TraceEvent> events;     // discrete events (mode changes, fires, etc.)
 };
 
@@ -184,11 +214,19 @@ public:
     // Add a scene geometry line (runway, taxiway, etc.).
     void addSceneLine(const SceneLine& line);
 
+    // Set test metadata (test group and test level)
+    void setTestMetadata(const std::string& testGroup, const std::string& testLevel);
+
+    // Set generalized test geometry
+    void setGeometry(const std::vector<TraceGeometry>& geom) { trace_.geometry = geom; }
+
     // Mark a phase boundary (called at the end of each phase).
     void markPhase(const std::string& name, double start_s, double end_s,
                    bool passed, bool skipped, bool reinitializes,
                    const std::string& criteria = "",
-                   const std::string& failureReason = "");
+                   const std::string& failureReason = "",
+                   const std::vector<TestCondition>& conditions = {},
+                   const std::vector<AdditionalResult>& additionalResults = {});
 
     void finish(double duration_s);
 

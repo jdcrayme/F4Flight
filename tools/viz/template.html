@@ -659,7 +659,7 @@ function threatsSvg(tr,sx,sy,currentT){
     for(const th of f.threats){
       if(th.type==='missile'||th.type==='lead'||th.type==='wingman'){
         if(!tracks[th.type])tracks[th.type]=[];
-        tracks[th.type].push({x:th.x,y:th.y,t:f.t});
+        tracks[th.type].push({x:th.y,y:th.x,t:f.t});
       }
     }
   }
@@ -690,22 +690,22 @@ function threatsSvg(tr,sx,sy,currentT){
   if(acFrame&&acFrame.threats){
     for(const th of acFrame.threats){
       if(th.type==='guns'){
-        svg+=el('line',{x1:sx(acFrame.x),y1:sy(acFrame.y),x2:sx(th.x),y2:sy(th.y),
+        svg+=el('line',{x1:sx(acFrame.y),y1:sy(acFrame.x),x2:sx(th.y),y2:sy(th.x),
           stroke:'#ff9800','stroke-width':1,'stroke-dasharray':'2,2',opacity:0.7});
-        svg+=el('circle',{cx:sx(th.x),cy:sy(th.y),r:5,fill:'#ff9800',opacity:0.6,stroke:'#ff9800','stroke-width':1});
-        svg+=el('text',{x:sx(th.x)+7,y:sy(th.y)+4,fill:'#ff9800','font-size':10},'guns');
+        svg+=el('circle',{cx:sx(th.y),cy:sy(th.x),r:5,fill:'#ff9800',opacity:0.6,stroke:'#ff9800','stroke-width':1});
+        svg+=el('text',{x:sx(th.y)+7,y:sy(th.x)+4,fill:'#ff9800','font-size':10},'guns');
       }else if(th.type==='target'){
-        svg+=el('line',{x1:sx(acFrame.x),y1:sy(acFrame.y),x2:sx(th.x),y2:sy(th.y),
+        svg+=el('line',{x1:sx(acFrame.y),y1:sy(acFrame.x),x2:sx(th.y),y2:sy(th.x),
           stroke:'#9c27b0','stroke-width':1,'stroke-dasharray':'2,2',opacity:0.7});
-        svg+=el('rect',{x:sx(th.x)-5,y:sy(th.y)-5,width:10,height:10,fill:'#9c27b0',opacity:0.6,stroke:'#9c27b0'});
-        svg+=el('text',{x:sx(th.x)+7,y:sy(th.y)+4,fill:'#9c27b0','font-size':10},'target');
+        svg+=el('rect',{x:sx(th.y)-5,y:sy(th.x)-5,width:10,height:10,fill:'#9c27b0',opacity:0.6,stroke:'#9c27b0'});
+        svg+=el('text',{x:sx(th.y)+7,y:sy(th.x)+4,fill:'#9c27b0','font-size':10},'target');
       }else if(th.type==='slot'){
-        const cx=sx(th.x),cy=sy(th.y);
+        const cx=sx(th.y),cy=sy(th.x);
         svg+=el('polygon',{points:cx+','+(cy-6)+' '+(cx+6)+','+cy+' '+cx+','+(cy+6)+' '+(cx-6)+','+cy,
           fill:'none',stroke:'#2196f3','stroke-width':1.5,opacity:0.8});
         svg+=el('text',{x:cx+8,y:cy+4,fill:'#2196f3','font-size':9},'slot');
       }else if(th.type==='airbase'){
-        const cx=sx(th.x),cy=sy(th.y),r=7;
+        const cx=sx(th.y),cy=sy(th.x),r=7;
         svg+=el('rect',{x:cx-r,y:cy-r,width:r*2,height:r*2,
           fill:'rgba(255,193,7,0.35)',stroke:'#ffc107','stroke-width':1.5,opacity:0.95});
         svg+=el('rect',{x:cx-r*0.7,y:cy-1.5,width:r*1.4,height:3,
@@ -1200,7 +1200,7 @@ function initThreeJS(tr) {
       const theta = f.theta || 0;
       const phi = f.phi || 0;
       const psi = f.psi || 0;
-      const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
+      const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
       const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
       const wing_half_width = span * 0.0035;
 
@@ -1387,7 +1387,7 @@ function render3D(tr){
   const theta = acFrame.theta || 0;
   const phi = acFrame.phi || 0;
   const psi = acFrame.psi || 0;
-  const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
+  const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
   threeState.aircraft.rotation.copy(euler);
 
   // Update playhead altitude tadpole
@@ -1446,12 +1446,20 @@ function render3D(tr){
       }
       const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.4 });
       const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.set(th.x, th.y, -th.z);
+      // Map East (th.y) to X, North (th.x) to Y, Up (-th.z) to Z
+      mesh.position.set(th.y, th.x, -th.z);
 
       if (th.type === 'target') {
         mesh.rotation.y = state.t * 2.0;
         mesh.rotation.x = state.t * 1.0;
-      } else if (th.type === 'missile') {
+      } else {
+        const t_psi = th.psi || 0;
+        const t_theta = th.theta || 0;
+        const t_phi = th.phi || 0;
+        const t_euler = new THREE.Euler(t_theta, -t_phi, -t_psi, 'ZXY');
+        mesh.rotation.copy(t_euler);
+      }
+      if (th.type === 'missile') {
         const flameGeom = new THREE.ConeGeometry(r*0.4, r*1.5, 8);
         flameGeom.rotateX(-Math.PI / 2);
         flameGeom.translate(0, 0, -r*1.5);
@@ -1466,7 +1474,8 @@ function render3D(tr){
       // Vertical altitude tadpole for threat
       const tz = -th.z;
       if (Math.abs(tz) > 1.0) {
-        const tpPoints = [new THREE.Vector3(th.x, th.y, tz), new THREE.Vector3(th.x, th.y, 0)];
+        // Map East (th.y) to X, North (th.x) to Y, Up (tz) to Z
+        const tpPoints = [new THREE.Vector3(th.y, th.x, tz), new THREE.Vector3(th.y, th.x, 0)];
         const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
         const tpMat = new THREE.LineDashedMaterial({ color: st.color, dashSize: threeState.span*0.01, gapSize: threeState.span*0.01, opacity: 0.4, transparent: true });
         const tpLine = new THREE.Line(tpGeom, tpMat);
@@ -1478,7 +1487,8 @@ function render3D(tr){
         const gGeom = new THREE.RingGeometry(r*0.8, r, 16);
         const gMat = new THREE.MeshBasicMaterial({ color: st.color, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
         const gRing = new THREE.Mesh(gGeom, gMat);
-        gRing.position.set(th.x, th.y, 0.05);
+        // Map East (th.y) to X, North (th.x) to Y
+        gRing.position.set(th.y, th.x, 0.05);
         threeState.scene.add(gRing);
         threeState.threats['gring_' + i] = gRing;
       }
@@ -1532,6 +1542,25 @@ function renderCriteria(tr){
     let critCell='<td class="criteria-text">'+esc(p.criteria||'\u2014');
     if(!p.passed&&!p.skipped&&p.failureReason){
       critCell+='<div class="failure-reason">\u26a0 <span>'+esc(p.failureReason)+'</span></div>';
+    }
+    // Checklist of conditions
+    if (p.conditions && p.conditions.length) {
+      critCell += '<div class="conditions-checklist" style="margin-top:6px;font-size:11px;display:flex;flex-direction:column;gap:3px">';
+      for (const cond of p.conditions) {
+        const icon = cond.passed ? '<span style="color:var(--pass);font-weight:bold">✓</span>' : '<span style="color:var(--fail);font-weight:bold">✗</span>';
+        const nameText = cond.description ? cond.name + " (" + cond.description + ")" : cond.name;
+        critCell += '<div class="condition-item" style="display:flex;align-items:center;gap:6px">' + icon + ' <span>' + esc(nameText) + '</span></div>';
+      }
+      critCell += '</div>';
+    }
+    // Additional metrics and results
+    if (p.additionalResults && p.additionalResults.length) {
+      critCell += '<div class="additional-results" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">';
+      for (const res of p.additionalResults) {
+        const badgeColor = res.color === "success" ? "var(--pass)" : res.color === "warning" ? "var(--skip)" : res.color === "danger" ? "var(--fail)" : "var(--muted)";
+        critCell += '<span class="chip" style="font-size:10px;border:1px solid ' + badgeColor + ';color:' + badgeColor + ';background:none">' + esc(res.text) + '</span>';
+      }
+      critCell += '</div>';
     }
     critCell+='</td>';
     html+='<tr data-phase="'+i+'" data-seg="'+segOf+'" style="cursor:pointer;'+(inActiveSeg?'':'opacity:0.5')+'">'+
@@ -1633,13 +1662,18 @@ function showDetail(i){
   const tr=TRACES[i]; if(!tr)return;
   document.getElementById('index-view').classList.add('hidden');
   document.getElementById('detail-view').classList.remove('hidden');
-  document.getElementById('detail-title').textContent=tr.aircraft+' / '+tr.scenario;
+  let titleText = tr.aircraft + ' / ' + tr.scenario;
+  if (tr.testGroup) titleText = tr.testGroup + " — " + titleText;
+  document.getElementById('detail-title').textContent = titleText;
   const st=traceStatus(tr);
   const badge=document.getElementById('detail-badge');
   badge.className='badge '+(st==='pass'?'pass':st==='fail'?'fail':st==='mixed'?'mixed':'skip');
   badge.textContent=st==='pass'?'PASS':st==='fail'?'FAIL':st==='mixed'?'MIXED':'SKIP';
   const segs=computeSegments(tr);
+  let metaHtml = '';
+  if (tr.testLevel) metaHtml += '<span>Level: <b>' + esc(tr.testLevel) + '</b></span>';
   document.getElementById('detail-summary').innerHTML=
+    metaHtml +
     '<span>Duration: <b>'+fmt(traceDuration(tr),0)+'s</b></span>'+
     '<span>Phases: <b>'+tracePassedCount(tr)+'/'+traceTotalCount(tr)+'</b> passed</span>'+
     '<span>Segments: <b>'+segs.length+'</b></span>'+
