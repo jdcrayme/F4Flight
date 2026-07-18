@@ -1088,26 +1088,89 @@ function initThreeJS(tr) {
 
   const jetGroup = new THREE.Group();
 
-  const fuseGeom = new THREE.CylinderGeometry(span*0.0006, span*0.001, span*0.015, 8);
-  fuseGeom.rotateX(Math.PI / 2);
-  const fuseMat = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.5 });
+  // High-polish jet model pointing along +Y (North), wings along X (East/West), canopy along +Z (Up)
+  const fuseLen = span * 0.015;
+  const fuseRadius = span * 0.001;
+  const fuseGeom = new THREE.CylinderGeometry(fuseRadius * 0.4, fuseRadius, fuseLen * 0.7, 16);
+  fuseGeom.translate(0, -fuseLen * 0.15, 0);
+  const fuseMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.4, metalness: 0.3 });
   const fuselage = new THREE.Mesh(fuseGeom, fuseMat);
   jetGroup.add(fuselage);
 
-  const wingGeom = new THREE.BoxGeometry(span*0.012, span*0.001, span*0.004);
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 0.5 });
+  const noseGeom = new THREE.ConeGeometry(fuseRadius * 0.4, fuseLen * 0.3, 16);
+  noseGeom.translate(0, fuseLen * 0.35, 0);
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5 });
+  const nose = new THREE.Mesh(noseGeom, noseMat);
+  jetGroup.add(nose);
+
+  const canopyGeom = new THREE.SphereGeometry(fuseRadius * 0.5, 16, 16);
+  canopyGeom.scale(1, 2.2, 1.2);
+  canopyGeom.translate(0, fuseLen * 0.1, fuseRadius * 0.6);
+  const canopyMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.65,
+    roughness: 0.1,
+    metalness: 0.9
+  });
+  const canopy = new THREE.Mesh(canopyGeom, canopyMat);
+  jetGroup.add(canopy);
+
+  const wingGeom = new THREE.BufferGeometry();
+  const wHalf = span * 0.006;
+  const wChord = span * 0.004;
+  const wSweep = span * 0.003;
+  const wingVertices = new Float32Array([
+    0, 0, 0,
+    wHalf, -wSweep, 0,
+    wHalf, -(wSweep + wChord * 0.4), 0,
+    0, -wChord, 0,
+    -wHalf, -(wSweep + wChord * 0.4), 0,
+    -wHalf, -wSweep, 0
+  ]);
+  const wingIndices = [
+    0, 1, 3,
+    1, 2, 3,
+    0, 3, 5,
+    5, 3, 4
+  ];
+  wingGeom.setAttribute('position', new THREE.BufferAttribute(wingVertices, 3));
+  wingGeom.setIndex(wingIndices);
+  wingGeom.computeVertexNormals();
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.4, side: THREE.DoubleSide });
   const wings = new THREE.Mesh(wingGeom, wingMat);
-  wings.position.set(0, -span*0.002, 0);
+  wings.position.set(0, fuseLen * 0.05, -fuseRadius * 0.1);
   jetGroup.add(wings);
 
-  const tailGeom = new THREE.BoxGeometry(span*0.0004, span*0.003, span*0.003);
-  tailGeom.translate(0, 0, span*0.0015);
+  const tailGeom = new THREE.BufferGeometry();
+  const tHeight = span * 0.0035;
+  const tChord = span * 0.0025;
+  const tSweep = span * 0.0015;
+  const tailVertices = new Float32Array([
+    0, -fuseLen * 0.35, fuseRadius * 0.3,
+    0, -fuseLen * 0.45 - tSweep, fuseRadius * 0.3 + tHeight,
+    0, -fuseLen * 0.45 - tSweep - tChord * 0.3, fuseRadius * 0.3 + tHeight,
+    0, -fuseLen * 0.45 - tChord, fuseRadius * 0.3
+  ]);
+  const tailIndices = [
+    0, 1, 3,
+    1, 2, 3
+  ];
+  tailGeom.setAttribute('position', new THREE.BufferAttribute(tailVertices, 3));
+  tailGeom.setIndex(tailIndices);
+  tailGeom.computeVertexNormals();
   const tail = new THREE.Mesh(tailGeom, wingMat);
-  tail.position.set(0, -span*0.006, 0);
   jetGroup.add(tail);
+
+  const exhGeom = new THREE.CylinderGeometry(fuseRadius * 0.6, fuseRadius * 0.5, fuseLen * 0.1, 16);
+  exhGeom.translate(0, -fuseLen * 0.55, 0);
+  const exhMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+  const exhaust = new THREE.Mesh(exhGeom, exhMat);
+  jetGroup.add(exhaust);
 
   scene.add(jetGroup);
 
+  // Restore & Render 3D Ribbon Trail showing orientation/twisting
   const ranges = phaseRanges(tr);
   const pathLines = [];
   for (const pi of segPhases) {
@@ -1115,63 +1178,164 @@ function initThreeJS(tr) {
     const [s, e] = ranges[pi];
     if (e - s < 2) continue;
 
-    const points = [];
+    const positions = [];
+    const colors = [];
+    const indices = [];
+    let k = 0;
+
     for (let fi = s; fi <= e && fi < tr.frames.length; fi++) {
       const f = tr.frames[fi];
-      points.push(new THREE.Vector3(f.x, f.y, -f.z));
+      const p = new THREE.Vector3(f.x, f.y, -f.z);
+      const euler = new THREE.Euler(f.theta, -f.phi, -f.psi, 'ZXY');
+      const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
+      const wing_half_width = span * 0.0035;
+
+      const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
+      const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
+
+      positions.push(v_left.x, v_left.y, v_left.z);
+      positions.push(v_right.x, v_right.y, v_right.z);
+
+      const colHex = frameColor(tr, fi, b);
+      const colorObj = new THREE.Color(colHex);
+      colors.push(colorObj.r, colorObj.g, colorObj.b);
+      colors.push(colorObj.r, colorObj.g, colorObj.b);
+
+      if (fi < e) {
+        indices.push(2*k, 2*k+1, 2*k+2);
+        indices.push(2*k+1, 2*k+3, 2*k+2);
+      }
+      k++;
     }
 
-    if (points.length >= 2) {
-      const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
-      const colHex = phaseColor(pi);
-      const lineMat = new THREE.LineBasicMaterial({
-        color: parseInt(colHex.replace('#', '0x')),
-        linewidth: 3
+    if (positions.length >= 6) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geom.setIndex(indices);
+      geom.computeVertexNormals();
+
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        roughness: 0.5,
+        metalness: 0.1,
+        transparent: true,
+        opacity: 0.8
       });
-      const line = new THREE.Line(lineGeom, lineMat);
-      scene.add(line);
-      pathLines.push(line);
+      const ribbon = new THREE.Mesh(geom, mat);
+      scene.add(ribbon);
+      pathLines.push(ribbon);
     }
   }
 
+  // Waypoints with Altitude Tadpoles and Ground Intersection Rings
   const waypoints = [];
   if (tr.waypoints) {
-    const wpGeom = new THREE.ConeGeometry(span*0.005, span*0.01, 4);
+    const wpGeom = new THREE.ConeGeometry(span*0.004, span*0.008, 4);
     wpGeom.rotateX(Math.PI / 2);
-    const wpMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const wpMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
     for (let i = 0; i < tr.waypoints.length; i++) {
       const w = tr.waypoints[i];
       const wpMesh = new THREE.Mesh(wpGeom, wpMat);
       wpMesh.position.set(w.x, w.y, -w.z);
       scene.add(wpMesh);
       waypoints.push(wpMesh);
+
+      // Vertical dashed line down to Z=0
+      const tpPoints = [new THREE.Vector3(w.x, w.y, -w.z), new THREE.Vector3(w.x, w.y, 0)];
+      const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
+      const tpMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: span*0.015, gapSize: span*0.015, opacity: 0.35, transparent: true });
+      const tpLine = new THREE.Line(tpGeom, tpMat);
+      tpLine.computeLineDistances();
+      scene.add(tpLine);
+
+      // Golden target ring on the ground
+      const gRingGeom = new THREE.RingGeometry(span*0.003, span*0.004, 16);
+      const gRingMat = new THREE.MeshBasicMaterial({ color: 0xffd700, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
+      const gRing = new THREE.Mesh(gRingGeom, gRingMat);
+      gRing.position.set(w.x, w.y, 0.05);
+      scene.add(gRing);
     }
   }
 
+  // Polished Scene Geometry (Runways, Taxiways, Airway lines)
   if (tr.sceneLines) {
     for (const sl of tr.sceneLines) {
-      const points = [];
-      points.push(new THREE.Vector3(sl.x1, sl.y1, -sl.z1));
-      points.push(new THREE.Vector3(sl.x2, sl.y2, -sl.z2));
-      const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
-      const col = sl.color || '#3a3a4a';
-      const lineMat = new THREE.LineBasicMaterial({ color: parseInt(col.replace('#', '0x')), linewidth: 3 });
-      const line = new THREE.Line(lineGeom, lineMat);
-      scene.add(line);
+      const label = (sl.label || '').toLowerCase();
+      const isRwy = label.includes('rwy') || label.includes('runway') || sl.width > 20;
+      const isTaxi = label.includes('taxiway') || label.includes('taxi');
+
+      if (isRwy) {
+        // Dark asphalt runway plane
+        const dx = sl.x2 - sl.x1, dy = sl.y2 - sl.y1;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        const cx = (sl.x1 + sl.x2)/2, cy = (sl.y1 + sl.y2)/2, cz = -(sl.z1 + sl.z2)/2;
+        const angle = Math.atan2(dy, dx);
+
+        const runwayGeom = new THREE.PlaneGeometry(sl.width || 150, len);
+        const runwayMat = new THREE.MeshStandardMaterial({ color: 0x1b202e, roughness: 0.9, side: THREE.DoubleSide });
+        const runway = new THREE.Mesh(runwayGeom, runwayMat);
+        runway.position.set(cx, cy, cz + 0.04);
+        runway.rotation.z = angle - Math.PI / 2;
+        scene.add(runway);
+
+        // Dashed white centerline
+        const clPoints = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1 + 0.08), new THREE.Vector3(sl.x2, sl.y2, -sl.z2 + 0.08)];
+        const clGeom = new THREE.BufferGeometry().setFromPoints(clPoints);
+        const clMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: span*0.015, gapSize: span*0.01 });
+        const cl = new THREE.Line(clGeom, clMat);
+        cl.computeLineDistances();
+        scene.add(cl);
+      } else if (isTaxi) {
+        // Solid yellow taxiway line
+        const points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1 + 0.06), new THREE.Vector3(sl.x2, sl.y2, -sl.z2 + 0.06)];
+        const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0xeab308, linewidth: 4 });
+        const line = new THREE.Line(lineGeom, lineMat);
+        scene.add(line);
+      } else {
+        // Generic airway corridor line with vertical support pillars
+        const points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1), new THREE.Vector3(sl.x2, sl.y2, -sl.z2)];
+        const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+        const col = sl.color || '#3a3a4a';
+        const lineMat = new THREE.LineBasicMaterial({ color: parseInt(col.replace('#', '0x')), linewidth: 3 });
+        const line = new THREE.Line(lineGeom, lineMat);
+        scene.add(line);
+
+        if (Math.abs(-sl.z1) > 10) {
+          const p1Points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1), new THREE.Vector3(sl.x1, sl.y1, 0)];
+          const p1Geom = new THREE.BufferGeometry().setFromPoints(p1Points);
+          const p1Mat = new THREE.LineDashedMaterial({ color: parseInt(col.replace('#', '0x')), dashSize: span*0.01, gapSize: span*0.01, opacity: 0.25, transparent: true });
+          const p1 = new THREE.Line(p1Geom, p1Mat);
+          p1.computeLineDistances();
+          scene.add(p1);
+        }
+        if (Math.abs(-sl.z2) > 10) {
+          const p2Points = [new THREE.Vector3(sl.x2, sl.y2, -sl.z2), new THREE.Vector3(sl.x2, sl.y2, 0)];
+          const p2Geom = new THREE.BufferGeometry().setFromPoints(p2Points);
+          const p2Mat = new THREE.LineDashedMaterial({ color: parseInt(col.replace('#', '0x')), dashSize: span*0.01, gapSize: span*0.01, opacity: 0.25, transparent: true });
+          const p2 = new THREE.Line(p2Geom, p2Mat);
+          p2.computeLineDistances();
+          scene.add(p2);
+        }
+      }
     }
   }
 
+  // Set up playhead shadow (lies flat on X-Y plane at Z=0, no rotation.x offset needed!)
+  const shadowGeom = new THREE.RingGeometry(span*0.005, span*0.0065, 24);
+  const shadowMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, opacity: 0.55, transparent: true });
+  const shadow = new THREE.Mesh(shadowGeom, shadowMat);
+  shadow.position.set(0, 0, 0.05);
+  scene.add(shadow);
+
+  // Playhead vertical altitude tadpole line
   const tadpolePoints = [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)];
   const tadpoleGeom = new THREE.BufferGeometry().setFromPoints(tadpolePoints);
-  const tadpoleMat = new THREE.LineDashedMaterial({ color: 0xe2e8f0, dashSize: span*0.02, gapSize: span*0.015 });
+  const tadpoleMat = new THREE.LineDashedMaterial({ color: 0x38bdf8, dashSize: span*0.015, gapSize: span*0.01 });
   const tadpole = new THREE.Line(tadpoleGeom, tadpoleMat);
   scene.add(tadpole);
-
-  const shadowGeom = new THREE.RingGeometry(span*0.005, span*0.006, 16);
-  const shadowMat = new THREE.MeshBasicMaterial({ color: 0xe2e8f0, side: THREE.DoubleSide, opacity: 0.6, transparent: true });
-  const shadow = new THREE.Mesh(shadowGeom, shadowMat);
-  shadow.rotation.x = Math.PI / 2;
-  scene.add(shadow);
 
   threeState.initialized = true;
   threeState.scene = scene;
@@ -1205,18 +1369,21 @@ function render3D(tr){
 
   threeState.aircraft.position.set(cx, cy, cz);
 
+  // Exact Tait-Bryan Euler rotations using ZXY right-handed ENU conventions
   threeState.aircraft.rotation.set(0, 0, 0);
-  threeState.aircraft.rotation.z = acFrame.psi - Math.PI / 2;
+  threeState.aircraft.order = 'ZXY';
+  threeState.aircraft.rotation.z = -acFrame.psi;
   threeState.aircraft.rotation.x = acFrame.theta;
-  threeState.aircraft.rotation.y = acFrame.phi;
-  threeState.aircraft.order = 'ZYX';
+  threeState.aircraft.rotation.y = -acFrame.phi;
 
+  // Update playhead altitude tadpole
   const positions = threeState.tadpole.geometry.attributes.position.array;
   positions[0] = cx; positions[1] = cy; positions[2] = cz;
   positions[3] = cx; positions[4] = cy; positions[5] = 0;
   threeState.tadpole.geometry.attributes.position.needsUpdate = true;
   threeState.tadpole.computeLineDistances();
 
+  // Playhead ground ring projection (lies flat on Z=0.05)
   threeState.shadow.position.set(cx, cy, 0.05);
   threeState.grid.position.set(cx, cy, 0);
 
@@ -1235,6 +1402,7 @@ function render3D(tr){
   }
   threeState.threats = {};
 
+  // Custom high-polish rendering for threats/entities with altitude tadpoles
   if (acFrame.threats) {
     const tStyle = {
       missile: { color: 0xf44336, r: 0.005 },
@@ -1250,16 +1418,56 @@ function render3D(tr){
       const st = tStyle[th.type] || tStyle.missile;
       const r = threeState.span * st.r;
       let geom;
-      if (th.type === 'target' || th.type === 'airbase') {
+      if (th.type === 'target') {
         geom = new THREE.BoxGeometry(r*2, r*2, r*2);
+      } else if (th.type === 'airbase') {
+        geom = new THREE.CylinderGeometry(r, r, r*2, 8);
+        geom.rotateX(Math.PI / 2);
+      } else if (th.type === 'missile') {
+        geom = new THREE.CylinderGeometry(r*0.3, r*0.3, r*3, 8);
+        geom.rotateX(Math.PI / 2);
       } else {
-        geom = new THREE.SphereGeometry(r, 8, 8);
+        geom = new THREE.ConeGeometry(r, r*2, 4);
+        geom.rotateX(Math.PI / 2);
       }
-      const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.5 });
+      const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.4 });
       const mesh = new THREE.Mesh(geom, mat);
       mesh.position.set(th.x, th.y, -th.z);
+
+      if (th.type === 'target') {
+        mesh.rotation.y = state.t * 2.0;
+        mesh.rotation.x = state.t * 1.0;
+      } else if (th.type === 'missile') {
+        const flameGeom = new THREE.ConeGeometry(r*0.4, r*1.5, 8);
+        flameGeom.rotateX(-Math.PI / 2);
+        flameGeom.translate(0, 0, -r*1.5);
+        const flameMat = new THREE.MeshBasicMaterial({ color: 0xff5722 });
+        const flame = new THREE.Mesh(flameGeom, flameMat);
+        mesh.add(flame);
+      }
+
       threeState.scene.add(mesh);
-      threeState.threats[th.type + '_' + i] = mesh;
+      threeState.threats['mesh_' + i] = mesh;
+
+      // Vertical altitude tadpole for threat
+      const tz = -th.z;
+      if (Math.abs(tz) > 1.0) {
+        const tpPoints = [new THREE.Vector3(th.x, th.y, tz), new THREE.Vector3(th.x, th.y, 0)];
+        const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
+        const tpMat = new THREE.LineDashedMaterial({ color: st.color, dashSize: threeState.span*0.01, gapSize: threeState.span*0.01, opacity: 0.4, transparent: true });
+        const tpLine = new THREE.Line(tpGeom, tpMat);
+        tpLine.computeLineDistances();
+        threeState.scene.add(tpLine);
+        threeState.threats['tp_' + i] = tpLine;
+
+        // Ground track ring for threat
+        const gGeom = new THREE.RingGeometry(r*0.8, r, 16);
+        const gMat = new THREE.MeshBasicMaterial({ color: st.color, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
+        const gRing = new THREE.Mesh(gGeom, gMat);
+        gRing.position.set(th.x, th.y, 0.05);
+        threeState.scene.add(gRing);
+        threeState.threats['gring_' + i] = gRing;
+      }
     }
   }
 
