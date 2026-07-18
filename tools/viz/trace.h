@@ -61,23 +61,6 @@ struct AdditionalResult {
     std::string color;  // "success", "warning", "danger", or empty
 };
 
-// Waypoint — a navigation waypoint for the trace (scenario-level, not
-// per-frame). Captured once from the SteeringController after Init().
-struct Waypoint {
-    double x{0.0}, y{0.0}, z{0.0};
-    std::string name;   // "WP1", "North", etc. — may be empty
-};
-
-// SceneLine — a static line in the world used for scene geometry overlays
-// (runway centerline, runway edges, taxiway paths, approach corridor, etc.).
-// All coordinates are NED (ft, altitude = -z).
-struct SceneLine {
-    std::string label;           // "RWY 27", "Taxiway A", etc.
-    double x1{0.0}, y1{0.0}, z1{0.0};  // start point
-    double x2{0.0}, y2{0.0}, z2{0.0};  // end point
-    std::string color;           // hex "#FFD700", or empty for default
-    double width{0.0};           // stroke width in ft (0 = default 2)
-};
 
 // TraceSample — a single key-value sample for a frame (e.g. "range"=5000ft).
 // These let scenarios publish additional per-frame data (target range, heading
@@ -133,23 +116,6 @@ struct TraceFrame {
     std::vector<TraceSample> samples;
 };
 
-// PhaseResult — result of one phase in the scenario.
-struct PhaseResult {
-    std::string name;
-    double start_s{0.0};
-    double end_s{0.0};
-    bool passed{false};
-    bool skipped{false};
-    bool reinitializes{false};  // true if the phase called fm.init() (flight
-                                // model re-initialized → discontinuity)
-    std::string criteria;       // human-readable pass/fail criteria (what's checked)
-    std::string failureReason;  // human-readable explanation of WHY the phase
-                                // failed (empty if passed). e.g. "Never entered
-                                // GunsEngage mode (stayed in WVREngage)"
-    std::vector<TestCondition> conditions; // checklist of individual pass/fail conditions
-    std::vector<AdditionalResult> additionalResults; // additional metrics/results to print
-};
-
 // Trace — a complete maneuver trace.
 struct Trace {
     std::string aircraft;       // aircraft name (e.g., "f16bk50")
@@ -157,10 +123,7 @@ struct Trace {
     std::string testGroup;      // test group, e.g. "Fighter Formation", "Ground Ops"
     std::string testLevel;      // test level, e.g. "Low Level", "High Level", "End-to-End"
     double duration_s{0.0};
-    std::vector<PhaseResult> phases;
     std::vector<TraceFrame> frames;
-    std::vector<Waypoint> waypoints;    // navigation waypoints (scenario-level)
-    std::vector<SceneLine> sceneLines;  // static geometry (runway, taxiways, etc.)
     std::vector<TraceGeometry> geometry; // generalized static test geometry
     std::vector<TraceEvent> events;     // discrete events (mode changes, fires, etc.)
 };
@@ -208,25 +171,11 @@ public:
     void addEvent(double t, const std::string& category,
                   const std::string& message, const std::string& severity = "info");
 
-    // Set navigation waypoints (scenario-level, called once after Init).
-    void setWaypoints(const std::vector<Waypoint>& wps);
-
-    // Add a scene geometry line (runway, taxiway, etc.).
-    void addSceneLine(const SceneLine& line);
-
     // Set test metadata (test group and test level)
     void setTestMetadata(const std::string& testGroup, const std::string& testLevel);
 
     // Set generalized test geometry
     void setGeometry(const std::vector<TraceGeometry>& geom) { trace_.geometry = geom; }
-
-    // Mark a phase boundary (called at the end of each phase).
-    void markPhase(const std::string& name, double start_s, double end_s,
-                   bool passed, bool skipped, bool reinitializes,
-                   const std::string& criteria = "",
-                   const std::string& failureReason = "",
-                   const std::vector<TestCondition>& conditions = {},
-                   const std::vector<AdditionalResult>& additionalResults = {});
 
     void finish(double duration_s);
 

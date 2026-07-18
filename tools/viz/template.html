@@ -62,16 +62,6 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .detail-summary{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin-bottom:16px}
 .detail-summary span b{color:var(--text)}
 
-.phase-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
-.chip{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:3px 12px;
-  font-size:12px;cursor:pointer;white-space:nowrap;transition:all .12s}
-.chip:hover{border-color:var(--accent)}
-.chip.active{background:var(--panel2);border-color:var(--accent)}
-.chip .n{color:var(--dim);margin-right:4px}
-.chip.pass{border-left:3px solid var(--pass)}
-.chip.fail{border-left:3px solid var(--fail)}
-.chip.skip{border-left:3px solid var(--skip)}
-
 .detail-grid{display:grid;grid-template-columns:1fr;gap:16px}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
 .panel h3{margin:0 0 10px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
@@ -109,62 +99,10 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .readout .cell .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .readout .cell .v{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:15px;font-weight:600}
 .readout .cell.mode .v,.readout .cell.phase .v{font-size:12px}
-/* per-frame samples (range, heading error, fuel, TTGO, etc.) — visually
-   distinct from the built-in telemetry cells: accent-tinted background +
-   left border to mark them as scenario-published extras. */
 .readout .cell.sample{background:rgba(96,165,250,0.06);border-color:rgba(96,165,250,0.4);
   border-left:3px solid var(--accent)}
 .readout .cell.sample .l{color:var(--accent)}
 .readout .cell.sample .v{font-size:13px;color:var(--text)}
-
-/* SVG styles */
-.axis-text{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10px;fill:var(--dim)}
-.grid-line{stroke:var(--grid);stroke-width:.5;fill:none}
-.grid-line-major{stroke:var(--grid2);stroke-width:.75;fill:none}
-.legend-text{font-size:11px;fill:var(--muted)}
-
-/* criteria panel */
-.criteria-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;
-  padding:14px;margin-bottom:14px}
-.criteria-panel h3{margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.5px;font-weight:600}
-.criteria-table{width:100%;border-collapse:collapse;font-size:12px}
-.criteria-table th{text-align:left;padding:4px 8px;color:var(--muted);border-bottom:1px solid var(--border);
-  font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px}
-.criteria-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:top}
-.criteria-table td.name{font-weight:600;white-space:nowrap}
-.criteria-table td.status{width:60px;text-align:center}
-.criteria-table td.criteria-text{color:var(--muted);font-size:11px}
-/* failure reason row inside criteria-text cell */
-.failure-reason{color:#ff6b6b;font-style:italic;font-size:11px;margin-top:3px;
-  padding:2px 6px;border-left:2px solid #ff6b6b;background:rgba(255,107,107,0.06);
-  border-radius:2px;line-height:1.4}
-.failure-reason span{color:#ffb3b3}
-
-/* event log panel */
-.event-log-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;
-  padding:14px;margin-bottom:14px}
-.event-log-panel h3{margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.5px;font-weight:600}
-.event-log{max-height:200px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);
-  border-radius:6px;padding:4px;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
-.event-row{display:flex;gap:8px;padding:3px 6px;border-bottom:1px solid rgba(42,47,66,0.5);
-  align-items:baseline;transition:background .1s}
-.event-row:last-child{border-bottom:none}
-.event-row:hover{background:rgba(255,255,255,0.03)}
-.event-row.sev-info{color:var(--muted)}
-.event-row.sev-warn{color:var(--warn)}
-.event-row.sev-fail{color:var(--fail)}
-.event-row.current{background:rgba(96,165,250,0.15);box-shadow:inset 2px 0 0 var(--accent)}
-.ev-time{min-width:56px;color:var(--dim);font-size:11px}
-.ev-cat{min-width:64px;font-size:10px;text-transform:uppercase;letter-spacing:.3px;
-  padding:1px 5px;border-radius:8px;background:var(--panel2);color:var(--text);
-  text-align:center;font-weight:600}
-.event-row.sev-warn .ev-cat{background:rgba(251,191,36,0.18);color:var(--warn)}
-.event-row.sev-fail .ev-cat{background:rgba(248,113,113,0.18);color:var(--fail)}
-.event-row.sev-info .ev-cat{background:rgba(138,144,166,0.18);color:var(--muted)}
-.ev-msg{flex:1;word-break:break-word}
-.event-log-empty{color:var(--dim);text-align:center;padding:20px;font-style:italic}
 
 /* 3D view */
 #topdown-host svg,#threed-host svg{cursor:grab}
@@ -190,7 +128,6 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
           <option value="">all</option>
           <option value="pass">passing</option>
           <option value="fail">failing</option>
-          <option value="mixed">mixed</option>
         </select>
       </label>
     </div>
@@ -205,15 +142,6 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
       <span class="badge" id="detail-badge"></span>
     </div>
     <div class="detail-summary" id="detail-summary"></div>
-    <div class="criteria-panel hidden" id="criteria-panel">
-      <h3>Pass / Fail Criteria</h3>
-      <table class="criteria-table" id="criteria-table"></table>
-    </div>
-    <div class="event-log-panel hidden" id="event-log-panel">
-      <h3>Event Log <span id="event-log-count" style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0"></span></h3>
-      <div class="event-log" id="event-log"></div>
-    </div>
-    <div class="phase-chips" id="phase-chips"></div>
     <div class="controls">
       <div class="group">
         <button class="btn play" id="play-btn">&#9654; Play</button>
@@ -235,17 +163,6 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
           <button data-speed="4">4&times;</button>
         </div>
       </div>
-      <div class="group">
-        <span>Color by</span>
-        <div class="seg" id="color-seg">
-          <button data-color="phase" class="active">phase</button>
-          <button data-color="passfail">pass/fail</button>
-          <button data-color="altitude">altitude</button>
-          <button data-color="speed">speed</button>
-          <button data-color="g">G-load</button>
-          <button data-color="mode">AI mode</button>
-        </div>
-      </div>
     </div>
     <div class="scrubber-row">
       <span class="time-label" id="time-now">0.0s</span>
@@ -260,8 +177,17 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
         <div class="readout" id="readout"></div>
       </div>
       <div class="panel">
-        <h3>Altitude / Speed / G-load vs Time</h3>
-        <div id="timeseries-host"></div>
+        <h3>Scenario Data, Samples &amp; Event Log</h3>
+        <div class="data-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;height:500px">
+          <div class="sub-panel" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h4 style="margin:0 0 10px 0;font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px">Discrete Events Log</h4>
+            <div id="data-events-log" style="flex:1;overflow-y:auto;font-family:ui-monospace,monospace;font-size:12px;padding:4px"></div>
+          </div>
+          <div class="sub-panel" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h4 style="margin:0 0 10px 0;font-size:13px;color:var(--accent2);text-transform:uppercase;letter-spacing:.5px">Telemetry &amp; Custom Samples Readout</h4>
+            <div id="data-samples-readout" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -280,9 +206,7 @@ const state = {
   t: 0,               // playhead time (seconds)
   playing: false,
   speed: 1,
-  colorBy: 'phase',
   viewMode: '2d',     // '2d' or '3d'
-  segmentIdx: 0,      // which segment (discontinuity group) is active, 0-based
   zoom: 1.0,          // mouse-wheel zoom factor (1.0 = fit)
   panX: 0, panY: 0,   // pan offset in screen px
   orbit: {yaw: 0.6, pitch: 0.4, dragging: false, lastX: 0, lastY: 0},
@@ -310,7 +234,6 @@ const threeState = {
 // Color utilities
 // ---------------------------------------------------------------------------
 function hsvToRgb(h, s, v) {
-  // h in [0,1)
   const i = Math.floor(h * 6);
   const f = h * 6 - i;
   const p = v * (1 - s);
@@ -329,186 +252,67 @@ function hsvToRgb(h, s, v) {
 }
 function rgbHex(r,g,b){return '#'+[r,g,b].map(x=>Math.max(0,Math.min(255,Math.round(x))).toString(16).padStart(2,'0')).join('');}
 function hashStr(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h)+s.charCodeAt(i);return Math.abs(h);}
-function phaseColor(i){return rgbHex(...hsvToRgb(((i*67)%360)/360,0.65,0.95));}
-function modeColor(name){const h=hashStr(name||'')%360;return rgbHex(...hsvToRgb(h/360,0.6,0.9));}
-
-// Gradient: stops = [[pos,[r,g,b]],...], t in [0,1]
-function gradColor(stops, t){
-  if(t<=0)return rgbHex(...stops[0][1]);
-  if(t>=1)return rgbHex(...stops[stops.length-1][1]);
-  for(let i=0;i<stops.length-1;i++){
-    if(t>=stops[i][0]&&t<=stops[i+1][0]){
-      const f=(t-stops[i][0])/(stops[i+1][0]-stops[i][0]);
-      return rgbHex(
-        stops[i][1][0]+(stops[i+1][1][0]-stops[i][1][0])*f,
-        stops[i][1][1]+(stops[i+1][1][1]-stops[i][1][1])*f,
-        stops[i][1][2]+(stops[i+1][1][2]-stops[i][1][2])*f);
-    }
-  }
-  return rgbHex(...stops[stops.length-1][1]);
-}
-const ALT_STOPS=[[0,[40,20,120]],[0.2,[40,90,200]],[0.4,[40,180,170]],[0.6,[120,200,80]],[0.8,[230,200,50]],[1,[220,70,40]]];
-const SPD_STOPS=[[0,[60,40,140]],[0.25,[60,120,220]],[0.5,[80,200,120]],[0.75,[240,200,60]],[1,[220,70,40]]];
-const G_STOPS=[[0,[60,140,80]],[0.3,[120,200,60]],[0.6,[240,200,40]],[1,[220,50,40]]];
 
 // ---------------------------------------------------------------------------
 // Trace helpers
 // ---------------------------------------------------------------------------
 function traceDuration(tr){return tr.duration_s||(tr.frames.length?tr.frames[tr.frames.length-1].t:0);}
 function traceStatus(tr){
-  if(!tr.phases||!tr.phases.length)return 'pass';
-  let p=0,f=0,s=0;
-  for(const ph of tr.phases){if(ph.skipped)s++;else if(ph.passed)p++;else f++;}
-  if(f>0&&p>0)return 'mixed';
-  if(f>0)return 'fail';
-  if(p>0)return 'pass';
-  return 'skip';
+  if (tr.events) {
+    for (const ev of tr.events) {
+      if (ev.severity === 'fail' || ev.message.includes('FAILED')) return 'fail';
+    }
+  }
+  return 'pass';
 }
-function tracePassedCount(tr){return(tr.phases||[]).filter(p=>p.passed).length;}
-function traceTotalCount(tr){return(tr.phases||[]).length;}
+function tracePassedCount(tr){
+  let passed = 0;
+  if (tr.events) {
+    for (const ev of tr.events) {
+      if (ev.category === 'phase' && ev.message.includes('PASSED')) passed++;
+    }
+  }
+  return passed;
+}
+function traceTotalCount(tr){
+  let total = 0;
+  if (tr.events) {
+    for (const ev of tr.events) {
+      if (ev.category === 'phase') total++;
+    }
+  }
+  return total;
+}
 
 // Compute bounds with padding
 function computeBounds(tr){
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
-  let minAlt=Infinity,maxAlt=-Infinity,minSpd=Infinity,maxSpd=-Infinity,minG=Infinity,maxG=-Infinity;
-  let minT=Infinity,maxT=-Infinity;
+  let minAlt=Infinity,maxAlt=-Infinity;
   for(const f of tr.frames){
-    // Map East (f.y) to X, North (f.x) to Y
     if(f.y<minX)minX=f.y; if(f.y>maxX)maxX=f.y;
     if(f.x<minY)minY=f.x; if(f.x>maxY)maxY=f.x;
     const alt=-f.z;
     if(alt<minAlt)minAlt=alt; if(alt>maxAlt)maxAlt=alt;
-    if(f.vcas<minSpd)minSpd=f.vcas; if(f.vcas>maxSpd)maxSpd=f.vcas;
-    if(f.nzcgs<minG)minG=f.nzcgs; if(f.nzcgs>maxG)maxG=f.nzcgs;
-    if(f.t<minT)minT=f.t; if(f.t>maxT)maxT=f.t;
     if(f.threats){for(const t of f.threats){
-      // Map East (t.y) to X, North (t.x) to Y
       if(t.y<minX)minX=t.y; if(t.y>maxX)maxX=t.y;
       if(t.x<minY)minY=t.x; if(t.x>maxY)maxY=t.x;
     }}
   }
-  if(!isFinite(minX)){minX=maxX=minY=maxY=0;minAlt=maxAlt=0;minSpd=maxSpd=0;minG=maxG=0;minT=maxT=0;}
+  if(tr.geometry){
+    for(const g of tr.geometry){
+      for(let i=0; i+2<g.coords.length; i+=3){
+        const gx=g.coords[i+1], gy=g.coords[i];
+        if(gx<minX)minX=gx; if(gx>maxX)maxX=gx;
+        if(gy<minY)minY=gy; if(gy>maxY)maxY=gy;
+      }
+    }
+  }
+  if(!isFinite(minX)){minX=maxX=minY=maxY=0;minAlt=maxAlt=0;}
   const padX=(maxX-minX)*0.08+200, padY=(maxY-minY)*0.08+200;
-  const padAlt=(maxAlt-minAlt)*0.1+200;
   minX-=padX;maxX+=padX;minY-=padY;maxY+=padY;
-  minAlt=Math.max(0,minAlt-padAlt);maxAlt+=padAlt;
-  if(maxT<=minT)maxT=minT+1;
-  if(maxSpd<=minSpd)maxSpd=minSpd+1;
-  if(maxG<=minG)maxG=minG+1;
-  return{minX,maxX,minY,maxY,minAlt,maxAlt,minSpd,maxSpd,minG,maxG,minT,maxT};
+  return equalizeAspect({minX,maxX,minY,maxY,minAlt,maxAlt});
 }
 
-// Phase ranges: [startFrame, endFrame] per phase (frames split at boundaries).
-function phaseRanges(tr){
-  if(!tr.phases||!tr.phases.length){
-    return tr.frames.length?[[0,tr.frames.length-1]]:[];
-  }
-  const ranges=[];
-  let fi=0;
-  for(const p of tr.phases){
-    const start=fi;
-    while(fi<tr.frames.length&&tr.frames[fi].t<p.end_s)fi++;
-    let end=fi-1; if(end<start)end=start;
-    ranges.push([start,end]);
-  }
-  return ranges;
-}
-function hasGroundOps(tr){
-  for(const p of tr.phases||[]){if(/takeoff|landing|groundops/i.test(p.name))return true;}
-  for(const f of tr.frames){if(f.mode==='Takeoff'||f.mode==='Landing')return true;}
-  return false;
-}
-// Compute segments
-function computeSegments(tr){
-  const ranges=phaseRanges(tr);
-  if(ranges.length<=1)return [[0]];
-  const segs=[[0]];
-  for(let i=1;i<ranges.length;i++){
-    const phase=tr.phases[i];
-    if(phase&&phase.reinitializes){
-      segs.push([i]);
-    }else{
-      segs[segs.length-1].push(i);
-    }
-  }
-  return segs;
-}
-// Return [minT, maxT] for the active segment
-function segmentTimeRange(tr,segIdx){
-  const segs=computeSegments(tr);
-  const si=Math.min(segIdx,segs.length-1);
-  const segPhases=segs[si];
-  const ranges=phaseRanges(tr);
-  let minT=Infinity,maxT=-Infinity;
-  for(const pi of segPhases){
-    if(pi>=ranges.length)continue;
-    const [s,e]=ranges[pi];
-    if(s<tr.frames.length){const t=tr.frames[s].t; if(t<minT)minT=t;}
-    if(e<tr.frames.length){const t=tr.frames[e].t; if(t>maxT)maxT=t;}
-  }
-  if(!isFinite(minT))minT=0;
-  if(!isFinite(maxT))maxT=traceDuration(tr);
-  if(maxT<=minT)maxT=minT+1;
-  return [minT,maxT];
-}
-// Get the last valid frame index in a range
-function rangeLastFrame(tr,range){
-  const [s,e]=range;
-  for(let i=Math.min(e,tr.frames.length-1);i>=s;i--){
-    return i;
-  }
-  return -1;
-}
-// Compute bounds for a single segment
-function computeSegmentBounds(tr,segPhaseIndices){
-  let b={minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity,
-    minAlt:Infinity,maxAlt:-Infinity,minSpd:Infinity,maxSpd:-Infinity,
-    minG:Infinity,maxG:-Infinity,minT:Infinity,maxT:-Infinity};
-  const ranges=phaseRanges(tr);
-  for(const pi of segPhaseIndices){
-    if(pi>=ranges.length)continue;
-    const [s,e]=ranges[pi];
-    for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
-      const f=tr.frames[fi];
-      // Map East (f.y) to X, North (f.x) to Y
-      if(f.y<b.minX)b.minX=f.y; if(f.y>b.maxX)b.maxX=f.y;
-      if(f.x<b.minY)b.minY=f.x; if(f.x>b.maxY)b.maxY=f.x;
-      const alt=-f.z;
-      if(alt<b.minAlt)b.minAlt=alt; if(alt>b.maxAlt)b.maxAlt=alt;
-      if(f.vcas<b.minSpd)b.minSpd=f.vcas; if(f.vcas>b.maxSpd)b.maxSpd=f.vcas;
-      if(f.nzcgs<b.minG)b.minG=f.nzcgs; if(f.nzcgs>b.maxG)b.maxG=f.nzcgs;
-      if(f.t<b.minT)b.minT=f.t; if(f.t>b.maxT)b.maxT=f.t;
-      if(f.threats){for(const t of f.threats){
-        // Map East (t.y) to X, North (t.x) to Y
-        if(t.y<b.minX)b.minX=t.y; if(t.y>b.maxX)b.maxX=t.y;
-        if(t.x<b.minY)b.minY=t.x; if(t.x>b.maxY)b.maxY=t.x;
-      }}
-    }
-  }
-  if(!isFinite(b.minX)){b.minX=b.maxX=b.minY=b.maxY=0;b.minAlt=b.maxAlt=0;b.minSpd=b.maxSpd=0;b.minG=b.maxG=0;b.minT=b.maxT=0;}
-  if(tr.waypoints){
-    for(const w of tr.waypoints){
-      // Map East (w.y) to X, North (w.x) to Y
-      if(w.y<b.minX)b.minX=w.y; if(w.y>b.maxX)b.maxX=w.y;
-      if(w.x<b.minY)b.minY=w.x; if(w.x>b.maxY)b.maxY=w.x;
-    }
-  }
-  if(tr.sceneLines){
-    for(const sl of tr.sceneLines){
-      // Map East (sl.y1, sl.y2) to X, North (sl.x1, sl.x2) to Y
-      b.minX=Math.min(b.minX,sl.y1,sl.y2); b.maxX=Math.max(b.maxX,sl.y1,sl.y2);
-      b.minY=Math.min(b.minY,sl.x1,sl.x2); b.maxY=Math.max(b.maxY,sl.x1,sl.x2);
-    }
-  }
-  const padX=(b.maxX-b.minX)*0.08+200, padY=(b.maxY-b.minY)*0.08+200;
-  const padAlt=(b.maxAlt-b.minAlt)*0.1+200;
-  b.minX-=padX;b.maxX+=padX;b.minY-=padY;b.maxY+=padY;
-  b.minAlt=Math.max(0,b.minAlt-padAlt);b.maxAlt+=padAlt;
-  if(b.maxT<=b.minT)b.maxT=b.minT+1;
-  if(b.maxSpd<=b.minSpd)b.maxSpd=b.minSpd+1;
-  if(b.maxG<=b.minG)b.maxG=b.minG+1;
-  return equalizeAspect(b);
-}
 // Equalize the X/Y aspect ratio of bounds
 function equalizeAspect(b, minRatio){
   minRatio = minRatio || 0.2;
@@ -524,44 +328,6 @@ function equalizeAspect(b, minRatio){
     b.minY=cy-minSpan/2; b.maxY=cy+minSpan/2;
   }
   return b;
-}
-
-// Color for a frame given the active color-by mode
-function frameColor(tr,frameIdx,bounds){
-  const f=tr.frames[frameIdx]; if(!f)return '#888';
-  switch(state.colorBy){
-    case 'phase':{
-      const ranges=phaseRanges(tr);
-      for(let i=0;i<ranges.length;i++){if(frameIdx>=ranges[i][0]&&frameIdx<=ranges[i][1])return phaseColor(i);}
-      return '#888';
-    }
-    case 'passfail':{
-      const ranges=phaseRanges(tr);
-      for(let i=0;i<ranges.length;i++){
-        if(frameIdx>=ranges[i][0]&&frameIdx<=ranges[i][1]){
-          const ph=tr.phases[i];
-          if(!ph)return '#888';
-          if(ph.skipped)return '#94a3b8';
-          return ph.passed?'#4ade80':'#f87171';
-        }
-      }
-      return '#888';
-    }
-    case 'altitude':{
-      const t=(-f.z-bounds.minAlt)/(bounds.maxAlt-bounds.minAlt);
-      return gradColor(ALT_STOPS,Math.max(0,Math.min(1,t)));
-    }
-    case 'speed':{
-      const t=(f.vcas-bounds.minSpd)/(bounds.maxSpd-bounds.minSpd);
-      return gradColor(SPD_STOPS,Math.max(0,Math.min(1,t)));
-    }
-    case 'g':{
-      const t=(f.nzcgs-0)/Math.max(1,bounds.maxG);
-      return gradColor(G_STOPS,Math.max(0,Math.min(1,t)));
-    }
-    case 'mode':return modeColor(f.mode||'');
-    default:return '#888';
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +347,7 @@ function fmtInt(n){if(!isFinite(n))return'—';return Math.round(n).toString();}
 // ---------------------------------------------------------------------------
 function miniTopdown(tr){
   if(!tr.frames.length)return '<svg viewBox="0 0 200 120" width="200" height="120"></svg>';
-  const b=equalizeAspect(computeBounds(tr));
+  const b=computeBounds(tr);
   const W=200,H=120,pad=10;
   const span=Math.max(b.maxX-b.minX,b.maxY-b.minY,1);
   const scale=Math.min((W-2*pad)/span,(H-2*pad)/span);
@@ -589,83 +355,61 @@ function miniTopdown(tr){
   const sx=x=>ox+(x-b.minX)*scale;
   const sy=y=>oy+(b.maxY-y)*scale;
   let scene='';
-  if(tr.sceneLines){
-    for(const sl of tr.sceneLines){
-      const col=sl.color||'#FFD700';
-      const w=sl.width?Math.max(0.5,sl.width*scale*0.5):1;
-      scene+=el('line',{x1:sx(sl.x1),y1:sy(sl.y1),x2:sx(sl.x2),y2:sy(sl.y2),
-        stroke:col,'stroke-width':w.toFixed(1),opacity:0.6});
+
+  if (tr.geometry) {
+    for (const g of tr.geometry) {
+      if (g.type === 'runway' && g.coords.length >= 6) {
+        scene += el('line', {x1: sx(g.coords[1]), y1: sy(g.coords[0]), x2: sx(g.coords[4]), y2: sy(g.coords[3]),
+          stroke: g.color || '#FFD700', 'stroke-width': 2, opacity: 0.6});
+      }
     }
   }
-  const ranges=phaseRanges(tr);
-  let paths='';
-  for(let i=0;i<ranges.length;i++){
-    const [s,e]=ranges[i]; if(e<=s)continue;
-    let pts='';
-    for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
-      const f=tr.frames[fi];
-      pts+=(pts?' ':'')+sx(f.x).toFixed(1)+','+sy(f.y).toFixed(1);
-    }
-    const col=phaseColor(i);
-    paths+=el('polyline',{points:pts,fill:'none',stroke:col,'stroke-width':1.5,'stroke-linejoin':'round','stroke-linecap':'round',opacity:0.9});
+
+  let pts='';
+  for(let fi=0;fi<tr.frames.length;fi++){
+    const f=tr.frames[fi];
+    pts+=(pts?' ':'')+sx(f.y).toFixed(1)+','+sy(f.x).toFixed(1);
   }
-  let wps='';
-  if(tr.waypoints){
-    for(let i=0;i<tr.waypoints.length;i++){
-      const w=tr.waypoints[i];
-      wps+=el('polygon',{points: diamondPts(sx(w.x),sy(w.y),4),fill:'#fff',stroke:'#000','stroke-width':.5,opacity:0.8});
-    }
-  }
+  const paths=el('polyline',{points:pts,fill:'none',stroke:'#00ffcc','stroke-width':1.5,'stroke-linejoin':'round','stroke-linecap':'round',opacity:0.9});
+
   return '<svg viewBox="0 0 '+W+' '+H+'" width='+JSON.stringify(W)+' height='+JSON.stringify(H)+'>'+
-    el('rect',{x:0,y:0,width:W,height:H,fill:'#0f1117'})+scene+paths+wps+'</svg>';
+    el('rect',{x:0,y:0,width:W,height:H,fill:'#0f1117'})+scene+paths+'</svg>';
 }
 function diamondPts(cx,cy,r){
   return cx+','+(cy-r)+' '+(cx+r)+','+cy+' '+cx+','+(cy+r)+' '+(cx-r)+','+cy;
 }
 
-function sceneLinesSvg(tr,sx,sy,scale){
-  if(!tr.sceneLines||!tr.sceneLines.length)return '';
-  let svg='<g class="scene-lines">';
-  for(const sl of tr.sceneLines){
-    const col=sl.color||'#3a3a4a';
-    const w=sl.width?Math.max(4,sl.width*scale):4;
-    svg+=el('line',{x1:sx(sl.x1),y1:sy(sl.y1),x2:sx(sl.x2),y2:sy(sl.y2),
-      stroke:col,'stroke-width':w.toFixed(1),opacity:0.8});
-    const mx=(sx(sl.x1)+sx(sl.x2))/2, my=(sy(sl.y1)+sy(sl.y2))/2;
-    if(sl.label)svg+=el('text',{x:mx,y:my-4,fill:col,'font-size':9,'text-anchor':'middle',opacity:0.8},esc(sl.label));
-  }
-  return svg+'</g>';
-}
-function waypointsSvg(tr,sx,sy){
-  if(!tr.waypoints||!tr.waypoints.length)return '';
-  let svg='<g class="waypoints">';
-  for(let i=0;i<tr.waypoints.length;i++){
-    const w=tr.waypoints[i];
-    const x=sx(w.x), y=sy(w.y);
-    svg+=el('polygon',{points:diamondPts(x,y,7),fill:'#fff',stroke:'#000','stroke-width':1.5});
-    svg+=el('text',{x:x+10,y:y-8,fill:'#fff','font-weight':'bold','font-size':11},esc(w.name||('WP'+(i+1))));
-  }
-  return svg+'</g>';
-}
-function threatsSvg(tr,sx,sy,currentT){
-  if(!tr.frames)return '';
-  const tracks={};
-  const fi=findFrameIndex(tr,currentT);
-  const acFrame=tr.frames[fi];
-  let bearingLines='';
-  for(let i=0;i<tr.frames.length;i++){
-    const f=tr.frames[i];
-    if(!f.threats)continue;
-    for(const th of f.threats){
-      if(th.type==='missile'||th.type==='lead'||th.type==='wingman'){
-        if(!tracks[th.type])tracks[th.type]=[];
-        tracks[th.type].push({x:th.y,y:th.x,t:f.t});
+function geometrySvg(tr, sx, sy, sc) {
+  if (!tr.geometry || !tr.geometry.length) return '';
+  let svg = '<g class="geometry">';
+  for (const g of tr.geometry) {
+    const col = g.color || '#3a3a4a';
+    const w = g.width ? Math.max(1.5, g.width * sc * 0.1) : 1.5;
+    if (g.type === 'waypoint') {
+      if (g.coords.length >= 3) {
+        const x = sx(g.coords[1]), y = sy(g.coords[0]);
+        svg += el('polygon', {points: diamondPts(x, y, 7), fill: '#fff', stroke: col, 'stroke-width': 2});
+        svg += el('text', {x: x + 10, y: y - 8, fill: '#fff', 'font-weight': 'bold', 'font-size': 11}, esc(g.name));
       }
+    } else if (g.type === 'runway' || g.type === 'taxiway' || g.type === 'corridor') {
+      let pts = '';
+      for (let i = 0; i + 2 < g.coords.length; i += 3) {
+        const x = sx(g.coords[i+1]), y = sy(g.coords[i]);
+        pts += (pts ? ' ' : '') + x.toFixed(1) + ',' + y.toFixed(1);
+      }
+      svg += el('polyline', {points: pts, fill: 'none', stroke: col, 'stroke-width': w, 'stroke-linejoin': 'round', opacity: 0.8});
     }
   }
+  return svg + '</g>';
+}
+
+function threatsSvg(tr,sx,sy,currentT){
+  if(!tr.frames)return '';
+  const fi=findFrameIndex(tr,currentT);
+  const acFrame=tr.frames[fi];
   const style={
     missile:{color:'#f44336',label:'missile',r:5},
-    lead:{color:'#4caf50',label:'lead',r:6},
+    lead:{color:'#ffd700',label:'lead',r:6},
     wingman:{color:'#00e5ff',label:'wingman',r:5},
     slot:{color:'#2196f3',label:'slot',r:5},
     guns:{color:'#ff9800',label:'guns',r:5},
@@ -673,44 +417,17 @@ function threatsSvg(tr,sx,sy,currentT){
     airbase:{color:'#ffc107',label:'airbase',r:6},
   };
   let svg='<g class="threats">';
-  for(const key in tracks){
-    const track=tracks[key];
-    if(track.length<2)continue;
-    const st=style[key]||style.missile;
-    let pts='';
-    for(const p of track){pts+=(pts?' ':'')+sx(p.x).toFixed(1)+','+sy(p.y).toFixed(1);}
-    svg+=el('polyline',{points:pts,fill:'none',stroke:st.color,'stroke-width':1.5,
-      'stroke-dasharray':key==='missile'?'4,3':'none',opacity:0.5});
-    const cur=track[Math.min(track.length-1,fi)];
-    if(cur){
-      svg+=el('circle',{cx:sx(cur.x),cy:sy(cur.y),r:st.r,fill:st.color,stroke:'#fff','stroke-width':1,opacity:0.9});
-      svg+=el('text',{x:sx(cur.x)+7,y:sy(cur.y)+4,fill:st.color,'font-size':10},st.label);
-    }
-  }
+
   if(acFrame&&acFrame.threats){
     for(const th of acFrame.threats){
-      if(th.type==='guns'){
-        svg+=el('line',{x1:sx(acFrame.y),y1:sy(acFrame.x),x2:sx(th.y),y2:sy(th.x),
-          stroke:'#ff9800','stroke-width':1,'stroke-dasharray':'2,2',opacity:0.7});
-        svg+=el('circle',{cx:sx(th.y),cy:sy(th.x),r:5,fill:'#ff9800',opacity:0.6,stroke:'#ff9800','stroke-width':1});
-        svg+=el('text',{x:sx(th.y)+7,y:sy(th.x)+4,fill:'#ff9800','font-size':10},'guns');
-      }else if(th.type==='target'){
-        svg+=el('line',{x1:sx(acFrame.y),y1:sy(acFrame.x),x2:sx(th.y),y2:sy(th.x),
-          stroke:'#9c27b0','stroke-width':1,'stroke-dasharray':'2,2',opacity:0.7});
-        svg+=el('rect',{x:sx(th.y)-5,y:sy(th.x)-5,width:10,height:10,fill:'#9c27b0',opacity:0.6,stroke:'#9c27b0'});
-        svg+=el('text',{x:sx(th.y)+7,y:sy(th.x)+4,fill:'#9c27b0','font-size':10},'target');
-      }else if(th.type==='slot'){
-        const cx=sx(th.y),cy=sy(th.x);
-        svg+=el('polygon',{points:cx+','+(cy-6)+' '+(cx+6)+','+cy+' '+cx+','+(cy+6)+' '+(cx-6)+','+cy,
-          fill:'none',stroke:'#2196f3','stroke-width':1.5,opacity:0.8});
-        svg+=el('text',{x:cx+8,y:cy+4,fill:'#2196f3','font-size':9},'slot');
-      }else if(th.type==='airbase'){
-        const cx=sx(th.y),cy=sy(th.x),r=7;
-        svg+=el('rect',{x:cx-r,y:cy-r,width:r*2,height:r*2,
-          fill:'rgba(255,193,7,0.35)',stroke:'#ffc107','stroke-width':1.5,opacity:0.95});
-        svg+=el('rect',{x:cx-r*0.7,y:cy-1.5,width:r*1.4,height:3,
-          fill:'#ffc107',opacity:0.9});
-        svg+=el('text',{x:cx+r+3,y:cy+4,fill:'#ffc107','font-size':10,'font-weight':'bold'},'airbase');
+      const cx=sx(th.y), cy=sy(th.x);
+      const st = style[th.type] || style.missile;
+      if (th.type === 'lead') {
+        svg += el('polygon', {points: diamondPts(cx, cy, 6), fill: st.color, stroke: '#fff', 'stroke-width': 1});
+        svg += el('text', {x: cx + 10, y: cy + 4, fill: st.color, 'font-size': 10, 'font-weight': 'bold'}, esc(th.name || 'Lead'));
+      } else {
+        svg += el('circle', {cx: cx, cy: cy, r: st.r, fill: st.color, stroke: '#fff', 'stroke-width': 1});
+        svg += el('text', {x: cx + 8, y: cy + 4, fill: st.color, 'font-size': 10}, esc(th.name || th.type));
       }
     }
   }
@@ -723,17 +440,16 @@ function threatsSvg(tr,sx,sy,currentT){
 function renderIndex(){
   const summary=document.getElementById('index-summary');
   const total=TRACES.length;
-  let passN=0,failN=0,mixedN=0,phaseP=0,phaseT=0;
+  let passN=0,failN=0,phaseP=0,phaseT=0;
   for(const tr of TRACES){
     const st=traceStatus(tr);
-    if(st==='pass')passN++;else if(st==='fail')failN++;else if(st==='mixed')mixedN++;
+    if(st==='pass')passN++;else failN++;
     phaseP+=tracePassedCount(tr);phaseT+=traceTotalCount(tr);
   }
   summary.innerHTML=
     statCard(total,'Traces')+
     statCard(passN,'Passing')+
     statCard(failN,'Failing')+
-    statCard(mixedN,'Mixed')+
     statCard(phaseP+'/'+phaseT,'Phases passed');
 
   const grid=document.getElementById('card-grid');
@@ -744,14 +460,14 @@ function renderIndex(){
   for(let i=0;i<TRACES.length;i++){
     const tr=TRACES[i];
     const st=traceStatus(tr);
-    if(filtStatus&&st!==filtStatus&&!(filtStatus==='pass'&&st==='pass'))continue;
+    if(filtStatus&&st!==filtStatus)continue;
     if(filt){
-      const hay=(tr.aircraft+' '+tr.scenario+' '+(tr.phases||[]).map(p=>p.name).join(' ')).toLowerCase();
+      const hay=(tr.aircraft+' '+tr.scenario).toLowerCase();
       if(hay.indexOf(filt)<0)continue;
     }
     shown++;
-    const badgeCls=st==='pass'?'pass':st==='fail'?'fail':st==='mixed'?'mixed':'skip';
-    const badgeTxt=st==='pass'?'PASS':st==='fail'?'FAIL':st==='mixed'?'MIXED':'SKIP';
+    const badgeCls=st==='pass'?'pass':'fail';
+    const badgeTxt=st==='pass'?'PASS':'FAIL';
     html+='<div class="card" data-idx="'+i+'">'+
       '<div class="thumb">'+miniTopdown(tr)+'</div>'+
       '<div class="title">'+esc(tr.aircraft)+' &mdash; '+esc(tr.scenario)+'</div>'+
@@ -776,10 +492,7 @@ let detailBounds=null, detailScales=null, detail3DProject=null, tsScales=null;
 
 function renderTopDown(tr){
   const host=document.getElementById('topdown-host');
-  const segs=computeSegments(tr);
-  const si=Math.min(state.segmentIdx,segs.length-1);
-  const segPhases=segs[si];
-  const b=computeSegmentBounds(tr,segPhases);
+  const b=computeBounds(tr);
   detailBounds=b;
   const W=1000,padL=30,padR=20,padT=20,padB=20;
   const plotW=W-padL-padR;
@@ -808,56 +521,16 @@ function renderTopDown(tr){
   svg+=el('rect',{x:ox,y:oy,width:spanX*sc,height:spanY*sc,fill:'none',stroke:'var(--border)','stroke-width':1});
   svg+='</g>';
 
-  svg+=sceneLinesSvg(tr,sx,sy,sc);
-  svg+=waypointsSvg(tr,sx,sy);
+  svg+=geometrySvg(tr,sx,sy,sc);
 
-  const ranges=phaseRanges(tr);
-  if(state.colorBy==='altitude'||state.colorBy==='speed'||state.colorBy==='g'||state.colorBy==='mode'){
-    const rw=1.5;
-    for(const pi of segPhases){
-      if(pi>=ranges.length)continue;
-      const [s,e]=ranges[pi];
-      for(let fi=s;fi<e&&fi<tr.frames.length-1;fi++){
-        const f1=tr.frames[fi], f2=tr.frames[fi+1];
-        const col=frameColor(tr,fi,b);
-        const x1=sx(f1.x), y1=sy(f1.y), x2=sx(f2.x), y2=sy(f2.y);
-        const ddx=x2-x1, ddy=y2-y1;
-        const dlen=Math.sqrt(ddx*ddx+ddy*ddy)||1;
-        const nx=-ddy/dlen, ny=ddx/dlen;
-        const pts=
-          (x1+nx*rw).toFixed(1)+','+(y1+ny*rw).toFixed(1)+' '+
-          (x2+nx*rw).toFixed(1)+','+(y2+ny*rw).toFixed(1)+' '+
-          (x2-nx*rw).toFixed(1)+','+(y2-ny*rw).toFixed(1)+' '+
-          (x1-nx*rw).toFixed(1)+','+(y1-ny*rw).toFixed(1);
-        svg+=el('polygon',{points:pts,fill:col,stroke:'none',opacity:0.9});
-      }
-    }
-  }else{
-    for(const pi of segPhases){
-      if(pi>=ranges.length)continue;
-      const [s,e]=ranges[pi]; if(e<=s)continue;
-      let pts='';
-      for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
-        const f=tr.frames[fi];
-        pts+=(pts?' ':'')+sx(f.x).toFixed(1)+','+sy(f.y).toFixed(1);
-      }
-      let col;
-      if(state.colorBy==='phase')col=phaseColor(pi);
-      else{ const ph=tr.phases[pi]; col=ph?(ph.skipped?'#94a3b8':ph.passed?'#4ade80':'#f87171'):'#888'; }
-      svg+=el('polyline',{points:pts,fill:'none',stroke:col,'stroke-width':2.5,
-        'stroke-linejoin':'round','stroke-linecap':'round',opacity:0.9});
-    }
+  // Draw continuous ground track line for receiver
+  let pts='';
+  for(let fi=0;fi<tr.frames.length;fi++){
+    const f=tr.frames[fi];
+    pts+=(pts?' ':'')+sx(f.y).toFixed(1)+','+sy(f.x).toFixed(1);
   }
-
-  for(const pi of segPhases){
-    if(pi>=ranges.length)continue;
-    const [s,e]=ranges[pi]; if(s>=tr.frames.length)continue;
-    const f=tr.frames[s];
-    const col=state.colorBy==='passfail'?(tr.phases[pi]?(tr.phases[pi].skipped?'#94a3b8':tr.phases[pi].passed?'#4ade80':'#f87171'):'#888'):phaseColor(pi);
-    svg+=el('circle',{cx:sx(f.x),cy:sy(f.y),r:2,fill:col,stroke:'#fff','stroke-width':1});
-    svg+=el('text',{x:sx(f.x)+10,y:sy(f.y)-8,fill:'#fff','font-weight':'bold','font-size':11},
-      esc((pi+1)+'. '+(tr.phases[pi]?tr.phases[pi].name:'P'+(pi+1))));
-  }
+  svg+=el('polyline',{points:pts,fill:'none',stroke:'#00ffcc','stroke-width':2.5,
+    'stroke-linejoin':'round','stroke-linecap':'round',opacity:0.9});
 
   svg+=threatsSvg(tr,sx,sy,state.t);
   svg+='<g id="td-playhead"></g>';
@@ -872,94 +545,6 @@ function renderTopDown(tr){
 }
 
 // ---------------------------------------------------------------------------
-// Detail view: time series (altitude / speed / G)
-// ---------------------------------------------------------------------------
-function renderTimeSeries(tr){
-  const host=document.getElementById('timeseries-host');
-  const segs=computeSegments(tr);
-  const si=Math.min(state.segmentIdx,segs.length-1);
-  const segPhases=segs[si];
-  const b=computeSegmentBounds(tr,segPhases);
-  const W=1000,H=560,padL=60,padR=40,padT=20,padB=36;
-  const plotW=W-padL-padR;
-  const panelH=(H-padT-padB)/3;
-  const [segMinT,segMaxT]=segmentTimeRange(tr,si);
-  const segDur=segMaxT-segMinT;
-  const sx=t=>padL+((t-segMinT)/segDur)*plotW;
-  const panels=[
-    {name:'Altitude',get:f=>-f.z,lo:b.minAlt,hi:b.maxAlt,unit:'ft',col:'#4ade80'},
-    {name:'Speed (VCAS)',get:f=>f.vcas,lo:b.minSpd,hi:b.maxSpd,unit:'kts',col:'#60a5fa'},
-    {name:'G-load',get:f=>f.nzcgs,lo:0,hi:Math.max(2,b.maxG),unit:'G',col:'#f59e0b'},
-  ];
-  let svg='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
-  let ts=10;
-  if(segDur>300)ts=60;else if(segDur>120)ts=30;else if(segDur>60)ts=15;else if(segDur>30)ts=10;else ts=5;
-
-  for(let pi=0;pi<panels.length;pi++){
-    const p=panels[pi];
-    const top=padT+pi*panelH;
-    const bottom=top+panelH-16;
-    const ph=bottom-top;
-    const sy=v=>top+(p.hi-v)/(p.hi-p.lo)*ph;
-    svg+=el('text',{x:padL,y:top-4,class:'axis-text','font-weight':'bold'},p.name+' ('+p.unit+')');
-    const vrange=p.hi-p.lo;
-    let vstep=vrange/4;
-    const mag=Math.pow(10,Math.floor(Math.log10(vstep)));
-    vstep=Math.ceil(vstep/mag)*mag;
-    for(let v=Math.ceil(p.lo/vstep)*vstep;v<=p.hi;v+=vstep){
-      svg+=el('line',{x1:padL,y1:sy(v),x2:padL+plotW,y2:sy(v),class:'grid-line'});
-      svg+=el('text',{x:padL-5,y:sy(v)+3,class:'axis-text','text-anchor':'end'},fmtInt(v));
-    }
-    const ranges=phaseRanges(tr);
-    if(tr.phases&&tr.phases.length){
-      for(const phaseIdx of segPhases){
-        if(phaseIdx>=tr.phases.length)continue;
-        const phaseObj=tr.phases[phaseIdx];
-        const x1=sx(phaseObj.start_s), x2=sx(phaseObj.end_s);
-        const col=phaseObj.skipped?'rgba(148,163,184,0.07)':phaseObj.passed?'rgba(74,222,128,0.07)':'rgba(248,113,113,0.12)';
-        svg+=el('rect',{x:x1,y:top,width:Math.max(1,x2-x1),height:ph,fill:col});
-        svg+=el('text',{x:(x1+x2)/2,y:bottom+12,class:'axis-text','text-anchor':'middle','font-size':9,fill:phaseObj.passed?'var(--pass)':phaseObj.skipped?'var(--skip)':'var(--fail)'},(phaseIdx+1));
-      }
-    }
-    for(const phaseIdx of segPhases){
-      if(phaseIdx>=ranges.length)continue;
-      const [s,e]=ranges[phaseIdx];
-      if(e<=s)continue;
-      let pts='';
-      for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
-        const f=tr.frames[fi];
-        pts+=(pts?' ':'')+sx(f.t).toFixed(1)+','+sy(p.get(f)).toFixed(1);
-      }
-      svg+=el('polyline',{points:pts,fill:'none',stroke:p.col,'stroke-width':1.5,opacity:0.9});
-    }
-    svg+=el('rect',{x:padL,y:top,width:plotW,height:ph,fill:'none',stroke:'var(--border)','stroke-width':1});
-    if(tr.events){
-      for(const e of tr.events){
-        if(e.t<segMinT||e.t>segMaxT)continue;
-        const sev=e.severity||'info';
-        const col=sev==='fail'?'#f87171':sev==='warn'?'#fbbf24':'#94a3b8';
-        const ex=sx(e.t);
-        if(ex<padL||ex>padL+plotW)continue;
-        svg+=el('line',{x1:ex.toFixed(1),y1:top,x2:ex.toFixed(1),y2:bottom,
-          stroke:col,'stroke-width':1,opacity:0.55,'stroke-dasharray':'2,2'});
-        svg+=el('polygon',{points:
-          ex.toFixed(1)+','+(top-1)+' '+
-          (ex-3).toFixed(1)+','+(top-6)+' '+
-          (ex+3).toFixed(1)+','+(top-6),
-          fill:col,opacity:0.8});
-      }
-    }
-    svg+=el('line',{id:'ts-play-'+pi,x1:padL,y1:top,x2:padL,y2:bottom,stroke:'#fff','stroke-width':1,opacity:0.5});
-  }
-  for(let t=Math.ceil(segMinT/ts)*ts;t<=segMaxT;t+=ts){
-    svg+=el('text',{x:sx(t),y:H-6,class:'axis-text','text-anchor':'middle'},fmtInt(t)+'s');
-  }
-  svg+='</svg>';
-  host.innerHTML=svg;
-  tsScales={padL:padL,plotW:plotW,segMinT:segMinT,segMaxT:segMaxT};
-}
-
-// ---------------------------------------------------------------------------
 // Playhead update
 // ---------------------------------------------------------------------------
 function findFrameIndex(tr,t){
@@ -971,49 +556,52 @@ function findFrameIndex(tr,t){
   }
   return best;
 }
+
+function dataRow(label, val, color) {
+  return '<div style="display:flex;justify-content:between;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 12px;align-items:center">' +
+         '<span style="font-weight:600;color:' + color + ';font-size:12px">' + esc(label) + '</span>' +
+         '<span style="font-family:ui-monospace,monospace;font-weight:bold;font-size:14px;color:var(--text);margin-left:auto">' + esc(val) + '</span>' +
+         '</div>';
+}
+
 function updatePlayhead(){
   const tr=TRACES[state.traceIdx]; if(!tr||!tr.frames.length)return;
-  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
-  if(state.t<segMinT)state.t=segMinT;
-  if(state.t>segMaxT)state.t=segMaxT;
+  const maxT = traceDuration(tr);
+  if(state.t<0)state.t=0;
+  if(state.t>maxT)state.t=maxT;
   const fi=findFrameIndex(tr,state.t);
   const f=tr.frames[fi];
   const alt = -f.z;
+
   if(state.viewMode==='3d'){
     render3D(tr);
   }
-  const td=document.getElementById('td-playhead');
-  if(td&&detailScales){
-    const x=detailScales.sx(f.x), y=detailScales.sy(f.y);
+
+  const td = document.getElementById('td-playhead');
+  if(td && detailScales){
+    const x=detailScales.sx(f.y), y=detailScales.sy(f.x);
     const deg=90-f.psi*180/Math.PI;
     td.innerHTML=el('g',{transform:'translate('+x.toFixed(1)+','+y.toFixed(1)+') rotate('+deg.toFixed(1)+')'},
       el('polygon',{points:'0,-9 6,7 0,3 -6,7',fill:'#fff',stroke:'#000','stroke-width':1,opacity:0.95})+
       el('circle',{r:2,fill:'#000'}));
   }
-  for(let pi=0;pi<3;pi++){
-    const ln=document.getElementById('ts-play-'+pi);
-    if(ln&&tsScales){
-      const frac=(state.t-tsScales.segMinT)/(tsScales.segMaxT-tsScales.segMinT);
-      const x=tsScales.padL+Math.max(0,Math.min(1,frac))*tsScales.plotW;
-      ln.setAttribute('x1',x);ln.setAttribute('x2',x);
-    }
-  }
+
   const scr=document.getElementById('scrubber');
   if(scr){
-    const frac=(state.t-segMinT)/(segMaxT-segMinT);
+    const frac=state.t/maxT;
     scr.value=Math.round(Math.max(0,Math.min(1,frac))*1000);
   }
+
   document.getElementById('time-now').textContent=fmt(state.t,1)+'s';
   const te=document.getElementById('time-end');
-  if(te)te.textContent=fmt(segMaxT,1)+'s';
+  if(te)te.textContent=fmt(maxT,1)+'s';
+
   const ro=document.getElementById('readout');
-  const phaseIdx=phaseRanges(tr).findIndex(([s,e])=>fi>=s&&fi<=e);
-  const phaseName=phaseIdx>=0&&tr.phases[phaseIdx]?tr.phases[phaseIdx].name:'—';
-  let samplesHtml='';
-  if(f.samples&&f.samples.length){
+  let readoutSamplesHtml='';
+  if(f.samples && f.samples.length){
     for(const s of f.samples){
       const v=fmt(s.value,1)+(s.unit?' '+s.unit:'');
-      samplesHtml+=cell(esc(s.key),v,'sample');
+      readoutSamplesHtml+=cell(esc(s.key),v,'sample');
     }
   }
   ro.innerHTML=
@@ -1026,9 +614,62 @@ function updatePlayhead(){
     cell('Heading',fmt(f.psi*180/Math.PI,0)+'\u00b0')+
     cell('Throttle',fmt(f.throttle,2))+
     cell('AI Mode',esc(f.mode||'—'),'mode')+
-    cell('Phase',esc(phaseName),'phase')+
-    samplesHtml;
-  renderEventLog(tr);
+    readoutSamplesHtml;
+
+  // Render Discrete Events Log and Custom Samples dynamic panels
+  const eventsHost = document.getElementById('data-events-log');
+  if (eventsHost && tr.events) {
+    let eventsHtml = '';
+    let closestIdx = -1, minDt = Infinity;
+    for (let i = 0; i < tr.events.length; i++) {
+      const ev = tr.events[i];
+      const dt = Math.abs(ev.t - state.t);
+      if (dt < minDt) { minDt = dt; closestIdx = i; }
+    }
+    for (let i = 0; i < tr.events.length; i++) {
+      const ev = tr.events[i];
+      const sev = ev.severity || 'info';
+      const isCurrent = i === closestIdx;
+      const highlightStyle = isCurrent ? 'background:rgba(96,165,250,0.15);box-shadow:inset 3px 0 0 var(--accent)' : '';
+      const sevCol = sev === 'fail' ? 'var(--fail)' : (sev === 'warn' ? 'var(--warn)' : 'var(--muted)');
+      eventsHtml += '<div style="display:flex;gap:12px;padding:6px 8px;border-bottom:1px solid rgba(42,47,66,0.3);align-items:baseline;' + highlightStyle + '">' +
+                    '<span style="color:var(--dim);font-size:10px;min-width:45px">' + ev.t.toFixed(1) + 's</span>' +
+                    '<span style="color:' + sevCol + ';font-size:10px;text-transform:uppercase;font-weight:bold;min-width:70px">' + esc(ev.category) + '</span>' +
+                    '<span style="color:var(--text);flex:1">' + esc(ev.message) + '</span>' +
+                    '</div>';
+    }
+    if (tr.events.length === 0) {
+      eventsHtml = '<div style="color:var(--dim);font-style:italic;padding:40px;text-align:center">No events recorded.</div>';
+    }
+    eventsHost.innerHTML = eventsHtml;
+
+    if (closestIdx >= 0 && eventsHost.children[closestIdx]) {
+      const row = eventsHost.children[closestIdx];
+      const cTop = eventsHost.scrollTop, cBot = cTop + eventsHost.clientHeight;
+      const rTop = row.offsetTop, rBot = rTop + row.offsetHeight;
+      if (rTop < cTop || rBot > cBot) {
+        eventsHost.scrollTop = rTop - eventsHost.clientHeight / 2 + row.offsetHeight / 2;
+      }
+    }
+  }
+
+  const samplesHost = document.getElementById('data-samples-readout');
+  if (samplesHost) {
+    let samplesHtml = '';
+    samplesHtml += dataRow('Altitude', alt.toFixed(0) + ' ft', '#4ade80');
+    samplesHtml += dataRow('Airspeed (VCAS)', f.vcas.toFixed(0) + ' kts', '#60a5fa');
+    samplesHtml += dataRow('G-load', f.nzcgs.toFixed(2) + ' G', '#f59e0b');
+    samplesHtml += dataRow('Pitch', (f.theta * 180 / Math.PI).toFixed(1) + '\u00b0', '#a78bfa');
+    samplesHtml += dataRow('Roll', (f.phi * 180 / Math.PI).toFixed(1) + '\u00b0', '#f472b6');
+
+    if (f.samples && f.samples.length) {
+      for (const s of f.samples) {
+        const valStr = s.value.toFixed(1) + (s.unit ? ' ' + s.unit : '');
+        samplesHtml += dataRow(s.key, valStr, '#fbbf24');
+      }
+    }
+    samplesHost.innerHTML = samplesHtml;
+  }
 }
 function cell(l,v,cls){return '<div class="cell '+(cls||'')+'"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>';}
 
@@ -1079,14 +720,10 @@ function initThreeJS(tr) {
   scene.add(ambientLight);
 
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
-  dirLight.position.set(0, 0, 1); // head-light: shines in camera direction
+  dirLight.position.set(0, 0, 1);
   camera.add(dirLight);
 
-  const segs = computeSegments(tr);
-  const si = Math.min(state.segmentIdx, segs.length-1);
-  const segPhases = segs[si];
-  const allPhases = Array.from({length: tr.phases ? tr.phases.length : 1}, (_, i) => i);
-  const b = computeSegmentBounds(tr, allPhases);
+  const b = computeBounds(tr);
   const span = Math.max(b.maxX-b.minX, b.maxY-b.minY, b.maxAlt-b.minAlt, 1);
 
   const gridHelper = new THREE.GridHelper(span * 2, 50, 0x5a6275, 0x222637);
@@ -1098,7 +735,6 @@ function initThreeJS(tr) {
 
   const jetGroup = new THREE.Group();
 
-  // High-polish jet model pointing along +Y (North), wings along X (East/West), canopy along +Z (Up)
   const fuseLen = span * 0.015;
   const fuseRadius = span * 0.001;
   const fuseGeom = new THREE.CylinderGeometry(fuseRadius * 0.4, fuseRadius, fuseLen * 0.7, 16);
@@ -1172,61 +808,114 @@ function initThreeJS(tr) {
   const tail = new THREE.Mesh(tailGeom, wingMat);
   jetGroup.add(tail);
 
-  const exhGeom = new THREE.CylinderGeometry(fuseRadius * 0.6, fuseRadius * 0.5, fuseLen * 0.1, 16);
-  exhGeom.translate(0, -fuseLen * 0.55, 0);
-  const exhMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
-  const exhaust = new THREE.Mesh(exhGeom, exhMat);
-  jetGroup.add(exhaust);
-
   scene.add(jetGroup);
 
-  // Restore & Render 3D Ribbon Trail showing orientation/twisting
-  const ranges = phaseRanges(tr);
+  // Render continuous 3D Ribbon Trail for the main aircraft
   const pathLines = [];
-  const allTrPhases = Array.from({length: tr.phases ? tr.phases.length : 1}, (_, i) => i);
-  for (const pi of allTrPhases) {
-    if (pi >= ranges.length) continue;
-    const [s, e] = ranges[pi];
-    if (e - s < 2) continue;
+  const positions = [];
+  const colors = [];
+  const indices = [];
+  let k = 0;
 
-    const positions = [];
-    const colors = [];
-    const indices = [];
-    let k = 0;
+  for (let fi = 0; fi < tr.frames.length; fi++) {
+    const f = tr.frames[fi];
+    const p = new THREE.Vector3(f.y, f.x, -f.z);
+    const theta = f.theta || 0;
+    const phi = f.phi || 0;
+    const psi = f.psi || 0;
+    const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+    const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
+    const wing_half_width = span * 0.0035;
 
-    for (let fi = s; fi <= e && fi < tr.frames.length; fi++) {
-      const f = tr.frames[fi];
-      const p = new THREE.Vector3(f.y, f.x, -f.z);
-      const theta = f.theta || 0;
-      const phi = f.phi || 0;
-      const psi = f.psi || 0;
-      const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
-      const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
-      const wing_half_width = span * 0.0035;
+    const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
+    const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
 
-      const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
-      const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
+    positions.push(v_left.x, v_left.y, v_left.z);
+    positions.push(v_right.x, v_right.y, v_right.z);
 
-      positions.push(v_left.x, v_left.y, v_left.z);
-      positions.push(v_right.x, v_right.y, v_right.z);
+    const colHex = '#00ffcc';
+    const colorObj = new THREE.Color(colHex);
+    colors.push(colorObj.r, colorObj.g, colorObj.b);
+    colors.push(colorObj.r, colorObj.g, colorObj.b);
 
-      const colHex = frameColor(tr, fi, b);
-      const colorObj = new THREE.Color(colHex);
-      colors.push(colorObj.r, colorObj.g, colorObj.b);
-      colors.push(colorObj.r, colorObj.g, colorObj.b);
-
-      if (fi < e) {
-        indices.push(2*k, 2*k+1, 2*k+2);
-        indices.push(2*k+1, 2*k+3, 2*k+2);
-      }
-      k++;
+    if (fi < tr.frames.length - 1) {
+      indices.push(2*k, 2*k+1, 2*k+2);
+      indices.push(2*k+1, 2*k+3, 2*k+2);
     }
+    k++;
+  }
 
-    if (positions.length >= 6) {
+  if (positions.length >= 6) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      roughness: 0.5,
+      metalness: 0.1,
+      transparent: true,
+      opacity: 0.8
+    });
+    const ribbon = new THREE.Mesh(geom, mat);
+    scene.add(ribbon);
+    pathLines.push(ribbon);
+  }
+
+  // Extract other moving tracks for drawing their trails
+  const trackTrails = {};
+  for (let fi = 0; fi < tr.frames.length; fi++) {
+    const f = tr.frames[fi];
+    if (f.threats) {
+      for (const th of f.threats) {
+        if (!th.name) continue;
+        if (!trackTrails[th.name]) {
+          trackTrails[th.name] = {
+            positions: [],
+            colors: [],
+            indices: [],
+            k: 0,
+            colorHex: (th.type === 'lead') ? '#ffd700' : '#ff4444'
+          };
+        }
+        const tTr = trackTrails[th.name];
+        const p = new THREE.Vector3(th.y, th.x, -th.z);
+        const theta = th.theta || 0;
+        const phi = th.phi || 0;
+        const psi = th.psi || 0;
+        const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+        const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
+        const wing_half_width = span * 0.0025;
+
+        const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
+        const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
+
+        tTr.positions.push(v_left.x, v_left.y, v_left.z);
+        tTr.positions.push(v_right.x, v_right.y, v_right.z);
+
+        const colorObj = new THREE.Color(tTr.colorHex);
+        tTr.colors.push(colorObj.r, colorObj.g, colorObj.b);
+        tTr.colors.push(colorObj.r, colorObj.g, colorObj.b);
+
+        if (tTr.k > 0) {
+          tTr.indices.push(2*(tTr.k-1), 2*(tTr.k-1)+1, 2*tTr.k);
+          tTr.indices.push(2*(tTr.k-1)+1, 2*tTr.k+1, 2*tTr.k);
+        }
+        tTr.k++;
+      }
+    }
+  }
+
+  for (const name in trackTrails) {
+    const tTr = trackTrails[name];
+    if (tTr.positions.length >= 6) {
       const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      geom.setIndex(indices);
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(tTr.positions, 3));
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(tTr.colors, 3));
+      geom.setIndex(tTr.indices);
       geom.computeVertexNormals();
 
       const mat = new THREE.MeshStandardMaterial({
@@ -1235,7 +924,7 @@ function initThreeJS(tr) {
         roughness: 0.5,
         metalness: 0.1,
         transparent: true,
-        opacity: 0.8
+        opacity: 0.65
       });
       const ribbon = new THREE.Mesh(geom, mat);
       scene.add(ribbon);
@@ -1243,101 +932,73 @@ function initThreeJS(tr) {
     }
   }
 
-  // Waypoints with Altitude Tadpoles and Ground Intersection Rings
-  const waypoints = [];
-  if (tr.waypoints) {
-    const wpGeom = new THREE.ConeGeometry(span*0.004, span*0.008, 4);
-    wpGeom.rotateX(Math.PI / 2);
-    const wpMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
-    for (let i = 0; i < tr.waypoints.length; i++) {
-      const w = tr.waypoints[i];
-      const wpMesh = new THREE.Mesh(wpGeom, wpMat);
-      wpMesh.position.set(w.x, w.y, -w.z);
-      scene.add(wpMesh);
-      waypoints.push(wpMesh);
+  // Render Generalized Trace Geometry in 3D
+  if (tr.geometry) {
+    for (const g of tr.geometry) {
+      const colHex = g.color || '#ffffff';
+      const colVal = parseInt(colHex.replace('#', '0x'));
+      const widthVal = g.width || 10.0;
 
-      // Vertical dashed line down to Z=0
-      const tpPoints = [new THREE.Vector3(w.x, w.y, -w.z), new THREE.Vector3(w.x, w.y, 0)];
-      const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
-      const tpMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: span*0.015, gapSize: span*0.015, opacity: 0.35, transparent: true });
-      const tpLine = new THREE.Line(tpGeom, tpMat);
-      tpLine.computeLineDistances();
-      scene.add(tpLine);
+      if (g.type === 'waypoint') {
+        const wpGeom = new THREE.ConeGeometry(span * 0.004, span * 0.008, 4);
+        wpGeom.rotateX(Math.PI / 2);
+        const wpMat = new THREE.MeshStandardMaterial({ color: colVal, roughness: 0.4 });
+        const wx = g.coords[1], wy = g.coords[0], wz = -g.coords[2];
+        const wpMesh = new THREE.Mesh(wpGeom, wpMat);
+        wpMesh.position.set(wx, wy, wz);
+        scene.add(wpMesh);
 
-      // Golden target ring on the ground
-      const gRingGeom = new THREE.RingGeometry(span*0.003, span*0.004, 16);
-      const gRingMat = new THREE.MeshBasicMaterial({ color: 0xffd700, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
-      const gRing = new THREE.Mesh(gRingGeom, gRingMat);
-      gRing.position.set(w.x, w.y, 0.05);
-      scene.add(gRing);
-    }
-  }
+        const tpPoints = [new THREE.Vector3(wx, wy, wz), new THREE.Vector3(wx, wy, 0)];
+        const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
+        const tpMat = new THREE.LineDashedMaterial({ color: colVal, dashSize: span * 0.015, gapSize: span * 0.015, opacity: 0.35, transparent: true });
+        const tpLine = new THREE.Line(tpGeom, tpMat);
+        tpLine.computeLineDistances();
+        scene.add(tpLine);
 
-  // Polished Scene Geometry (Runways, Taxiways, Airway lines)
-  if (tr.sceneLines) {
-    for (const sl of tr.sceneLines) {
-      const label = (sl.label || '').toLowerCase();
-      const isRwy = label.includes('rwy') || label.includes('runway') || sl.width > 20;
-      const isTaxi = label.includes('taxiway') || label.includes('taxi');
+        const gRingGeom = new THREE.RingGeometry(span * 0.003, span * 0.004, 16);
+        const gRingMat = new THREE.MeshBasicMaterial({ color: 0xffd700, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
+        const gRing = new THREE.Mesh(gRingGeom, gRingMat);
+        gRing.position.set(wx, wy, 0.05);
+        scene.add(gRing);
+      } else if (g.type === 'runway') {
+        if (g.coords.length >= 6) {
+          const x1 = g.coords[1], y1 = g.coords[0], z1 = -g.coords[2];
+          const x2 = g.coords[4], y2 = g.coords[3], z2 = -g.coords[5];
+          const dx = x2 - x1, dy = y2 - y1;
+          const len = Math.sqrt(dx*dx + dy*dy) || 1;
+          const cx = (x1 + x2)/2, cy = (y1 + y2)/2, cz = (z1 + z2)/2;
+          const angle = Math.atan2(dy, dx);
 
-      if (isRwy) {
-        // Dark asphalt runway plane
-        const dx = sl.x2 - sl.x1, dy = sl.y2 - sl.y1;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        const cx = (sl.x1 + sl.x2)/2, cy = (sl.y1 + sl.y2)/2, cz = -(sl.z1 + sl.z2)/2;
-        const angle = Math.atan2(dy, dx);
+          const runwayGeom = new THREE.PlaneGeometry(widthVal || 150, len);
+          const runwayMat = new THREE.MeshStandardMaterial({ color: 0x1b202e, roughness: 0.9, side: THREE.DoubleSide });
+          const runway = new THREE.Mesh(runwayGeom, runwayMat);
+          runway.position.set(cx, cy, cz + 0.04);
+          runway.rotation.z = angle - Math.PI / 2;
+          scene.add(runway);
 
-        const runwayGeom = new THREE.PlaneGeometry(sl.width || 150, len);
-        const runwayMat = new THREE.MeshStandardMaterial({ color: 0x1b202e, roughness: 0.9, side: THREE.DoubleSide });
-        const runway = new THREE.Mesh(runwayGeom, runwayMat);
-        runway.position.set(cx, cy, cz + 0.04);
-        runway.rotation.z = angle - Math.PI / 2;
-        scene.add(runway);
-
-        // Dashed white centerline
-        const clPoints = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1 + 0.08), new THREE.Vector3(sl.x2, sl.y2, -sl.z2 + 0.08)];
-        const clGeom = new THREE.BufferGeometry().setFromPoints(clPoints);
-        const clMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: span*0.015, gapSize: span*0.01 });
-        const cl = new THREE.Line(clGeom, clMat);
-        cl.computeLineDistances();
-        scene.add(cl);
-      } else if (isTaxi) {
-        // Solid yellow taxiway line
-        const points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1 + 0.06), new THREE.Vector3(sl.x2, sl.y2, -sl.z2 + 0.06)];
-        const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
-        const lineMat = new THREE.LineBasicMaterial({ color: 0xeab308, linewidth: 4 });
-        const line = new THREE.Line(lineGeom, lineMat);
-        scene.add(line);
-      } else {
-        // Generic airway corridor line with vertical support pillars
-        const points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1), new THREE.Vector3(sl.x2, sl.y2, -sl.z2)];
-        const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
-        const col = sl.color || '#3a3a4a';
-        const lineMat = new THREE.LineBasicMaterial({ color: parseInt(col.replace('#', '0x')), linewidth: 3 });
-        const line = new THREE.Line(lineGeom, lineMat);
-        scene.add(line);
-
-        if (Math.abs(-sl.z1) > 10) {
-          const p1Points = [new THREE.Vector3(sl.x1, sl.y1, -sl.z1), new THREE.Vector3(sl.x1, sl.y1, 0)];
-          const p1Geom = new THREE.BufferGeometry().setFromPoints(p1Points);
-          const p1Mat = new THREE.LineDashedMaterial({ color: parseInt(col.replace('#', '0x')), dashSize: span*0.01, gapSize: span*0.01, opacity: 0.25, transparent: true });
-          const p1 = new THREE.Line(p1Geom, p1Mat);
-          p1.computeLineDistances();
-          scene.add(p1);
+          const clPoints = [new THREE.Vector3(x1, y1, z1 + 0.08), new THREE.Vector3(x2, y2, z2 + 0.08)];
+          const clGeom = new THREE.BufferGeometry().setFromPoints(clPoints);
+          const clMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: span * 0.015, gapSize: span * 0.01 });
+          const cl = new THREE.Line(clGeom, clMat);
+          cl.computeLineDistances();
+          scene.add(cl);
         }
-        if (Math.abs(-sl.z2) > 10) {
-          const p2Points = [new THREE.Vector3(sl.x2, sl.y2, -sl.z2), new THREE.Vector3(sl.x2, sl.y2, 0)];
-          const p2Geom = new THREE.BufferGeometry().setFromPoints(p2Points);
-          const p2Mat = new THREE.LineDashedMaterial({ color: parseInt(col.replace('#', '0x')), dashSize: span*0.01, gapSize: span*0.01, opacity: 0.25, transparent: true });
-          const p2 = new THREE.Line(p2Geom, p2Mat);
-          p2.computeLineDistances();
-          scene.add(p2);
+      } else if (g.type === 'taxiway' || g.type === 'corridor') {
+        const points = [];
+        for (let i = 0; i + 2 < g.coords.length; i += 3) {
+          points.push(new THREE.Vector3(g.coords[i+1], g.coords[i], -g.coords[i+2] + 0.06));
+        }
+        if (points.length >= 2) {
+          const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+          const lineMat = new THREE.LineBasicMaterial({ color: colVal, linewidth: 3 });
+          const line = new THREE.Line(lineGeom, lineMat);
+          scene.add(line);
         }
       }
     }
   }
 
-  // Set up playhead shadow (lies flat on X-Y plane at Z=0, no rotation.x offset needed!)
+  // Playhead shadow
   const shadowGeom = new THREE.RingGeometry(span*0.005, span*0.0065, 24);
   const shadowMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, opacity: 0.55, transparent: true });
   const shadow = new THREE.Mesh(shadowGeom, shadowMat);
@@ -1357,7 +1018,7 @@ function initThreeJS(tr) {
   threeState.renderer = renderer;
   threeState.aircraft = jetGroup;
   threeState.pathLines = pathLines;
-  threeState.waypoints = waypoints;
+  threeState.waypoints = [];
   threeState.threats = {};
   threeState.tadpole = tadpole;
   threeState.shadow = shadow;
@@ -1376,30 +1037,25 @@ function render3D(tr){
   const acFrame = tr.frames[acFi];
   if (!acFrame) return;
 
-  const b = detailBounds;
   const cx = acFrame.y;
   const cy = acFrame.x;
   const cz = -acFrame.z;
 
   threeState.aircraft.position.set(cx, cy, cz);
 
-  // Exact Tait-Bryan Euler rotations using ZXY right-handed ENU conventions
   const theta = acFrame.theta || 0;
   const phi = acFrame.phi || 0;
   const psi = acFrame.psi || 0;
-  const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
+  const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
   threeState.aircraft.rotation.copy(euler);
 
-  // Update playhead altitude tadpole
   const positions = threeState.tadpole.geometry.attributes.position.array;
   positions[0] = cx; positions[1] = cy; positions[2] = cz;
   positions[3] = cx; positions[4] = cy; positions[5] = 0;
   threeState.tadpole.geometry.attributes.position.needsUpdate = true;
   threeState.tadpole.computeLineDistances();
 
-  // Playhead ground ring projection (lies flat on Z=0.05)
   threeState.shadow.position.set(cx, cy, 0.05);
-  // Grid helper is kept stationary in the world, do not move it with the playhead!
 
   const radius = threeState.span * 1.5 / state.zoom;
   const cp = Math.max(0.01, Math.min(Math.PI / 2 - 0.01, state.orbit.pitch));
@@ -1416,11 +1072,10 @@ function render3D(tr){
   }
   threeState.threats = {};
 
-  // Custom high-polish rendering for threats/entities with altitude tadpoles
   if (acFrame.threats) {
     const tStyle = {
       missile: { color: 0xf44336, r: 0.005 },
-      lead: { color: 0x4caf50, r: 0.006 },
+      lead: { color: 0xffd700, r: 0.006 },
       wingman: { color: 0x00e5ff, r: 0.005 },
       slot: { color: 0x2196f3, r: 0.005 },
       guns: { color: 0xff9800, r: 0.005 },
@@ -1446,7 +1101,6 @@ function render3D(tr){
       }
       const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.4 });
       const mesh = new THREE.Mesh(geom, mat);
-      // Map East (th.y) to X, North (th.x) to Y, Up (-th.z) to Z
       mesh.position.set(th.y, th.x, -th.z);
 
       if (th.type === 'target') {
@@ -1456,25 +1110,15 @@ function render3D(tr){
         const t_psi = th.psi || 0;
         const t_theta = th.theta || 0;
         const t_phi = th.phi || 0;
-        const t_euler = new THREE.Euler(t_theta, t_phi, -t_psi, 'ZXY');
+        const t_euler = new THREE.Euler(t_theta, -t_phi, -t_psi, 'ZXY');
         mesh.rotation.copy(t_euler);
-      }
-      if (th.type === 'missile') {
-        const flameGeom = new THREE.ConeGeometry(r*0.4, r*1.5, 8);
-        flameGeom.rotateX(-Math.PI / 2);
-        flameGeom.translate(0, 0, -r*1.5);
-        const flameMat = new THREE.MeshBasicMaterial({ color: 0xff5722 });
-        const flame = new THREE.Mesh(flameGeom, flameMat);
-        mesh.add(flame);
       }
 
       threeState.scene.add(mesh);
       threeState.threats['mesh_' + i] = mesh;
 
-      // Vertical altitude tadpole for threat
       const tz = -th.z;
       if (Math.abs(tz) > 1.0) {
-        // Map East (th.y) to X, North (th.x) to Y, Up (tz) to Z
         const tpPoints = [new THREE.Vector3(th.y, th.x, tz), new THREE.Vector3(th.y, th.x, 0)];
         const tpGeom = new THREE.BufferGeometry().setFromPoints(tpPoints);
         const tpMat = new THREE.LineDashedMaterial({ color: st.color, dashSize: threeState.span*0.01, gapSize: threeState.span*0.01, opacity: 0.4, transparent: true });
@@ -1483,11 +1127,9 @@ function render3D(tr){
         threeState.scene.add(tpLine);
         threeState.threats['tp_' + i] = tpLine;
 
-        // Ground track ring for threat
         const gGeom = new THREE.RingGeometry(r*0.8, r, 16);
         const gMat = new THREE.MeshBasicMaterial({ color: st.color, side: THREE.DoubleSide, opacity: 0.5, transparent: true });
         const gRing = new THREE.Mesh(gGeom, gMat);
-        // Map East (th.y) to X, North (th.x) to Y
         gRing.position.set(th.y, th.x, 0.05);
         threeState.scene.add(gRing);
         threeState.threats['gring_' + i] = gRing;
@@ -1501,155 +1143,6 @@ function render3D(tr){
   threeState.renderer.setSize(width, 620);
 
   threeState.renderer.render(threeState.scene, threeState.camera);
-
-  function project(x,y,z){
-    const v = new THREE.Vector3(x, y, z);
-    v.project(threeState.camera);
-    return [(v.x + 1) * width / 2, (-v.y + 1) * 620 / 2, v.z];
-  }
-  detail3DProject=project;
-}
-
-// ---------------------------------------------------------------------------
-// Criteria panel
-// ---------------------------------------------------------------------------
-function renderCriteria(tr){
-  const panel=document.getElementById('criteria-panel');
-  const tbl=document.getElementById('criteria-table');
-  if(!tr.phases||!tr.phases.length){
-    panel.classList.add('hidden');
-    return;
-  }
-  panel.classList.remove('hidden');
-  const segs=computeSegments(tr);
-  let segHtml='';
-  if(segs.length>1){
-    segHtml='<div class="segment-tabs" style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap">';
-    for(let si=0;si<segs.length;si++){
-      const active=si===state.segmentIdx;
-      segHtml+='<span class="chip '+(active?'active':'')+'" data-seg="'+si+'" style="cursor:pointer">Segment '+(si+1)+'</span>';
-    }
-    segHtml+='</div>';
-  }
-  let html='<thead><tr><th>#</th><th>Phase</th><th>Status</th><th>Criteria</th></tr></thead><tbody>';
-  for(let i=0;i<tr.phases.length;i++){
-    const p=tr.phases[i];
-    const cls=p.passed?'pass':p.skipped?'skip':'fail';
-    const res=p.skipped?'SKIP':p.passed?'PASS':'FAIL';
-    let segOf=-1;
-    for(let si=0;si<segs.length;si++){if(segs[si].indexOf(i)>=0){segOf=si;break;}}
-    const inActiveSeg=segOf===state.segmentIdx;
-    let critCell='<td class="criteria-text">'+esc(p.criteria||'\u2014');
-    if(!p.passed&&!p.skipped&&p.failureReason){
-      critCell+='<div class="failure-reason">\u26a0 <span>'+esc(p.failureReason)+'</span></div>';
-    }
-    // Checklist of conditions
-    if (p.conditions && p.conditions.length) {
-      critCell += '<div class="conditions-checklist" style="margin-top:6px;font-size:11px;display:flex;flex-direction:column;gap:3px">';
-      for (const cond of p.conditions) {
-        const icon = cond.passed ? '<span style="color:var(--pass);font-weight:bold">✓</span>' : '<span style="color:var(--fail);font-weight:bold">✗</span>';
-        const nameText = cond.description ? cond.name + " (" + cond.description + ")" : cond.name;
-        critCell += '<div class="condition-item" style="display:flex;align-items:center;gap:6px">' + icon + ' <span>' + esc(nameText) + '</span></div>';
-      }
-      critCell += '</div>';
-    }
-    // Additional metrics and results
-    if (p.additionalResults && p.additionalResults.length) {
-      critCell += '<div class="additional-results" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">';
-      for (const res of p.additionalResults) {
-        const badgeColor = res.color === "success" ? "var(--pass)" : res.color === "warning" ? "var(--skip)" : res.color === "danger" ? "var(--fail)" : "var(--muted)";
-        critCell += '<span class="chip" style="font-size:10px;border:1px solid ' + badgeColor + ';color:' + badgeColor + ';background:none">' + esc(res.text) + '</span>';
-      }
-      critCell += '</div>';
-    }
-    critCell+='</td>';
-    html+='<tr data-phase="'+i+'" data-seg="'+segOf+'" style="cursor:pointer;'+(inActiveSeg?'':'opacity:0.5')+'">'+
-      '<td>'+(i+1)+'</td><td class="name">'+esc(p.name)+'</td>'+
-      '<td class="status"><span class="badge '+cls+'">'+res+'</span></td>'+
-      critCell+'</tr>';
-  }
-  html+='</tbody>';
-  tbl.innerHTML=segHtml+html;
-  tbl.querySelectorAll('tbody tr').forEach(row=>{
-    row.addEventListener('click',()=>{
-      const pi=+row.dataset.phase;
-      const seg=+row.dataset.seg;
-      state.segmentIdx=seg;
-      const p=tr.phases[pi];
-      state.t=(p.start_s+p.end_s)/2;
-      renderCriteria(tr);
-      renderPathView(tr);
-      renderTimeSeries(tr);
-      updatePlayhead();
-    });
-  });
-  tbl.querySelectorAll('[data-seg]').forEach(tab=>{
-    if(tab.tagName==='SPAN'){
-      tab.addEventListener('click',()=>{
-        state.segmentIdx=+tab.dataset.seg;
-        const [sMin,sMax]=segmentTimeRange(tr,state.segmentIdx);
-        state.t=sMin;
-        renderCriteria(tr);
-        renderPathView(tr);
-        renderTimeSeries(tr);
-        updatePlayhead();
-      });
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Event log panel
-// ---------------------------------------------------------------------------
-function renderEventLog(tr){
-  const panel=document.getElementById('event-log-panel');
-  const host=document.getElementById('event-log');
-  const countEl=document.getElementById('event-log-count');
-  if(!panel||!host)return;
-  if(!tr.events||!tr.events.length){
-    panel.classList.add('hidden');
-    host.innerHTML='';
-    if(countEl)countEl.textContent='';
-    return;
-  }
-  panel.classList.remove('hidden');
-  const events=tr.events;
-  if(countEl)countEl.textContent='('+events.length+' total)';
-  if(!events.length){
-    host.innerHTML='<div class="event-log-empty">No events in this segment.</div>';
-    return;
-  }
-  let html='';
-  let bestIdx=-1, bestDt=Infinity;
-  for(let i=0;i<events.length;i++){
-    const e=events[i];
-    const sev=e.severity||'info';
-    const dt=Math.abs(e.t-state.t);
-    if(dt<bestDt){bestDt=dt;bestIdx=i;}
-    html+='<div class="event-row sev-'+sev+(i===bestIdx?' current':'')+'" data-t="'+e.t.toFixed(3)+'">'+
-      '<span class="ev-time">'+fmt(e.t,1)+'s</span>'+
-      '<span class="ev-cat">'+esc(e.category||'info')+'</span>'+
-      '<span class="ev-msg">'+esc(e.message||'')+'</span>'+
-      '</div>';
-  }
-  host.innerHTML=html;
-  if(bestIdx>=0){
-    const row=host.children[bestIdx];
-    if(row){
-      const cTop=host.scrollTop, cBot=cTop+host.clientHeight;
-      const rTop=row.offsetTop, rBot=rTop+row.offsetHeight;
-      if(rTop<cTop||rBot>cBot){
-        host.scrollTop=rTop-host.clientHeight/2+row.offsetHeight/2;
-      }
-    }
-  }
-  host.querySelectorAll('.event-row').forEach(row=>{
-    row.addEventListener('click',()=>{
-      state.t=+row.dataset.t;
-      updatePlayhead();
-    });
-    row.style.cursor='pointer';
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1657,7 +1150,7 @@ function renderEventLog(tr){
 // ---------------------------------------------------------------------------
 function showDetail(i){
   state.traceIdx=i;state.t=0;
-  state.segmentIdx=0;state.zoom=1.0;state.panX=0;state.panY=0;
+  state.zoom=1.0;state.panX=0;state.panY=0;
   threeState.initialized = false;
   const tr=TRACES[i]; if(!tr)return;
   document.getElementById('index-view').classList.add('hidden');
@@ -1667,24 +1160,17 @@ function showDetail(i){
   document.getElementById('detail-title').textContent = titleText;
   const st=traceStatus(tr);
   const badge=document.getElementById('detail-badge');
-  badge.className='badge '+(st==='pass'?'pass':st==='fail'?'fail':st==='mixed'?'mixed':'skip');
-  badge.textContent=st==='pass'?'PASS':st==='fail'?'FAIL':st==='mixed'?'MIXED':'SKIP';
-  const segs=computeSegments(tr);
+  badge.className='badge '+(st==='pass'?'pass':'fail');
+  badge.textContent=st==='pass'?'PASS':'FAIL';
   let metaHtml = '';
   if (tr.testLevel) metaHtml += '<span>Level: <b>' + esc(tr.testLevel) + '</b></span>';
   document.getElementById('detail-summary').innerHTML=
     metaHtml +
     '<span>Duration: <b>'+fmt(traceDuration(tr),0)+'s</b></span>'+
-    '<span>Phases: <b>'+tracePassedCount(tr)+'/'+traceTotalCount(tr)+'</b> passed</span>'+
-    '<span>Segments: <b>'+segs.length+'</b></span>'+
     '<span>Frames: <b>'+tr.frames.length+'</b></span>'+
     '<span>Aircraft: <b>'+esc(tr.aircraft)+'</b></span>';
-  renderCriteria(tr);
-  renderEventLog(tr);
-  document.getElementById('phase-chips').classList.add('hidden');
   document.getElementById('time-end').textContent=fmt(traceDuration(tr),1)+'s';
   renderPathView(tr);
-  renderTimeSeries(tr);
   updatePlayhead();
 }
 function showIndex(){
@@ -1708,15 +1194,15 @@ function startPlay(){
   const dt=1/60;
   const tr=TRACES[state.traceIdx];
   if(tr){
-    const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
-    if(state.t>=segMaxT-0.01)state.t=segMinT;
+    const maxT = traceDuration(tr);
+    if(state.t>=maxT-0.01)state.t=0;
   }
   if(state.playTimer)clearInterval(state.playTimer);
   state.playTimer=setInterval(()=>{
     const tr=TRACES[state.traceIdx]; if(!tr)return;
     state.t+=dt*state.speed;
-    const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
-    if(state.t>=segMaxT){state.t=segMaxT;stopPlay();}
+    const maxT = traceDuration(tr);
+    if(state.t>=maxT){state.t=maxT;stopPlay();}
     updatePlayhead();
   },1000/60);
 }
@@ -1756,16 +1242,6 @@ document.querySelectorAll('#speed-seg button').forEach(b=>{
   b.addEventListener('click',()=>{
     state.speed=+b.dataset.speed;
     document.querySelectorAll('#speed-seg button').forEach(x=>x.classList.toggle('active',x===b));
-  });
-});
-document.querySelectorAll('#color-seg button').forEach(b=>{
-  b.addEventListener('click',()=>{
-    state.colorBy=b.dataset.color;
-    document.querySelectorAll('#color-seg button').forEach(x=>x.classList.toggle('active',x===b));
-    if(state.traceIdx>=0){
-      renderPathView(TRACES[state.traceIdx]);
-      updatePlayhead();
-    }
   });
 });
 document.querySelectorAll('#view-seg button').forEach(b=>{

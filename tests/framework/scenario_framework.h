@@ -27,7 +27,7 @@
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/steering.h"  // SteeringController (AI compat shim)
-#include "trace.h"                    // SceneLine (for sceneGeometry())
+#include "trace.h"
 
 #include <cstdio>
 #include <cmath>
@@ -219,7 +219,7 @@ public:
     // Static scene geometry overlays for the visualization (runway
     // centerline, taxiway paths, approach corridor, etc.). Called once
     // after StartScenario. Default: empty (no scene geometry).
-    virtual std::vector<SceneLine> sceneGeometry() const { return {}; }
+    virtual std::vector<TraceGeometry> traceGeometry() const { return {}; }
 
 protected:
     std::string scenarioName_;

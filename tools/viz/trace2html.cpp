@@ -148,9 +148,9 @@ int main(int argc, char** argv) {
 
     std::printf("Loaded %zu trace(s)\n", traces.size());
     for (const auto& t : traces) {
-        std::printf("  %s / %s — %zu frames, %.1fs, %zu phases\n",
+        std::printf("  %s / %s — %zu frames, %.1fs, %zu events\n",
                     t.aircraft.c_str(), t.scenario.c_str(),
-                    t.frames.size(), t.duration_s, t.phases.size());
+                    t.frames.size(), t.duration_s, t.events.size());
     }
 
     // Generate the report.

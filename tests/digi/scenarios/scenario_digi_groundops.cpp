@@ -704,39 +704,39 @@ public:
     // from 3 NM south (-Y) heading north toward the threshold. We draw:
     //   - Runway centerline (gold, thick)
     //   - Runway threshold markings (two perpendicular lines at each end)
-    std::vector<SceneLine> sceneGeometry() const override {
-        std::vector<SceneLine> lines;
+    std::vector<TraceGeometry> traceGeometry() const override {
+        std::vector<TraceGeometry> geom;
         const double rwLen = 10000.0;  // 10,000 ft
         const double rwHalf = rwLen / 2.0;
         const double rwWidth = 200.0;  // 200 ft wide
 
-        // Runway centerline — dark so it's visible under the flight path
-        SceneLine centerline;
-        centerline.label = "RWY";
-        centerline.x1 = 0.0; centerline.y1 = -rwHalf; centerline.z1 = 0.0;
-        centerline.x2 = 0.0; centerline.y2 =  rwHalf; centerline.z2 = 0.0;
+        // Runway centerline
+        TraceGeometry centerline;
+        centerline.name = "RWY";
+        centerline.type = "runway";
+        centerline.coords = {0.0, -rwHalf, 0.0, 0.0, rwHalf, 0.0};
         centerline.color = "#3a3a4a";
-        centerline.width = 150.0;  // 150 ft wide (drawn as a thick line)
-        lines.push_back(centerline);
+        centerline.width = 150.0;
+        geom.push_back(centerline);
 
-        // Threshold markings (perpendicular lines at each end)
-        SceneLine threshN;
-        threshN.label = "RWY_End_N";
-        threshN.x1 = -rwWidth; threshN.y1 = rwHalf; threshN.z1 = 0.0;
-        threshN.x2 =  rwWidth; threshN.y2 = rwHalf; threshN.z2 = 0.0;
+        // Threshold markings
+        TraceGeometry threshN;
+        threshN.name = "RWY_End_N";
+        threshN.type = "taxiway";
+        threshN.coords = {-rwWidth, rwHalf, 0.0, rwWidth, rwHalf, 0.0};
         threshN.color = "#3a3a4a";
         threshN.width = 80.0;
-        lines.push_back(threshN);
+        geom.push_back(threshN);
 
-        SceneLine threshS;
-        threshS.label = "RWY_End_S";
-        threshS.x1 = -rwWidth; threshS.y1 = -rwHalf; threshS.z1 = 0.0;
-        threshS.x2 =  rwWidth; threshS.y2 = -rwHalf; threshS.z2 = 0.0;
+        TraceGeometry threshS;
+        threshS.name = "RWY_End_S";
+        threshS.type = "taxiway";
+        threshS.coords = {-rwWidth, -rwHalf, 0.0, rwWidth, -rwHalf, 0.0};
         threshS.color = "#3a3a4a";
         threshS.width = 80.0;
-        lines.push_back(threshS);
+        geom.push_back(threshS);
 
-        return lines;
+        return geom;
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>

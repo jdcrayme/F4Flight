@@ -55,12 +55,7 @@ static Trace downsampleForHtml(const Trace& in) {
     std::vector<bool> keep(n, false);
     for (size_t i = 0; i < n; i += stride) keep[i] = true;
     keep[n - 1] = true;
-    for (const auto& ph : in.phases) {
-        size_t fi = 0;
-        while (fi < n && in.frames[fi].t < ph.start_s) ++fi;
-        if (fi < n) keep[fi] = true;
-    }
-    out.frames.reserve(kMaxFramesPerTrace + in.phases.size() + 2);
+    out.frames.reserve(kMaxFramesPerTrace + 2);
     for (size_t i = 0; i < n; ++i) {
         if (keep[i]) out.frames.push_back(in.frames[i]);
     }

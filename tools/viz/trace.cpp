@@ -81,22 +81,6 @@ void TraceRecorder::setTestMetadata(const std::string& testGroup, const std::str
     trace_.testLevel = testLevel;
 }
 
-void TraceRecorder::markPhase(const std::string& name, double start_s, double end_s,
-                               bool passed, bool skipped, bool reinitializes,
-                               const std::string& criteria,
-                               const std::string& failureReason,
-                               const std::vector<TestCondition>& conditions,
-                               const std::vector<AdditionalResult>& additionalResults) {
-    trace_.phases.push_back({name, start_s, end_s, passed, skipped, reinitializes, criteria, failureReason, conditions, additionalResults});
-}
-
-void TraceRecorder::setWaypoints(const std::vector<Waypoint>& wps) {
-    trace_.waypoints = wps;
-}
-
-void TraceRecorder::addSceneLine(const SceneLine& line) {
-    trace_.sceneLines.push_back(line);
-}
 
 void TraceRecorder::finish(double duration_s) {
     trace_.duration_s = duration_s;
@@ -126,59 +110,6 @@ void traceToJson(const Trace& trace, std::string& out) {
     out += ",\"duration_s\":";
     out += std::to_string(trace.duration_s);
 
-    // Phases
-    out += ",\"phases\":[";
-    for (size_t i = 0; i < trace.phases.size(); ++i) {
-        if (i > 0) out += ',';
-        const auto& p = trace.phases[i];
-        out += "{\"name\":";
-        detail::writeJsonString(out, p.name);
-        out += ",\"start_s\":";
-        out += std::to_string(p.start_s);
-        out += ",\"end_s\":";
-        out += std::to_string(p.end_s);
-        out += ",\"passed\":";
-        out += p.passed ? "true" : "false";
-        out += ",\"skipped\":";
-        out += p.skipped ? "true" : "false";
-        out += ",\"reinitializes\":";
-        out += p.reinitializes ? "true" : "false";
-        out += ",\"criteria\":";
-        detail::writeJsonString(out, p.criteria);
-        out += ",\"failureReason\":";
-        detail::writeJsonString(out, p.failureReason);
-
-        // conditions
-        out += ",\"conditions\":[";
-        for (size_t j = 0; j < p.conditions.size(); ++j) {
-            if (j > 0) out += ',';
-            const auto& c = p.conditions[j];
-            out += "{\"name\":";
-            detail::writeJsonString(out, c.name);
-            out += ",\"description\":";
-            detail::writeJsonString(out, c.description);
-            out += ",\"passed\":";
-            out += c.passed ? "true" : "false";
-            out += '}';
-        }
-        out += ']';
-
-        // additionalResults
-        out += ",\"additionalResults\":[";
-        for (size_t j = 0; j < p.additionalResults.size(); ++j) {
-            if (j > 0) out += ',';
-            const auto& r = p.additionalResults[j];
-            out += "{\"text\":";
-            detail::writeJsonString(out, r.text);
-            out += ",\"color\":";
-            detail::writeJsonString(out, r.color);
-            out += '}';
-        }
-        out += ']';
-
-        out += '}';
-    }
-    out += ']';
 
     // Frames
     out += ",\"frames\":[";
@@ -280,53 +211,6 @@ void traceToJson(const Trace& trace, std::string& out) {
         out += ']';
     }
 
-    // Waypoints (scenario-level navigation waypoints)
-    if (!trace.waypoints.empty()) {
-        out += ",\"waypoints\":[";
-        for (size_t i = 0; i < trace.waypoints.size(); ++i) {
-            if (i > 0) out += ',';
-            const auto& w = trace.waypoints[i];
-            out += "{\"x\":";
-            out += std::to_string(w.x);
-            out += ",\"y\":";
-            out += std::to_string(w.y);
-            out += ",\"z\":";
-            out += std::to_string(w.z);
-            out += ",\"name\":";
-            detail::writeJsonString(out, w.name);
-            out += '}';
-        }
-        out += ']';
-    }
-
-    // Scene lines (runway, taxiways, etc.)
-    if (!trace.sceneLines.empty()) {
-        out += ",\"sceneLines\":[";
-        for (size_t i = 0; i < trace.sceneLines.size(); ++i) {
-            if (i > 0) out += ',';
-            const auto& s = trace.sceneLines[i];
-            out += "{\"label\":";
-            detail::writeJsonString(out, s.label);
-            out += ",\"x1\":";
-            out += std::to_string(s.x1);
-            out += ",\"y1\":";
-            out += std::to_string(s.y1);
-            out += ",\"z1\":";
-            out += std::to_string(s.z1);
-            out += ",\"x2\":";
-            out += std::to_string(s.x2);
-            out += ",\"y2\":";
-            out += std::to_string(s.y2);
-            out += ",\"z2\":";
-            out += std::to_string(s.z2);
-            out += ",\"color\":";
-            detail::writeJsonString(out, s.color);
-            out += ",\"width\":";
-            out += std::to_string(s.width);
-            out += '}';
-        }
-        out += ']';
-    }
 
     // Generalized static test geometry
     if (!trace.geometry.empty()) {
@@ -456,57 +340,6 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
             p = parseString(p, out.scenario);
         } else if (key == "duration_s") {
             p = parseNumber(p, out.duration_s);
-        } else if (key == "phases") {
-            if (*p != '[') { error_msg = "Expected '[' for phases"; return false; }
-            ++p;
-            p = skipWs(p);
-            while (*p && *p != ']') {
-                PhaseResult pr{};
-                if (*p != '{') { error_msg = "Expected '{' in phase"; return false; }
-                ++p;
-                while (*p && *p != '}') {
-                    p = skipWs(p);
-                    std::string pk;
-                    p = parseString(p, pk);
-                    if (!p) { error_msg = "Bad phase key"; return false; }
-                    p = skipWs(p);
-                    if (*p != ':') { error_msg = "Expected ':' in phase"; return false; }
-                    ++p;
-                    p = skipWs(p);
-                    if (pk == "name") {
-                        p = parseString(p, pr.name);
-                    } else if (pk == "start_s") {
-                        p = parseNumber(p, pr.start_s);
-                    } else if (pk == "end_s") {
-                        p = parseNumber(p, pr.end_s);
-                    } else if (pk == "passed") {
-                        p = parseBool(p, pr.passed);
-                    } else if (pk == "skipped") {
-                        p = parseBool(p, pr.skipped);
-                    } else if (pk == "reinitializes") {
-                        p = parseBool(p, pr.reinitializes);
-                    } else if (pk == "criteria") {
-                        p = parseString(p, pr.criteria);
-                    } else if (pk == "failureReason") {
-                        p = parseString(p, pr.failureReason);
-                    } else {
-                        // skip unknown value
-                        if (*p == '"') { std::string s; p = parseString(p, s); }
-                        else { double d; p = parseNumber(p, d); }
-                    }
-                    if (!p) { error_msg = "Bad phase value"; return false; }
-                    p = skipWs(p);
-                    if (*p == ',') ++p;
-                }
-                if (*p != '}') { error_msg = "Expected '}' in phase"; return false; }
-                ++p;
-                out.phases.push_back(pr);
-                p = skipWs(p);
-                if (*p == ',') ++p;
-                p = skipWs(p);
-            }
-            if (*p != ']') { error_msg = "Expected ']' after phases"; return false; }
-            ++p;
         } else if (key == "frames") {
             if (*p != '[') { error_msg = "Expected '[' for frames"; return false; }
             ++p;
@@ -673,87 +506,6 @@ bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
                 p = skipWs(p);
             }
             if (*p != ']') { error_msg = "Expected ']' after events"; return false; }
-            ++p;
-        } else if (key == "waypoints") {
-            if (*p != '[') { error_msg = "Expected '[' for waypoints"; return false; }
-            ++p;
-            p = skipWs(p);
-            while (*p && *p != ']') {
-                Waypoint wp{};
-                if (*p != '{') { error_msg = "Expected '{' in waypoint"; return false; }
-                ++p;
-                while (*p && *p != '}') {
-                    p = skipWs(p);
-                    std::string wk;
-                    p = parseString(p, wk);
-                    if (!p) { error_msg = "Bad waypoint key"; return false; }
-                    p = skipWs(p);
-                    if (*p != ':') { error_msg = "Expected ':' in waypoint"; return false; }
-                    ++p;
-                    p = skipWs(p);
-                    if (wk == "x") p = parseNumber(p, wp.x);
-                    else if (wk == "y") p = parseNumber(p, wp.y);
-                    else if (wk == "z") p = parseNumber(p, wp.z);
-                    else if (wk == "name") p = parseString(p, wp.name);
-                    else {
-                        if (*p == '"') { std::string s; p = parseString(p, s); }
-                        else { double d; p = parseNumber(p, d); }
-                    }
-                    if (!p) { error_msg = "Bad waypoint value"; return false; }
-                    p = skipWs(p);
-                    if (*p == ',') ++p;
-                }
-                if (*p != '}') { error_msg = "Expected '}' in waypoint"; return false; }
-                ++p;
-                out.waypoints.push_back(wp);
-                p = skipWs(p);
-                if (*p == ',') ++p;
-                p = skipWs(p);
-            }
-            if (*p != ']') { error_msg = "Expected ']' after waypoints"; return false; }
-            ++p;
-        } else if (key == "sceneLines") {
-            if (*p != '[') { error_msg = "Expected '[' for sceneLines"; return false; }
-            ++p;
-            p = skipWs(p);
-            while (*p && *p != ']') {
-                SceneLine sl{};
-                if (*p != '{') { error_msg = "Expected '{' in sceneLine"; return false; }
-                ++p;
-                while (*p && *p != '}') {
-                    p = skipWs(p);
-                    std::string sk;
-                    p = parseString(p, sk);
-                    if (!p) { error_msg = "Bad sceneLine key"; return false; }
-                    p = skipWs(p);
-                    if (*p != ':') { error_msg = "Expected ':' in sceneLine"; return false; }
-                    ++p;
-                    p = skipWs(p);
-                    if (sk == "label") p = parseString(p, sl.label);
-                    else if (sk == "x1") p = parseNumber(p, sl.x1);
-                    else if (sk == "y1") p = parseNumber(p, sl.y1);
-                    else if (sk == "z1") p = parseNumber(p, sl.z1);
-                    else if (sk == "x2") p = parseNumber(p, sl.x2);
-                    else if (sk == "y2") p = parseNumber(p, sl.y2);
-                    else if (sk == "z2") p = parseNumber(p, sl.z2);
-                    else if (sk == "color") p = parseString(p, sl.color);
-                    else if (sk == "width") p = parseNumber(p, sl.width);
-                    else {
-                        if (*p == '"') { std::string s; p = parseString(p, s); }
-                        else { double d; p = parseNumber(p, d); }
-                    }
-                    if (!p) { error_msg = "Bad sceneLine value"; return false; }
-                    p = skipWs(p);
-                    if (*p == ',') ++p;
-                }
-                if (*p != '}') { error_msg = "Expected '}' in sceneLine"; return false; }
-                ++p;
-                out.sceneLines.push_back(sl);
-                p = skipWs(p);
-                if (*p == ',') ++p;
-                p = skipWs(p);
-            }
-            if (*p != ']') { error_msg = "Expected ']' after sceneLines"; return false; }
             ++p;
         } else {
             // skip unknown key's value

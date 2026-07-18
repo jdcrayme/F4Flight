@@ -948,18 +948,18 @@ public:
 
     // Draw the home runway at the origin (north-south) so the visualization
     // shows where takeoff and RTB happen.
-    std::vector<SceneLine> sceneGeometry() const override {
-        std::vector<SceneLine> lines;
+    std::vector<TraceGeometry> traceGeometry() const override {
+        std::vector<TraceGeometry> geom;
         const double rwLen = 10000.0;
         const double rwHalf = rwLen / 2.0;
-        SceneLine centerline;
-        centerline.label = "RWY";
-        centerline.x1 = 0.0; centerline.y1 = -rwHalf; centerline.z1 = 0.0;
-        centerline.x2 = 0.0; centerline.y2 =  rwHalf; centerline.z2 = 0.0;
-        centerline.color = "#3a3a4a";
-        centerline.width = 150.0;
-        lines.push_back(centerline);
-        return lines;
+        TraceGeometry tg;
+        tg.name = "RWY";
+        tg.type = "runway";
+        tg.coords = {0.0, -rwHalf, 0.0, 0.0, rwHalf, 0.0};
+        tg.color = "#3a3a4a";
+        tg.width = 150.0;
+        geom.push_back(tg);
+        return geom;
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>
