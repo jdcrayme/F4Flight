@@ -373,16 +373,18 @@ function computeBounds(tr){
   let minAlt=Infinity,maxAlt=-Infinity,minSpd=Infinity,maxSpd=-Infinity,minG=Infinity,maxG=-Infinity;
   let minT=Infinity,maxT=-Infinity;
   for(const f of tr.frames){
-    if(f.x<minX)minX=f.x; if(f.x>maxX)maxX=f.x;
-    if(f.y<minY)minY=f.y; if(f.y>maxY)maxY=f.y;
+    // Map East (f.y) to X, North (f.x) to Y
+    if(f.y<minX)minX=f.y; if(f.y>maxX)maxX=f.y;
+    if(f.x<minY)minY=f.x; if(f.x>maxY)maxY=f.x;
     const alt=-f.z;
     if(alt<minAlt)minAlt=alt; if(alt>maxAlt)maxAlt=alt;
     if(f.vcas<minSpd)minSpd=f.vcas; if(f.vcas>maxSpd)maxSpd=f.vcas;
     if(f.nzcgs<minG)minG=f.nzcgs; if(f.nzcgs>maxG)maxG=f.nzcgs;
     if(f.t<minT)minT=f.t; if(f.t>maxT)maxT=f.t;
     if(f.threats){for(const t of f.threats){
-      if(t.x<minX)minX=t.x; if(t.x>maxX)maxX=t.x;
-      if(t.y<minY)minY=t.y; if(t.y>maxY)maxY=t.y;
+      // Map East (t.y) to X, North (t.x) to Y
+      if(t.y<minX)minX=t.y; if(t.y>maxX)maxX=t.y;
+      if(t.x<minY)minY=t.x; if(t.x>maxY)maxY=t.x;
     }}
   }
   if(!isFinite(minX)){minX=maxX=minY=maxY=0;minAlt=maxAlt=0;minSpd=maxSpd=0;minG=maxG=0;minT=maxT=0;}
@@ -468,30 +470,34 @@ function computeSegmentBounds(tr,segPhaseIndices){
     const [s,e]=ranges[pi];
     for(let fi=s;fi<=e&&fi<tr.frames.length;fi++){
       const f=tr.frames[fi];
-      if(f.x<b.minX)b.minX=f.x; if(f.x>b.maxX)b.maxX=f.x;
-      if(f.y<b.minY)b.minY=f.y; if(f.y>b.maxY)b.maxY=f.y;
+      // Map East (f.y) to X, North (f.x) to Y
+      if(f.y<b.minX)b.minX=f.y; if(f.y>b.maxX)b.maxX=f.y;
+      if(f.x<b.minY)b.minY=f.x; if(f.x>b.maxY)b.maxY=f.x;
       const alt=-f.z;
       if(alt<b.minAlt)b.minAlt=alt; if(alt>b.maxAlt)b.maxAlt=alt;
       if(f.vcas<b.minSpd)b.minSpd=f.vcas; if(f.vcas>b.maxSpd)b.maxSpd=f.vcas;
       if(f.nzcgs<b.minG)b.minG=f.nzcgs; if(f.nzcgs>b.maxG)b.maxG=f.nzcgs;
       if(f.t<b.minT)b.minT=f.t; if(f.t>b.maxT)b.maxT=f.t;
       if(f.threats){for(const t of f.threats){
-        if(t.x<b.minX)b.minX=t.x; if(t.x>b.maxX)b.maxX=t.x;
-        if(t.y<b.minY)b.minY=t.y; if(t.y>b.maxY)b.maxY=t.y;
+        // Map East (t.y) to X, North (t.x) to Y
+        if(t.y<b.minX)b.minX=t.y; if(t.y>b.maxX)b.maxX=t.y;
+        if(t.x<b.minY)b.minY=t.x; if(t.x>b.maxY)b.maxY=t.x;
       }}
     }
   }
   if(!isFinite(b.minX)){b.minX=b.maxX=b.minY=b.maxY=0;b.minAlt=b.maxAlt=0;b.minSpd=b.maxSpd=0;b.minG=b.maxG=0;b.minT=b.maxT=0;}
   if(tr.waypoints){
     for(const w of tr.waypoints){
-      if(w.x<b.minX)b.minX=w.x; if(w.x>b.maxX)b.maxX=w.x;
-      if(w.y<b.minY)b.minY=w.y; if(w.y>b.maxY)b.maxY=w.y;
+      // Map East (w.y) to X, North (w.x) to Y
+      if(w.y<b.minX)b.minX=w.y; if(w.y>b.maxX)b.maxX=w.y;
+      if(w.x<b.minY)b.minY=w.x; if(w.x>b.maxY)b.maxY=w.x;
     }
   }
   if(tr.sceneLines){
     for(const sl of tr.sceneLines){
-      b.minX=Math.min(b.minX,sl.x1,sl.x2); b.maxX=Math.max(b.maxX,sl.x1,sl.x2);
-      b.minY=Math.min(b.minY,sl.y1,sl.y2); b.maxY=Math.max(b.maxY,sl.y1,sl.y2);
+      // Map East (sl.y1, sl.y2) to X, North (sl.x1, sl.x2) to Y
+      b.minX=Math.min(b.minX,sl.y1,sl.y2); b.maxX=Math.max(b.maxX,sl.y1,sl.y2);
+      b.minY=Math.min(b.minY,sl.x1,sl.x2); b.maxY=Math.max(b.maxY,sl.x1,sl.x2);
     }
   }
   const padX=(b.maxX-b.minX)*0.08+200, padY=(b.maxY-b.minY)*0.08+200;
@@ -1079,11 +1085,15 @@ function initThreeJS(tr) {
   const segs = computeSegments(tr);
   const si = Math.min(state.segmentIdx, segs.length-1);
   const segPhases = segs[si];
-  const b = computeSegmentBounds(tr, segPhases);
+  const allPhases = Array.from({length: tr.phases ? tr.phases.length : 1}, (_, i) => i);
+  const b = computeSegmentBounds(tr, allPhases);
   const span = Math.max(b.maxX-b.minX, b.maxY-b.minY, b.maxAlt-b.minAlt, 1);
 
   const gridHelper = new THREE.GridHelper(span * 2, 50, 0x5a6275, 0x222637);
   gridHelper.rotation.x = Math.PI / 2;
+  const centerX = (b.minX + b.maxX) / 2;
+  const centerY = (b.minY + b.maxY) / 2;
+  gridHelper.position.set(centerX, centerY, 0);
   scene.add(gridHelper);
 
   const jetGroup = new THREE.Group();
@@ -1173,7 +1183,8 @@ function initThreeJS(tr) {
   // Restore & Render 3D Ribbon Trail showing orientation/twisting
   const ranges = phaseRanges(tr);
   const pathLines = [];
-  for (const pi of segPhases) {
+  const allTrPhases = Array.from({length: tr.phases ? tr.phases.length : 1}, (_, i) => i);
+  for (const pi of allTrPhases) {
     if (pi >= ranges.length) continue;
     const [s, e] = ranges[pi];
     if (e - s < 2) continue;
@@ -1185,8 +1196,11 @@ function initThreeJS(tr) {
 
     for (let fi = s; fi <= e && fi < tr.frames.length; fi++) {
       const f = tr.frames[fi];
-      const p = new THREE.Vector3(f.x, f.y, -f.z);
-      const euler = new THREE.Euler(f.theta, -f.phi, -f.psi, 'ZXY');
+      const p = new THREE.Vector3(f.y, f.x, -f.z);
+      const theta = f.theta || 0;
+      const phi = f.phi || 0;
+      const psi = f.psi || 0;
+      const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
       const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
       const wing_half_width = span * 0.0035;
 
@@ -1363,18 +1377,18 @@ function render3D(tr){
   if (!acFrame) return;
 
   const b = detailBounds;
-  const cx = acFrame.x;
-  const cy = acFrame.y;
+  const cx = acFrame.y;
+  const cy = acFrame.x;
   const cz = -acFrame.z;
 
   threeState.aircraft.position.set(cx, cy, cz);
 
   // Exact Tait-Bryan Euler rotations using ZXY right-handed ENU conventions
-  threeState.aircraft.rotation.set(0, 0, 0);
-  threeState.aircraft.order = 'ZXY';
-  threeState.aircraft.rotation.z = -acFrame.psi;
-  threeState.aircraft.rotation.x = acFrame.theta;
-  threeState.aircraft.rotation.y = -acFrame.phi;
+  const theta = acFrame.theta || 0;
+  const phi = acFrame.phi || 0;
+  const psi = acFrame.psi || 0;
+  const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+  threeState.aircraft.rotation.copy(euler);
 
   // Update playhead altitude tadpole
   const positions = threeState.tadpole.geometry.attributes.position.array;
@@ -1385,7 +1399,7 @@ function render3D(tr){
 
   // Playhead ground ring projection (lies flat on Z=0.05)
   threeState.shadow.position.set(cx, cy, 0.05);
-  threeState.grid.position.set(cx, cy, 0);
+  // Grid helper is kept stationary in the world, do not move it with the playhead!
 
   const radius = threeState.span * 1.5 / state.zoom;
   const cp = Math.max(0.01, Math.min(Math.PI / 2 - 0.01, state.orbit.pitch));
@@ -1545,8 +1559,7 @@ function renderCriteria(tr){
       tab.addEventListener('click',()=>{
         state.segmentIdx=+tab.dataset.seg;
         const [sMin,sMax]=segmentTimeRange(tr,state.segmentIdx);
-        if(state.t<sMin)state.t=sMin;
-        if(state.t>sMax)state.t=sMax;
+        state.t=sMin;
         renderCriteria(tr);
         renderPathView(tr);
         renderTimeSeries(tr);
@@ -1571,9 +1584,8 @@ function renderEventLog(tr){
     return;
   }
   panel.classList.remove('hidden');
-  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
-  const events=tr.events.filter(e=>e.t>=segMinT&&e.t<=segMaxT);
-  if(countEl)countEl.textContent='('+events.length+' in segment)';
+  const events=tr.events;
+  if(countEl)countEl.textContent='('+events.length+' total)';
   if(!events.length){
     host.innerHTML='<div class="event-log-empty">No events in this segment.</div>';
     return;
@@ -1702,8 +1714,8 @@ document.getElementById('play-btn').addEventListener('click',togglePlay);
 document.getElementById('scrubber').addEventListener('input',e=>{
   if(state.traceIdx<0)return;
   const tr=TRACES[state.traceIdx];
-  const [segMinT,segMaxT]=segmentTimeRange(tr,state.segmentIdx);
-  state.t=segMinT+(+e.target.value/1000)*(segMaxT-segMinT);
+  const maxT = traceDuration(tr);
+  state.t=(+e.target.value/1000)*maxT;
   updatePlayhead();
 });
 document.querySelectorAll('#speed-seg button').forEach(b=>{
@@ -1786,13 +1798,11 @@ document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
   if(e.code==='Space'){e.preventDefault();togglePlay();}
   else if(e.code==='ArrowLeft'){
-    const tr=TRACES[state.traceIdx];
-    const [sMin]=segmentTimeRange(tr,state.segmentIdx);
-    state.t=Math.max(sMin,state.t-1);updatePlayhead();
+    state.t=Math.max(0,state.t-1);updatePlayhead();
   }else if(e.code==='ArrowRight'){
     const tr=TRACES[state.traceIdx];
-    const [,sMax]=segmentTimeRange(tr,state.segmentIdx);
-    state.t=Math.min(sMax,state.t+1);updatePlayhead();
+    const maxT = traceDuration(tr);
+    state.t=Math.min(maxT,state.t+1);updatePlayhead();
   }else if(e.code==='Escape'){location.hash='#';}
 });
 

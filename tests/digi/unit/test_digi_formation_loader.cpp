@@ -20,6 +20,15 @@ namespace {
 // Path to the test formdat.fil (relative to the build directory, which is
 // the source root when tests run from there).
 const char* kTestFormdatFile = "tests/fixtures/formations/test_formdat.fil";
+const char* kTestFormdatFileFallback = "../../tests/fixtures/formations/test_formdat.fil";
+
+inline int loadTestFormations(FormationTable& table) {
+    int loaded = table.loadFromFile(kTestFormdatFile);
+    if (loaded < 0) {
+        loaded = table.loadFromFile(kTestFormdatFileFallback);
+    }
+    return loaded;
+}
 } // namespace
 
 // ===========================================================================
@@ -28,7 +37,7 @@ const char* kTestFormdatFile = "tests/fixtures/formations/test_formdat.fil";
 
 TEST(FormationFileLoader, LoadsFormationsFromFile) {
     FormationTable table;
-    int loaded = table.loadFromFile(kTestFormdatFile);
+    int loaded = loadTestFormations(table);
     // The test file has 3 formations.
     EXPECT_EQ(loaded, 3);
 }
@@ -41,7 +50,7 @@ TEST(FormationFileLoader, ReturnsNegativeOneForMissingFile) {
 
 TEST(FormationFileLoader, ParsesWedgeFormation) {
     FormationTable table;
-    table.loadFromFile(kTestFormdatFile);
+    loadTestFormations(table);
 
     // FormNum 1 = TestWedge (4-ship)
     // Slot 0: lead (0, 0, 0)
@@ -66,7 +75,7 @@ TEST(FormationFileLoader, ParsesWedgeFormation) {
 
 TEST(FormationFileLoader, ParsesTrailFormation) {
     FormationTable table;
-    table.loadFromFile(kTestFormdatFile);
+    loadTestFormations(table);
 
     // FormNum 2 = TestTrail (4-ship trail)
     // All slots at relAz=180° (behind), increasing range
@@ -81,7 +90,7 @@ TEST(FormationFileLoader, ParsesTrailFormation) {
 
 TEST(FormationFileLoader, ParsesTwoShipData) {
     FormationTable table;
-    table.loadFromFile(kTestFormdatFile);
+    loadTestFormations(table);
 
     // FormNum 6 = TestLineAbreast (2-ship, 1 two-slot entry)
     // The 4-ship data has slot 1 at 90° / 0.165 NM
@@ -97,7 +106,7 @@ TEST(FormationFileLoader, ParsesTwoShipData) {
 
 TEST(FormationFileLoader, InvalidSlotReturnsLeadPosition) {
     FormationTable table;
-    table.loadFromFile(kTestFormdatFile);
+    loadTestFormations(table);
 
     // Invalid slot index returns zero PositionData (lead position)
     PositionData invalid = table.slotGeometryById(1, 99);
@@ -114,7 +123,7 @@ TEST(FormationFileLoader, DoesNotCorruptDefaultInstance) {
     // Loading from file into a local table should NOT affect the default
     // instance's built-in formations (Wedge, TwoShipTrail, TwoShipLineAbreast).
     FormationTable local;
-    local.loadFromFile(kTestFormdatFile);
+    loadTestFormations(local);
 
     // Default instance should still have its built-in Wedge
     FormationTable& def = FormationTable::defaultInstance();
