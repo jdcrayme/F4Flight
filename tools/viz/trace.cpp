@@ -287,20 +287,6 @@ static const char* parseNumber(const char* p, double& out) {
     return end;
 }
 
-// Parse a boolean.
-static const char* parseBool(const char* p, bool& out) {
-    p = skipWs(p);
-    if (p[0] == 't' && p[1] == 'r' && p[2] == 'u' && p[3] == 'e') {
-        out = true;
-        return p + 4;
-    }
-    if (p[0] == 'f' && p[1] == 'a' && p[2] == 'l' && p[3] == 's' && p[4] == 'e') {
-        out = false;
-        return p + 5;
-    }
-    return nullptr;
-}
-
 } // anonymous namespace
 
 bool readTrace(const std::string& path, Trace& out, std::string& error_msg) {
