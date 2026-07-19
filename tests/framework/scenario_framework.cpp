@@ -41,42 +41,126 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
 using namespace f4flight;
 using namespace f4flight_test;
 
+// ===========================================================================
+// Cascade mapping tables
+//
+// These tables define the relationship between the three test tiers:
+//
+//   g_e2eToHigh : E2E scenario name  -> list of HighLevel scenario names
+//   g_highToLow : HighLevel scenario name -> list of LowLevel scenario names
+//
+// When an E2E test fails, the cascade runner uses g_e2eToHigh to look up the
+// HighLevel chains that compose it, and runs each of those. When a HighLevel
+// chain fails, g_highToLow is used to look up the individual LowLevel
+// behaviors that compose the chain, and runs each of those. The result is a
+// drill-down from "mission broken" to "specific behavior broken".
+//
+// Keep these tables in sync with the actual scenario registrations. The
+// coverage matrix in COVERAGE.md is generated from this table.
+// ===========================================================================
+static const std::map<std::string, std::vector<std::string>> g_e2eToHigh = {
+    // Core fighter missions (AMIS_BARCAP, AMIS_TARCAP, AMIS_SWEEP,
+    // AMIS_INTERCEPT, AMIS_ESCORT).
+    {"e2e_barcap",     {"high_departure", "high_loiter_station", "high_air_to_air_engage", "high_recovery"}},
+    {"e2e_tarcap",     {"high_departure", "high_loiter_station", "high_air_to_air_engage", "high_recovery"}},
+    {"e2e_sweep",      {"high_departure", "high_air_to_air_engage", "high_recovery"}},
+    {"e2e_intercept",  {"high_departure", "high_air_to_air_engage", "high_recovery"}},
+    {"e2e_escort",     {"high_departure", "high_formation_joinup", "high_air_to_air_engage", "high_recovery"}},
+    // Legacy generic E2E (kept for backward compat with the old test matrix).
+    {"digi_e2e_mission",       {"high_departure", "high_air_to_air_engage", "high_recovery"}},
+    {"digi_e2e_formation",     {"high_departure", "high_formation_joinup", "high_recovery"}},
+    {"digi_e2e_aar",           {"high_departure", "high_aar", "high_recovery"}},
+    {"digi_e2e_ground_attack", {"high_departure", "high_air_to_ground", "high_recovery"}},
+};
+
+static const std::map<std::string, std::vector<std::string>> g_highToLow = {
+    {"high_departure",          {"low_taxi", "low_takeoff", "low_climb", "low_level_hold"}},
+    {"high_loiter_station",     {"low_loiter_orbit", "low_level_hold", "low_waypoint_follow"}},
+    {"high_aar",                {"low_aar_vector", "low_aar_pre_contact", "low_aar_contact", "low_aar_disconnect"}},
+    {"high_formation_joinup",   {"low_formation_position", "low_formation_types", "low_formation_turn"}},
+    {"high_air_to_air_engage",  {"low_bvr_engage", "low_merge", "low_wvr_engage", "low_missile_engage",
+                                 "low_guns_engage", "low_separate", "low_roop", "low_overb"}},
+    {"high_air_to_ground",      {"low_ground_attack_low", "low_ground_attack_dive",
+                                 "low_ground_attack_toss", "low_ground_attack_high"}},
+    {"high_recovery",           {"low_rtb", "low_divert", "low_approach", "low_landing", "low_taxi"}},
+    {"high_defensive_chain",    {"low_missile_defeat", "low_guns_jink", "low_collision_avoid"}},
+};
+
+// Public accessors that return an empty vector if the key is not found.
+// Defined inside namespace f4flight_test to match the header declaration.
+namespace f4flight_test {
+const std::vector<std::string>& highScenariosFor(const std::string& e2eName) {
+    static const std::vector<std::string> kEmpty;
+    auto it = g_e2eToHigh.find(e2eName);
+    return (it != g_e2eToHigh.end()) ? it->second : kEmpty;
+}
+const std::vector<std::string>& lowScenariosFor(const std::string& highName) {
+    static const std::vector<std::string> kEmpty;
+    auto it = g_highToLow.find(highName);
+    return (it != g_highToLow.end()) ? it->second : kEmpty;
+}
+} // namespace f4flight_test
+
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 struct CliOptions {
     std::string aircraftPath;
-    std::vector<std::string> scenarios;  // empty => run all
+    std::vector<std::string> scenarios;  // empty => run all (in the selected tier(s))
     std::string traceDir;               // --trace-dir: write per-scenario JSON here
     std::string htmlPath;               // --html: write aggregated HTML report here
     bool doOpen{false};                 // --open: launch browser on the HTML
     bool list{false};
     bool help{false};
+
+    // New 3-tier flags.
+    //   --level {low,high,e2e,all}  Run only scenarios in the given tier.
+    //                               Default "all". Mutually exclusive with
+    //                               explicit --scenario lists.
+    //   --cascade                   Run all E2E scenarios first; for each
+    //                               failure, run the linked HighLevel
+    //                               scenarios; for each HighLevel failure,
+    //                               run the linked LowLevel scenarios.
+    std::string levelArg{"all"};
+    bool cascade{false};
 };
 
 static void printHelp() {
     std::printf(
-        "Usage: f4flight_scenario_test <aircraft.json> [options]\n"
+        "Usage: f4flight_digi_scenarios <aircraft.json> [options]\n"
         "\n"
-        "Options:\n"
-        "  --list              List available scenarios and exit.\n"
+        "Scenario selection:\n"
+        "  --list              List available scenarios (grouped by tier) and exit.\n"
         "  --scenario NAME     Run only the named scenario. May be repeated.\n"
         "  --all               Run every registered scenario (default).\n"
+        "  --level TIER        Run all scenarios in TIER. TIER is one of:\n"
+        "                        low   - Low Level (one behavior per scenario)\n"
+        "                        high  - High Level (chains of behaviors)\n"
+        "                        e2e   - End-to-End (full AMIS_* missions)\n"
+        "                        all   - All tiers (default)\n"
+        "  --cascade           Run E2E, then HighLevel for any E2E failures, then\n"
+        "                      LowLevel for any HighLevel failures. Produces a\n"
+        "                      drill-down report. Implies running only E2E first.\n"
+        "\n"
+        "Output:\n"
         "  --trace-dir DIR     Write one trace JSON per scenario to DIR.\n"
         "  --html FILE         Write an interactive HTML flight-path report to FILE.\n"
         "  --open              Open the HTML report in the default browser.\n"
         "  -h, --help          Show this help.\n"
         "\n"
         "Examples:\n"
-        "  f4flight_scenario_test f16bk50.json                       # run all scenarios\n"
-        "  f4flight_scenario_test f16bk50.json --scenario basic     # just 'basic'\n"
-        "  f4flight_scenario_test f16bk50.json --html r.html --open  # run + view report\n");
+        "  f4flight_digi_scenarios f16bk50.json                            # run all\n"
+        "  f4flight_digi_scenarios f16bk50.json --level low                # just low-level\n"
+        "  f4flight_digi_scenarios f16bk50.json --level e2e --html r.html  # E2E + report\n"
+        "  f4flight_digi_scenarios f16bk50.json --cascade --html r.html    # drill-down\n"
+        "  f4flight_digi_scenarios f16bk50.json --scenario low_takeoff     # one scenario\n");
 }
 
 static CliOptions parseArgs(int argc, char** argv) {
@@ -89,6 +173,7 @@ static CliOptions parseArgs(int argc, char** argv) {
             opt.list = true;
         } else if (a == "--all") {
             opt.scenarios.clear();
+            opt.levelArg = "all";
         } else if (a == "--scenario") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "Error: --scenario requires a name argument\n");
@@ -96,6 +181,15 @@ static CliOptions parseArgs(int argc, char** argv) {
                 return opt;
             }
             opt.scenarios.push_back(argv[++i]);
+        } else if (a == "--level") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --level requires an argument\n");
+                opt.help = true;
+                return opt;
+            }
+            opt.levelArg = argv[++i];
+        } else if (a == "--cascade") {
+            opt.cascade = true;
         } else if (a == "--trace-dir") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "Error: --trace-dir requires a path\n");
@@ -403,6 +497,225 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 }
 
 // ---------------------------------------------------------------------------
+// Helper: print the scenario list grouped by tier
+// ---------------------------------------------------------------------------
+static void printScenariosByTier(const ScenarioRegistry& registry) {
+    auto printTier = [&](TestTier t, const char* label) {
+        const auto names = registry.listByTier(t);
+        std::printf("\n=== %s (%zu) ===\n", label, names.size());
+        for (const auto& name : names) {
+            auto s = registry.create(name);
+            std::printf("  %-30s %s\n", name.c_str(),
+                        s ? s->GetDescription().c_str() : "(no description)");
+        }
+    };
+    printTier(TestTier::LowLevel,  "Low Level  — one behavior per scenario");
+    printTier(TestTier::HighLevel, "High Level — chains of related behaviors");
+    printTier(TestTier::EndToEnd,  "End-to-End — full AMIS_* mission types");
+
+    // Also print the cascade mapping so users can see the drill-down graph.
+    std::printf("\n=== Cascade mapping (E2E -> High -> Low) ===\n");
+    for (const auto& name : registry.listByTier(TestTier::EndToEnd)) {
+        const auto& highs = highScenariosFor(name);
+        if (highs.empty()) continue;
+        std::printf("  %s\n", name.c_str());
+        for (const auto& h : highs) {
+            const auto& lows = lowScenariosFor(h);
+            std::printf("    -> %s", h.c_str());
+            if (!lows.empty()) {
+                std::printf("  [");
+                for (size_t i = 0; i < lows.size(); ++i) {
+                    if (i) std::printf(", ");
+                    std::printf("%s", lows[i].c_str());
+                }
+                std::printf("]");
+            }
+            std::printf("\n");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: run a single scenario by name. Returns the ScenarioResult and
+// appends a trace to `traces` if `recordTraces` is true. Used by both the
+// flat run-all loop and the cascade runner.
+// ---------------------------------------------------------------------------
+struct RunContext {
+    FlightModel& fm;
+    SteeringController& sc;
+    const ScenarioContext& sctx;
+    const std::string& aircraftName;
+    const std::string& traceDir;
+    bool recordTraces;
+    std::vector<Trace>& traces;
+    int totalPassed{0};
+    int totalTests{0};
+    std::vector<std::string> failedScenarios;  // populated for cascade
+};
+
+static ScenarioResult runOneScenario(const ScenarioRegistry& registry,
+                                     const std::string& name,
+                                     RunContext& rc,
+                                     const char* banner = nullptr) {
+    auto scenario = registry.create(name);
+    if (!scenario) {
+        std::fprintf(stderr, "Error: failed to create scenario '%s'\n", name.c_str());
+        return ScenarioResult{0, 0};
+    }
+
+    if (banner) std::printf("\n%s\n", banner);
+    std::printf("=== Scenario: %s  [%s] ===\n",
+                scenario->name().c_str(),
+                testTierName(scenario->GetTestTier()));
+    std::printf("%s\n\n", scenario->GetDescription().c_str());
+
+    TraceRecorder rec;
+    ScenarioResult r = runScenario(*scenario, rc.fm, rc.sc, rc.sctx,
+                                   rc.aircraftName,
+                                   rc.recordTraces ? &rec : nullptr);
+
+    std::printf("  Scenario '%s' result: %d/%d\n\n",
+                scenario->name().c_str(), r.passed, r.total);
+
+    if (rc.recordTraces) {
+        if (!rc.traceDir.empty()) {
+            std::string fname = rc.aircraftName + "_" + name + ".json";
+            std::string path = (std::filesystem::path(rc.traceDir) / fname).string();
+            if (rec.write(path)) {
+                std::printf("  trace written: %s\n", path.c_str());
+            } else {
+                std::fprintf(stderr, "  warning: could not write trace %s\n", path.c_str());
+            }
+        }
+        rc.traces.push_back(rec.trace());
+    }
+
+    rc.totalPassed += r.passed;
+    rc.totalTests  += r.total;
+    if (r.passed != r.total) {
+        rc.failedScenarios.push_back(name);
+    }
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Cascade runner: runs all E2E scenarios; for each failure runs the linked
+// HighLevel scenarios; for each HighLevel failure runs the linked LowLevel
+// scenarios. Each scenario is run at most once per cascade (deduplicated).
+// ---------------------------------------------------------------------------
+static void runCascade(const ScenarioRegistry& registry, RunContext& rc) {
+    std::set<std::string> alreadyRan;
+
+    auto runIfNew = [&](const std::string& name, const char* banner) -> bool {
+        if (alreadyRan.count(name)) return true;  // already passed (or already ran)
+        if (!registry.has(name)) {
+            std::fprintf(stderr, "  (cascade: scenario '%s' not registered, skipping)\n",
+                         name.c_str());
+            return true;
+        }
+        alreadyRan.insert(name);
+        runOneScenario(registry, name, rc, banner);
+        // Return true if the scenario PASSED.
+        auto s = registry.create(name);
+        if (!s) return true;
+        // Re-run the scenario to get the result? No — we just stored it in
+        // rc.failedScenarios. Check there.
+        for (const auto& failed : rc.failedScenarios) {
+            if (failed == name) return false;
+        }
+        return true;
+    };
+
+    // Tier 1: run all E2E scenarios.
+    const auto e2eNames = registry.listByTier(TestTier::EndToEnd);
+    std::printf("\n"
+                "#############################################\n"
+                "# CASCADE TIER 1: End-to-End scenarios     #\n"
+                "#############################################\n");
+    std::vector<std::string> e2eFailures;
+    for (const auto& name : e2eNames) {
+        alreadyRan.insert(name);
+        runOneScenario(registry, name, rc,
+                       "--- E2E baseline run ---");
+        // Did it fail? Check rc.failedScenarios.
+        bool failed = false;
+        for (const auto& f : rc.failedScenarios) {
+            if (f == name) { failed = true; break; }
+        }
+        if (failed) e2eFailures.push_back(name);
+    }
+
+    if (e2eFailures.empty()) {
+        std::printf("\nAll E2E scenarios passed — cascade complete.\n");
+        return;
+    }
+
+    // Tier 2: run the linked HighLevel scenarios for each E2E failure.
+    std::printf("\n"
+                "#############################################\n"
+                "# CASCADE TIER 2: High Level drill-down    #\n"
+                "# (%zu E2E scenarios failed)                #\n"
+                "#############################################\n",
+                e2eFailures.size());
+    std::vector<std::string> highFailures;
+    for (const auto& e2eName : e2eFailures) {
+        const auto& highs = highScenariosFor(e2eName);
+        if (highs.empty()) {
+            std::printf("\n(E2E '%s' has no HighLevel mapping — skipping drill-down)\n",
+                        e2eName.c_str());
+            continue;
+        }
+        std::printf("\n--- Drill-down for E2E failure '%s' ---\n", e2eName.c_str());
+        for (const auto& h : highs) {
+            if (alreadyRan.count(h)) {
+                std::printf("\n(skipping '%s' — already ran in this cascade)\n", h.c_str());
+                continue;
+            }
+            alreadyRan.insert(h);
+            runOneScenario(registry, h, rc,
+                           "--- High Level chain (linked from E2E failure) ---");
+            bool failed = false;
+            for (const auto& f : rc.failedScenarios) {
+                if (f == h) { failed = true; break; }
+            }
+            if (failed) highFailures.push_back(h);
+        }
+    }
+
+    if (highFailures.empty()) {
+        std::printf("\nAll HighLevel chains passed — cascade complete.\n");
+        return;
+    }
+
+    // Tier 3: run the linked LowLevel scenarios for each HighLevel failure.
+    std::printf("\n"
+                "#############################################\n"
+                "# CASCADE TIER 3: Low Level drill-down     #\n"
+                "# (%zu High Level chains failed)            #\n"
+                "#############################################\n",
+                highFailures.size());
+    for (const auto& hName : highFailures) {
+        const auto& lows = lowScenariosFor(hName);
+        if (lows.empty()) {
+            std::printf("\n(HighLevel '%s' has no LowLevel mapping — skipping drill-down)\n",
+                        hName.c_str());
+            continue;
+        }
+        std::printf("\n--- Drill-down for HighLevel failure '%s' ---\n", hName.c_str());
+        for (const auto& l : lows) {
+            if (alreadyRan.count(l)) {
+                std::printf("\n(skipping '%s' — already ran in this cascade)\n", l.c_str());
+                continue;
+            }
+            alreadyRan.insert(l);
+            runOneScenario(registry, l, rc,
+                           "--- Low Level behavior (linked from HighLevel failure) ---");
+        }
+    }
+    std::printf("\nCascade complete.\n");
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
@@ -412,18 +725,36 @@ int main(int argc, char** argv) {
 
     auto& registry = ScenarioRegistry::instance();
     if (opt.list) {
-        std::printf("Available scenarios:\n");
-        for (const auto& name : registry.list()) {
-            auto s = registry.create(name);
-            std::printf("  %-12s %s\n", name.c_str(),
-                        s ? s->GetDescription().c_str() : "(no description)");
-        }
+        std::printf("Available scenarios (grouped by tier):\n");
+        printScenariosByTier(registry);
         return 0;
     }
 
     if (opt.aircraftPath.empty()) {
         std::fprintf(stderr, "Error: no aircraft JSON specified.\n\n");
         printHelp();
+        return 1;
+    }
+
+    // Validate --level argument.
+    TestTier tierFilter;
+    bool hasTierFilter = false;
+    if (opt.levelArg != "all") {
+        if (!parseTestTier(opt.levelArg, tierFilter)) {
+            std::fprintf(stderr, "Error: invalid --level '%s'. Must be low|high|e2e|all.\n",
+                        opt.levelArg.c_str());
+            return 1;
+        }
+        hasTierFilter = true;
+    }
+    if (hasTierFilter && !opt.scenarios.empty()) {
+        std::fprintf(stderr,
+            "Error: --level and --scenario are mutually exclusive. Pick one.\n");
+        return 1;
+    }
+    if (opt.cascade && (hasTierFilter || !opt.scenarios.empty())) {
+        std::fprintf(stderr,
+            "Error: --cascade cannot be combined with --level or --scenario.\n");
         return 1;
     }
 
@@ -443,11 +774,19 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "(attempting to run anyway)\n\n");
     }
 
-    // Build the list of scenarios to run
+    // Build the list of scenarios to run.
+    //   --scenario X Y    -> run X and Y
+    //   --level T         -> run all scenarios in tier T
+    //   --cascade         -> run E2E first, then drill down (handled below)
+    //   (none of the above) -> run all scenarios
     std::vector<std::string> scenarioNames = opt.scenarios;
-    if (scenarioNames.empty()) {
-        scenarioNames = registry.list();
-    } else {
+    if (scenarioNames.empty() && !opt.cascade) {
+        if (hasTierFilter) {
+            scenarioNames = registry.listByTier(tierFilter);
+        } else {
+            scenarioNames = registry.list();
+        }
+    } else if (!scenarioNames.empty()) {
         // Validate requested scenarios
         for (const auto& name : scenarioNames) {
             if (!registry.has(name)) {
@@ -502,48 +841,30 @@ int main(int argc, char** argv) {
 
     ScenarioContext sctx{cfg};
 
-    int totalPassed = 0, totalTests = 0;
+    RunContext rc{fm, sc, sctx, aircraftName, opt.traceDir, recordTraces, traces};
 
-    for (const auto& name : scenarioNames) {
-        auto scenario = registry.create(name);
-        if (!scenario) {
-            std::fprintf(stderr, "Error: failed to create scenario '%s'\n", name.c_str());
-            continue;
+    if (opt.cascade) {
+        runCascade(registry, rc);
+    } else {
+        for (const auto& name : scenarioNames) {
+            runOneScenario(registry, name, rc);
         }
-
-        std::printf("=== Scenario: %s ===\n", scenario->name().c_str());
-        std::printf("%s\n\n", scenario->GetDescription().c_str());
-
-        TraceRecorder rec;
-        ScenarioResult r = runScenario(*scenario, fm, sc, sctx, aircraftName,
-                                      recordTraces ? &rec : nullptr);
-
-        std::printf("  Scenario '%s' result: %d/%d\n\n",
-                    scenario->name().c_str(),
-                    r.passed, r.total);
-
-        if (recordTraces) {
-            // Write per-scenario JSON if --trace-dir was given.
-            if (!opt.traceDir.empty()) {
-                std::string fname = aircraftName + "_" + name + ".json";
-                std::string path = (std::filesystem::path(opt.traceDir) / fname).string();
-                if (rec.write(path)) {
-                    std::printf("  trace written: %s\n", path.c_str());
-                } else {
-                    std::fprintf(stderr, "  warning: could not write trace %s\n", path.c_str());
-                }
-            }
-            // Keep a copy for the HTML report.
-            traces.push_back(rec.trace());
-        }
-
-        totalPassed   += r.passed;
-        totalTests    += r.total;
     }
+
+    int totalPassed = rc.totalPassed;
+    int totalTests  = rc.totalTests;
 
     // Final summary
     std::printf("=== Overall ===\n");
-    std::printf("Scenarios run: %zu\n", scenarioNames.size());
+    if (opt.cascade) {
+        std::printf("Cascade run (E2E + High + Low drill-down).\n");
+        std::printf("Failed scenarios: %zu\n", rc.failedScenarios.size());
+        for (const auto& f : rc.failedScenarios) {
+            std::printf("  - %s\n", f.c_str());
+        }
+    } else {
+        std::printf("Scenarios run: %zu\n", scenarioNames.size());
+    }
     std::printf("Phases: %d/%d passed\n", totalPassed, totalTests);
 
     // --- Generate the HTML report if requested ---
