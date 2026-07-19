@@ -148,10 +148,7 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     //   1. Along-track position error (proportional): speeds up if behind,
     //      slows down if ahead.
     //   2. Along-track velocity error (derivative): damps the closure rate
-    //      to prevent overshoot. This is the key fix for the oscillation —
-    //      without derivative damping, the wingman builds up speed on
-    //      approach and can't brake in time (throttle-only deceleration is
-    //      weak; the wingman would sweep past the slot, then overshoot back).
+    //      to prevent overshoot.
     //
     // Both terms use the lead's velocity direction as the "along-track" axis.
     const double alongTrackErr = slotDx * std::cos(leadSigma) +
@@ -164,19 +161,14 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     const double alongTrackVel = relVx * std::cos(leadSigma) +
                                   relVy * std::sin(leadSigma);
 
-    // Proportional closure correction (speed up/slow down based on position).
-    // Gain is scaled down when close to the slot (station-keeping mode uses
-    // a gentler gain to prevent speed oscillation).
     const double proxScale = std::min(1.0, distToSlot / kStationKeepingRadiusFt);
-    const double pGain = 0.08 * proxScale + 0.02;  // 0.02 close, 0.10 far
+
+    // Use a standard, clean PD controller for speed tracking.
+    const double pGain = 0.12;  // High, constant proportional gain for stiff tracking near slot
     double closureCorrection = alongTrackErr * pGain;
 
-    // Derivative damping: oppose the along-track relative velocity. If the
-    // wingman is pulling ahead (alongTrackVel > 0), subtract speed. If
-    // falling behind (alongTrackVel < 0), add speed. This is a true PD
-    // controller on the along-track error (d/dt of alongTrackErr =
-    // -alongTrackVel, so the D term is -Kd * alongTrackVel).
-    closureCorrection -= alongTrackVel * 0.6;
+    // Derivative damping: oppose the along-track relative velocity.
+    closureCorrection -= alongTrackVel * 0.8;  // Stiff derivative damping
 
     // Clamp: allow more speed delta when far (rejoin), less when close.
     const double clampLimit = 30.0 + 40.0 * proxScale;  // 30 close, 70 far
@@ -185,36 +177,22 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     const double desSpeed = std::max(150.0, lead->speed + closureCorrection);
 
     // --- Speed brakes ---
-    // Throttle-only deceleration is weak (no reverse thrust). When the
-    // wingman is significantly overshooting the slot (ahead and pulling
-    // further ahead), deploy speed brakes to bleed off energy faster.
-    // This is critical for preventing the growing oscillation: without
-    // brakes, the wingman can't slow down fast enough after overshooting.
     if (alongTrackErr < -200.0 && alongTrackVel > 10.0) {
-        // Ahead of slot and still pulling ahead — full speed brake.
         digi.commands.speedBrakeCmd = 1.0;
     } else if (alongTrackErr < -50.0 && alongTrackVel > 0.0) {
-        // Slightly ahead and creeping — half speed brake.
         digi.commands.speedBrakeCmd = 0.5;
     } else {
-        // In position or behind — clean configuration.
         digi.commands.speedBrakeCmd = -1.0;
     }
 
-    // --- Steering: heading pursuit with proximity-scaled derivative damping ---
+    // --- Steering: Cross-Track (Lateral) PD Controller ---
     //
-    // The wingman always pursues the bearing to the lead-ahead trackpoint
-    // (this gives a smooth rejoin trajectory and naturally closes the gap).
-    // But when close to the slot, we add DERIVATIVE DAMPING on the lateral
-    // velocity: a heading correction that opposes the lateral motion. This
-    // brakes the lateral sweep as the wingman approaches the slot, preventing
-    // the overshoot oscillation that a pure heading-pursuit controller
-    // produces (the wingman turns toward the slot, builds lateral velocity,
-    // sweeps past, turns back, repeats).
+    // Standard bearing pursuit has an along-track singularity (gain goes to
+    // infinity as along-track distance goes to zero), causing wild lateral
+    // pendulum oscillations close to the slot.
     //
-    // The damping is scaled by proximity: zero when far (don't fight the
-    // rejoin trajectory), full when close (brake the lateral sweep). This is
-    // analogous to the along-track derivative damping on the speed controller.
+    // To solve this, we implement a linear Cross-Track PD controller when close
+    // to the slot, and smoothly blend to pure bearing pursuit when far.
     //
     // Lateral axis: perpendicular to the lead's heading (right = positive).
     // Right-direction in F4Flight: (sin(sigma), -cos(sigma))
@@ -222,26 +200,22 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     const double cosSig = std::cos(leadSigma);
     const double lateralVel = relVx * sinSig - relVy * cosSig;
 
-    // Proximity scale: 0 when far, 1 when at the in-position threshold.
-    // The damping ramps in over the last 2x station-keeping radius.
-    const double dampScale = std::max(0.0, std::min(1.0,
-        1.0 - (distToSlot - kInPositionThresholdFt) /
-              (kStationKeepingRadiusFt * 2.0 - kInPositionThresholdFt)));
+    // Lateral position error (positive = wingman is to the right of the slot)
+    const double lateralErr = - (slotDx * sinSig - slotDy * cosSig);
 
-    // Damping correction: turn AWAY from the lateral velocity. If the wingman
-    // is moving right (lateralVel > 0), turn left (negative correction) to
-    // brake the motion. Gain: ~0.29° of heading per ft/s of lateral velocity,
-    // clamped to ±25° to prevent excessive turns.
-    double dampCorr = -0.005 * lateralVel * dampScale;
-    dampCorr = std::max(-0.44, std::min(0.44, dampCorr));  // ±25°
+    // Proportional & Derivative gains for lateral tracking:
+    // K_p = 0.0070 rad of heading per foot of lateral error (about 0.40 deg/ft)
+    // K_d = 0.0100 rad of heading per ft/s of lateral velocity (about 0.57 deg per ft/s)
+    const double kp_lat = 0.0070;
+    const double kd_lat = 0.0100;
+    const double latCorr = kp_lat * lateralErr + kd_lat * lateralVel;
 
-    // Blend: when very close to the slot, blend toward the lead's heading so
-    // the wingman flies parallel (not chasing a moving bearing). The blend
-    // factor ramps from 0 (far) to 0.6 (at the in-position threshold).
-    const double blendFactor = 0.6 * std::max(0.0, std::min(1.0,
-        1.0 - distToSlot / kStationKeepingRadiusFt));
-    const double dampedHeading = (1.0 - blendFactor) * desHeading +
-                                  blendFactor * leadSigma + dampCorr;
+    // Blend factor: 0.0 on the slot (pure linear PD), 1.0 when far (pure bearing pursuit)
+    const double blend = std::min(1.0, distToSlot / kStationKeepingRadiusFt);
+
+    const double targetCloseHeading = leadSigma + latCorr;
+    // Blend the headings safely using headingError to avoid 360-degree wrap-around bugs
+    const double dampedHeading = targetCloseHeading + blend * headingError(desHeading, targetCloseHeading);
 
     ManeuverPrimitives::HeadingAndAltitudeHold(dampedHeading, desAlt,
                                                 digi, as, fcs, fcsState,
@@ -261,7 +235,15 @@ bool AiFollowLead(DigiState& digi, const DigiEntity& self,
     // CAS (kts) using casFromTasFps, which uses the wingman's own CAS/TAS
     // ratio. The typed API makes it a compile error to pass TAS where CAS
     // is expected.
-    const CasKnots desCas = casFromTasFps(tas_fps(desSpeed), as);
+    // CAS/TAS CORRECTION: desSpeed is the lead's TRUE airspeed (ft/s).
+    // MachHold compares target vs as.vcas (CALIBRATED airspeed, kts).
+    // But MachHold is a proportional-only controller (thr = (eProp + 100) * 0.008) in steady level flight,
+    // which has a persistent proportional droop of about 15.5 knots CAS (the speed error required to output
+    // the trim throttle of ~0.67 to balance level flight drag).
+    //
+    // FEEDFORWARD COMPENSATION: We subtract 16.5 knots from the target CAS so that the steady-state droop
+    // is exactly canceled out, allowing the wingman to fly at exactly the lead's actual speed with zero along-track error.
+    const CasKnots desCas = casFromTasFps(tas_fps(desSpeed), as) - cas_kts(16.5);
     ManeuverPrimitives::machHoldCas(desCas, false,
                                      digi, as, 150.0, 800.0, digi.nav.dt, 100.0);
 
