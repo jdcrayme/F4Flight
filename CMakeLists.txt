@@ -50,6 +50,7 @@ endif()
 # ===========================================================================
 add_subdirectory(flight)
 add_subdirectory(digi)
+add_subdirectory(campaign)
 
 # ===========================================================================
 # Tools (must come before tests — f4flight_test_framework links f4flight_trace)
@@ -72,7 +73,7 @@ endif()
 include(GNUInstallDirs)
 
 # Install both libraries + their headers
-install(TARGETS f4flight_flight f4flight_digi
+install(TARGETS f4flight_flight f4flight_digi f4flight_campaign
     EXPORT f4flightTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -81,6 +82,10 @@ install(TARGETS f4flight_flight f4flight_digi
 )
 
 install(DIRECTORY flight/include/f4flight
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.h"
+)
+install(DIRECTORY campaign/include/f4flight
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
 )
