@@ -83,7 +83,7 @@ file(GLOB F4FLIGHT_DIGI_UNIT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/digi/unit/*.cpp"
 )
 add_executable(f4flight_digi_tests ${F4FLIGHT_DIGI_UNIT_SOURCES})
-target_link_libraries(f4flight_digi_tests PRIVATE f4flight::digi GTest::gtest GTest::gtest_main)
+target_link_libraries(f4flight_digi_tests PRIVATE f4flight::digi f4flight_campaign GTest::gtest GTest::gtest_main)
 if(MSVC)
     target_compile_options(f4flight_digi_tests PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8)
 else()
