@@ -90,7 +90,7 @@ double CoarseGunsTrack(DigiState& digi, const DigiEntity& self,
 void FineGunsTrack(DigiState& digi, const DigiEntity& self,
                    const DigiEntity& target, const AircraftState& as,
                    const WeaponSpec& gun, const FlightControlSystem& fcs,
-                   FcsState& fcsState, double speed, double dt,
+                   FcsState& fcsState, CasKnots speed, double dt,
                    double& lagAngle) {
     (void)fcs;
 
@@ -151,7 +151,7 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
         // to corner speed to give the tracking loop more time.
         CoarseGunsTrack(digi, self, target, as, gun, fcsState, leadTime);
         if (ata > 60.0 * DTR) {
-            speed = digi.config.cornerSpeed;
+            speed = cas_kts(digi.config.cornerSpeed);
         }
 
         // Transition to fine track when pipper near target
@@ -202,11 +202,8 @@ void FineGunsTrack(DigiState& digi, const DigiEntity& self,
 
     // Hold speed
     //
-    // `speed` is CALIBRATED airspeed in kts (the caller passes CAS-kts —
-    // either cornerSpeed or a CAS-converted target speed, see GunsEngage
-    // below). Use the typed machHoldCas API to enforce the CAS contract at
-    // compile time.
-    ManeuverPrimitives::machHoldCas(cas_kts(speed), false,
+    // `speed` is CALIBRATED airspeed in kts. Use the typed machHoldCas API.
+    ManeuverPrimitives::machHoldCas(speed, false,
                                      digi, as, 100.0, 400.0, dt, 100.0);
 }
 
@@ -228,7 +225,7 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
         // Ahead of 3/9 — look for a shot
         double lagAngle = 0.0;
         FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                      digi.config.cornerSpeed, dt, lagAngle);
+                      cas_kts(digi.config.cornerSpeed), dt, lagAngle);
     } else {
         // Behind 3/9 — closure control BFM
         const double CONTROL_POINT_DISTANCE = 1400.0;
@@ -279,14 +276,14 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
                     RollAndPull(digi, self, target, as, fcs, fcsState, dt);
                 }
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(targetCasKts, as.vcas +
-                                       (desiredClosure - actualClosure)),
+                              cas_kts(std::min(targetCasKts, as.vcas +
+                                       (desiredClosure - actualClosure))),
                               dt, lagAngle);
             } else {
                 // Too close and slow — point to shoot
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(targetCasKts, as.vcas +
-                                       (desiredClosure - actualClosure)),
+                              cas_kts(std::min(targetCasKts, as.vcas +
+                                       (desiredClosure - actualClosure))),
                               dt, lagAngle);
             }
         } else {
@@ -294,14 +291,14 @@ void GunsEngage(DigiState& digi, const DigiEntity& self,
             if (actualClosure > desiredClosure) {
                 // Too far and fast — point to shoot and slow
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(targetCasKts, as.vcas +
-                                       (desiredClosure - actualClosure)),
+                              cas_kts(std::min(targetCasKts, as.vcas +
+                                       (desiredClosure - actualClosure))),
                               dt, lagAngle);
             } else {
                 // Too far and slow — point to shoot, overbank if lagging
                 FineGunsTrack(digi, self, target, as, gun, fcs, fcsState,
-                              std::min(targetCasKts + 30.0, as.vcas +
-                                       (desiredClosure - actualClosure)),
+                              cas_kts(std::min(targetCasKts + 30.0, as.vcas +
+                                       (desiredClosure - actualClosure))),
                               dt, lagAngle);
                 // (OverBMode would be added here in full FF port —
                 //  we don't have that mode yet, so skip the AddMode call.)

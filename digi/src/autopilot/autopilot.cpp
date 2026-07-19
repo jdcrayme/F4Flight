@@ -23,6 +23,10 @@ namespace digi {
 void Autopilot::update(DigiState& digi, const AircraftState& as,
                         const FlightControlSystem& fcs, FcsState& fcsState,
                         double dt) {
+    if (mode_ != AutopilotMode::PitchRollHold) {
+        attitudeCaptured_ = false;
+    }
+
     if (mode_ == AutopilotMode::Off) return;
 
     // Set the flight phase to Cruise for gain scheduling.
@@ -150,28 +154,29 @@ void Autopilot::altitudeSelect(DigiState& digi, const AircraftState& as,
 //
 // Port of FreeFalcon's PitchRollHold (autopilot.cpp:380-470).
 //
-// Holds the current pitch + roll attitude. This is the "attitude hold"
-// mode — the aircraft maintains its current attitude without correcting
-// to a target altitude or heading.
+// Holds the captured pitch (gamma) and roll (phi) attitudes from the moment
+// the mode is engaged.
 // ===========================================================================
 void Autopilot::pitchRollHold(DigiState& digi, const AircraftState& as,
                                 const FlightControlSystem& /*fcs*/, FcsState& /*fcsState*/,
                                 double /*dt*/) {
+    // Capture attitude on first frame of entering the mode
+    if (!attitudeCaptured_) {
+        targetPitch_ = as.kin.gmma * RTD;
+        targetRoll_ = as.kin.phi * RTD;
+        attitudeCaptured_ = true;
+    }
 
-    // Hold current pitch attitude (gamma ≈ current theta).
-    // Use GammaHold with the current gamma as the target — this holds
-    // the current flight path angle, which is close to pitch attitude
-    // at low alpha.
-    const double currentGamma = as.kin.gmma * RTD;
+    // Hold the captured pitch attitude (gamma target)
     digi.nav.gammaHoldIError = 0.0;
-    ManeuverPrimitives::GammaHold(currentGamma, digi, as, digi.config.maxGs);
+    ManeuverPrimitives::GammaHold(targetPitch_, digi, as, digi.config.maxGs);
     ManeuverPrimitives::PhugoidDamper(digi, as);
 
-    // Hold current roll attitude (wings level if near level).
+    // Hold the captured roll attitude (phi target)
     ManeuverPrimitives::SetYpedal(0.0, digi);
     double rollDeg = as.kin.phi * RTD;
-    // Command wings level (roll toward 0°).
-    double rollErr = -rollDeg * 2.0;
+    // Command roll hold: roll error = targetRoll_ - rollDeg (proportional).
+    double rollErr = targetRoll_ - rollDeg;
     digi.commands.rStick = std::max(-1.0, std::min(1.0, rollErr * DTR * 0.75));
 
     // Speed control.

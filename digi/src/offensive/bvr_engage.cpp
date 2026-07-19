@@ -114,7 +114,7 @@ BvrTactic BvrChooseTactic(BvrProfile profile, const DigiEntity& self,
 void StickandThrottle(DigiState& digi, const DigiEntity& self,
                       const AircraftState& as,
                       const FlightControlSystem& fcs, FcsState& fcsState,
-                      double desiredSpeedKts, double desiredAltFt,
+                      CasKnots desiredSpeed, double desiredAltFt,
                       double dt) {
     (void)self;
     (void)fcs;
@@ -128,7 +128,7 @@ void StickandThrottle(DigiState& digi, const DigiEntity& self,
     // altitude (set by the caller) rather than commanding a descent.
     // TODO: port the FF energy-management loop when BVR tuning is exercised
     //       by a scenario (currently BVR is smoke-test only — see test audit).
-    const double speedDiff = desiredSpeedKts - as.vcas;
+    const double speedDiff = desiredSpeed.count() - as.vcas;
 
     if (speedDiff <= 50.0) {
         // Near target speed — adjust trackZ toward desired altitude.
@@ -148,10 +148,8 @@ void StickandThrottle(DigiState& digi, const DigiEntity& self,
 
     // Hold speed
     //
-    // desiredSpeedKts is CALIBRATED airspeed in kts (the callers in this
-    // file pass CAS — cornerSpeed, targetCasKts + 100, as.vcas). Use the
-    // typed machHoldCas API to make this contract explicit at compile time.
-    ManeuverPrimitives::machHoldCas(cas_kts(desiredSpeedKts), true,
+    // desiredSpeed is CALIBRATED airspeed in kts. Use the typed machHoldCas API.
+    ManeuverPrimitives::machHoldCas(desiredSpeed, true,
                                      digi, as, 200.0, 800.0, dt, 700.0);
 }
 
@@ -186,7 +184,7 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
         // replaces the manual casToTasRatio idiom that was copy-pasted here.
         const CasKnots targetCas = casFromTasFps(tas_fps(target.speed), as);
         StickandThrottle(digi, self, as, fcs, fcsState,
-                         targetCas.count() + 100.0, -target.z, dt);
+                         targetCas + cas_kts(100.0), -target.z, dt);
         return;
     }
 
@@ -216,7 +214,7 @@ void CrankManeuver(DigiState& digi, const DigiEntity& self,
     digi.nav.trackZ = self.z;  // hold altitude
 
     StickandThrottle(digi, self, as, fcs, fcsState,
-                     digi.config.cornerSpeed, -self.z, dt);
+                     cas_kts(digi.config.cornerSpeed), -self.z, dt);
 }
 
 // ===========================================================================
@@ -253,7 +251,7 @@ void BeamManeuver(DigiState& digi, const DigiEntity& self,
     digi.nav.trackZ = std::max(self.z, -10000.0);
 
     StickandThrottle(digi, self, as, fcs, fcsState,
-                     digi.config.cornerSpeed, -digi.nav.trackZ, dt);
+                     cas_kts(digi.config.cornerSpeed), -digi.nav.trackZ, dt);
 }
 
 // ===========================================================================
@@ -283,7 +281,7 @@ void DragManeuver(DigiState& digi, const DigiEntity& self,
 
     // Max speed for drag (escape)
     StickandThrottle(digi, self, as, fcs, fcsState,
-                     as.vcas, -self.z, dt);
+                     cas_kts(as.vcas), -self.z, dt);
 }
 
 // ===========================================================================
@@ -311,7 +309,7 @@ void BvrEngage(DigiState& digi, const DigiEntity& self,
         case BvrTactic::Pursuit:
             // Head toward target, shoot when in range
             StickandThrottle(digi, self, as, fcs, fcsState,
-                             1.3 * digi.config.cornerSpeed, -target.z, dt);
+                             cas_kts(1.3 * digi.config.cornerSpeed), -target.z, dt);
             break;
 
         case BvrTactic::Crank:
@@ -328,7 +326,7 @@ void BvrEngage(DigiState& digi, const DigiEntity& self,
 
         default:
             StickandThrottle(digi, self, as, fcs, fcsState,
-                             digi.config.cornerSpeed, -target.z, dt);
+                             cas_kts(digi.config.cornerSpeed), -target.z, dt);
             break;
     }
 }

@@ -189,7 +189,7 @@ TEST(AutopilotTest, AltitudeSelectUsesDampedGains) {
         << "AltitudeSelect should command nose-up when target is above";
 }
 
-TEST(AutopilotTest, PitchRollHoldCommandsWingsLevel) {
+TEST(AutopilotTest, PitchRollHoldCapturesAndHoldsAttitude) {
     Autopilot ap;
     ap.setMode(AutopilotMode::PitchRollHold);
 
@@ -201,13 +201,31 @@ TEST(AutopilotTest, PitchRollHoldCommandsWingsLevel) {
     digi.config.cornerSpeed = 350.0;
 
     auto as = makeCruiseState();
+    as.kin.gmma = 5.0 * f4flight::DTR;  // 5° pitch/climb
     as.kin.phi = 15.0 * f4flight::DTR;  // 15° right bank
     f4flight::FlightControlSystem fcs;
     f4flight::FcsState fcsState;
 
+    // First update: should capture 5° pitch and 15° bank. Since we are exactly on target, rstick error is 0.
+    ap.update(digi, as, fcs, fcsState, 1.0 / 60.0);
+    EXPECT_DOUBLE_EQ(digi.commands.rStick, 0.0);
+
+    // Second update: drift right to 16° bank. Should command roll left (negative rstick).
+    as.kin.phi = 16.0 * f4flight::DTR;
+    ap.update(digi, as, fcs, fcsState, 1.0 / 60.0);
+    EXPECT_LT(digi.commands.rStick, 0.0);
+
+    // Third update: drift left to 14° bank. Should command roll right (positive rstick).
+    as.kin.phi = 14.0 * f4flight::DTR;
+    ap.update(digi, as, fcs, fcsState, 1.0 / 60.0);
+    EXPECT_GT(digi.commands.rStick, 0.0);
+
+    // Fourth update: change autopilot mode away and back. Should capture the new attitude.
+    ap.setMode(AutopilotMode::AltitudeHold);
     ap.update(digi, as, fcs, fcsState, 1.0 / 60.0);
 
-    // PitchRollHold should command wings level (negative rstick = roll left)
-    EXPECT_LT(digi.commands.rStick, 0.0)
-        << "PitchRollHold should command roll left when banked right";
+    ap.setMode(AutopilotMode::PitchRollHold);
+    as.kin.phi = 20.0 * f4flight::DTR;  // new bank 20°
+    ap.update(digi, as, fcs, fcsState, 1.0 / 60.0);
+    EXPECT_DOUBLE_EQ(digi.commands.rStick, 0.0) << "Should recapture new 20° bank as target";
 }

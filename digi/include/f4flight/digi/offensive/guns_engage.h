@@ -27,6 +27,7 @@
 #include "f4flight/digi/weapons/weapon_spec.h"
 #include "f4flight/flight/aircraft_state.h"
 #include "f4flight/flight/fcs.h"
+#include "f4flight/flight/core/units.h"
 
 namespace f4flight {
 namespace digi {
@@ -76,7 +77,7 @@ double CoarseGunsTrack(DigiState& digi, const DigiEntity& self,
 void FineGunsTrack(DigiState& digi, const DigiEntity& self,
                    const DigiEntity& target, const AircraftState& as,
                    const WeaponSpec& gun, const FlightControlSystem& fcs,
-                   FcsState& fcsState, double speed, double dt,
+                   FcsState& fcsState, CasKnots speed, double dt,
                    double& lagAngle);
 
 // ===========================================================================
