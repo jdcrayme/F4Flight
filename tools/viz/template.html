@@ -34,6 +34,22 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .index-summary .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 16px}
 .index-summary .stat .v{font-size:20px;font-weight:600}
 .index-summary .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+
+/* ---------- Tier tab bar ---------- */
+/* Three tabs (Low Level | High Level | End-to-End) + an "All" tab. Clicking a
+   tab filters the card grid by trace.testLevel and updates the summary cards
+   to reflect only that tier. */
+.tier-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;flex-wrap:wrap}
+.tier-tabs .tab{background:transparent;border:none;color:var(--muted);padding:8px 16px;font-size:13px;
+  font-weight:500;border-bottom:2px solid transparent;cursor:pointer;border-radius:4px 4px 0 0}
+.tier-tabs .tab:hover{color:var(--text);background:var(--panel)}
+.tier-tabs .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tier-tabs .tab .count{display:inline-block;background:var(--panel2);color:var(--muted);
+  border-radius:10px;padding:1px 7px;font-size:11px;margin-left:6px}
+.tier-tabs .tab.active .count{background:rgba(96,165,250,.2);color:var(--accent)}
+.tier-tabs .tab .fail-pill{display:inline-block;background:rgba(248,113,113,.15);color:var(--fail);
+  border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;border:1px solid rgba(248,113,113,.3)}
+
 .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
 .filter-bar select,.filter-bar input{background:var(--panel);border:1px solid var(--border);color:var(--text);
   border-radius:6px;padding:6px 10px;font-size:13px}
@@ -191,6 +207,12 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 
   <!-- Index view -->
   <section id="index-view">
+    <div class="tier-tabs" id="tier-tabs">
+      <button class="tab active" data-tier="all">All <span class="count" id="count-all">0</span></button>
+      <button class="tab" data-tier="Low Level">Low Level <span class="count" id="count-low">0</span><span class="fail-pill hidden" id="fail-low">0</span></button>
+      <button class="tab" data-tier="High Level">High Level <span class="count" id="count-high">0</span><span class="fail-pill hidden" id="fail-high">0</span></button>
+      <button class="tab" data-tier="End-to-End">End-to-End <span class="count" id="count-e2e">0</span><span class="fail-pill hidden" id="fail-e2e">0</span></button>
+    </div>
     <div class="index-summary" id="index-summary"></div>
     <div class="filter-bar" id="filter-bar">
       <label>Filter
@@ -293,6 +315,7 @@ const state = {
   playTimer: null,
   filter: '',
   filterStatus: '',
+  tierFilter: 'all',  // 'all' | 'Low Level' | 'High Level' | 'End-to-End'
 };
 
 const threeState = {
@@ -967,15 +990,60 @@ function threatsSvg(tr,sx,sy,currentT){
 // ---------------------------------------------------------------------------
 // Index view
 // ---------------------------------------------------------------------------
+// Compute tier counts (used by the tab bar). Returns an object with one entry
+// per tier: { total, fail }.
+function computeTierCounts(){
+  const counts = {
+    'all':        {total: TRACES.length, fail: 0},
+    'Low Level':  {total: 0, fail: 0},
+    'High Level': {total: 0, fail: 0},
+    'End-to-End': {total: 0, fail: 0},
+  };
+  for (const tr of TRACES) {
+    const tier = tr.testLevel || '';
+    const st = traceStatus(tr);
+    if (counts[tier]) {
+      counts[tier].total++;
+      if (st === 'fail') counts[tier].fail++;
+    }
+    if (st === 'fail') counts['all'].fail++;
+  }
+  return counts;
+}
+
+function renderTierTabs(){
+  const counts = computeTierCounts();
+  document.getElementById('count-all').textContent = counts['all'].total;
+  document.getElementById('count-low').textContent = counts['Low Level'].total;
+  document.getElementById('count-high').textContent = counts['High Level'].total;
+  document.getElementById('count-e2e').textContent = counts['End-to-End'].total;
+  const setFail = (id, n) => {
+    const el = document.getElementById(id);
+    el.textContent = n;
+    el.classList.toggle('hidden', n === 0);
+  };
+  setFail('fail-low',  counts['Low Level'].fail);
+  setFail('fail-high', counts['High Level'].fail);
+  setFail('fail-e2e',  counts['End-to-End'].fail);
+}
+
 function renderIndex(){
-  const summary=document.getElementById('index-summary');
-  const total=TRACES.length;
-  let passN=0,failN=0,phaseP=0,phaseT=0;
-  for(const tr of TRACES){
+  // Update the per-tier counts in the tab bar.
+  renderTierTabs();
+
+  // Compute summary cards based on the currently-selected tier.
+  let tierTraces = TRACES;
+  if (state.tierFilter !== 'all') {
+    tierTraces = TRACES.filter(tr => (tr.testLevel || '') === state.tierFilter);
+  }
+  const total = tierTraces.length;
+  let passN=0, failN=0, phaseP=0, phaseT=0;
+  for (const tr of tierTraces){
     const st=traceStatus(tr);
     if(st==='pass')passN++;else failN++;
     phaseP+=tracePassedCount(tr);phaseT+=traceTotalCount(tr);
   }
+  const summary=document.getElementById('index-summary');
   summary.innerHTML=
     statCard(total,'Traces')+
     statCard(passN,'Passing')+
@@ -989,6 +1057,8 @@ function renderIndex(){
   let shown=0;
   for(let i=0;i<TRACES.length;i++){
     const tr=TRACES[i];
+    // Apply tier filter first.
+    if (state.tierFilter !== 'all' && (tr.testLevel || '') !== state.tierFilter) continue;
     const st=traceStatus(tr);
     if(filtStatus&&st!==filtStatus)continue;
     if(filt){
@@ -998,10 +1068,15 @@ function renderIndex(){
     shown++;
     const badgeCls=st==='pass'?'pass':'fail';
     const badgeTxt=st==='pass'?'PASS':'FAIL';
+    // Show the tier as a small badge under the title so it's visible which
+    // tier a card belongs to even when "All" is selected.
+    const tierBadge = tr.testLevel
+      ? '<span class="badge skip" style="margin-right:6px">'+esc(tr.testLevel)+'</span>'
+      : '';
     html+='<div class="card" data-idx="'+i+'">'+
       '<div class="thumb">'+miniTopdown(tr)+'</div>'+
       '<div class="title">'+esc(tr.aircraft)+' &mdash; '+esc(tr.scenario)+'</div>'+
-      '<div class="meta">'+tracePassedCount(tr)+'/'+traceTotalCount(tr)+' phases &middot; '+
+      '<div class="meta">'+tierBadge+tracePassedCount(tr)+'/'+traceTotalCount(tr)+' phases &middot; '+
         fmt(traceDuration(tr),0)+'s &middot; '+tr.frames.length+' frames</div>'+
       '<div style="margin-top:6px"><span class="badge '+badgeCls+'">'+badgeTxt+'</span></div>'+
       '</div>';
@@ -1933,6 +2008,17 @@ document.addEventListener('wheel',e=>{
 },{passive:false});
 document.getElementById('filter-input').addEventListener('input',e=>{state.filter=e.target.value;renderIndex();});
 document.getElementById('filter-status').addEventListener('change',e=>{state.filterStatus=e.target.value;renderIndex();});
+
+// Tier tab click handler. Clicking a tab updates state.tierFilter and
+// re-renders the index. The 'active' class is moved to the clicked tab.
+document.querySelectorAll('.tier-tabs .tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tier-tabs .tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    state.tierFilter = tab.dataset.tier;
+    renderIndex();
+  });
+});
 
 document.addEventListener('keydown',e=>{
   if(state.traceIdx<0)return;

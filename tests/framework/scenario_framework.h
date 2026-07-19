@@ -42,6 +42,55 @@ using namespace f4flight;
 
 namespace f4flight_test {
 
+// ===========================================================================
+// TestTier — three-tier classification for DIGI AI scenarios.
+//
+//   LowLevel   — one behavior per scenario (Takeoff, Climb, BVR Engage, ...).
+//                Covers every entry in FreeFalcon's DigiMode enum.
+//   HighLevel  — a chain of related behaviors (Taxi -> Takeoff -> Departure,
+//                Tanker Intercept -> Pre-Contact -> Contact -> Disconnect).
+//                The intermediate layer between Low and E2E.
+//   EndToEnd   — a full mission analogous to one of FreeFalcon's AMIS_*
+//                campaign mission types (BARCAP, INTERCEPT, ESCORT, ...).
+//
+// The cascade workflow:
+//   1. Run all E2E tests on a commit.
+//   2. For every E2E that fails, run the associated HighLevel tests.
+//   3. For every HighLevel that fails, run the associated LowLevel tests.
+//   4. The LowLevel failure points you at the exact behavior that broke.
+//
+// The mapping tables live in scenario_framework.cpp (g_e2eToHigh, g_highToLow).
+// ===========================================================================
+enum class TestTier {
+    LowLevel,
+    HighLevel,
+    EndToEnd,
+};
+
+// String form used in the trace `testLevel` field and HTML report tabs.
+inline const char* testTierName(TestTier t) {
+    switch (t) {
+        case TestTier::LowLevel:  return "Low Level";
+        case TestTier::HighLevel: return "High Level";
+        case TestTier::EndToEnd:  return "End-to-End";
+    }
+    return "Unknown";
+}
+
+// Parse a tier from a CLI --level argument. Returns true on success.
+inline bool parseTestTier(const std::string& s, TestTier& out) {
+    if (s == "low"  || s == "low-level"  || s == "lowlevel")  { out = TestTier::LowLevel;  return true; }
+    if (s == "high" || s == "high-level" || s == "highlevel") { out = TestTier::HighLevel; return true; }
+    if (s == "e2e"  || s == "end-to-end" || s == "endtoend")  { out = TestTier::EndToEnd;  return true; }
+    return false;
+}
+
+// Get the cascade mapping (defined in scenario_framework.cpp).
+//   highScenariosFor(e2eName)  -> list of high-level scenario names
+//   lowScenariosFor(highName)  -> list of low-level scenario names
+const std::vector<std::string>& highScenariosFor(const std::string& e2eName);
+const std::vector<std::string>& lowScenariosFor(const std::string& highName);
+
 // ---------------------------------------------------------------------------
 // Abstract base class for maneuver test phases.
 //
@@ -208,8 +257,16 @@ public:
     // Test group metadata, e.g. "Fighter Formation", "Ground Ops"
     virtual std::string GetTestGroup() const { return "General"; }
 
-    // Test level metadata, e.g. "Low Level", "High Level", "End-to-End"
-    virtual std::string GetTestLevel() const { return "Integration"; }
+    // Test tier — LowLevel / HighLevel / EndToEnd. Subclasses MUST override
+    // this to participate in the cascade workflow and HTML tab filtering.
+    // The default returns LowLevel for backward compatibility with old
+    // scenarios that haven't been classified yet; those scenarios also get
+    // an "Unclassified" warning printed by --list so they're easy to find.
+    virtual TestTier GetTestTier() const { return TestTier::LowLevel; }
+
+    // String form for the trace `testLevel` field. Defaults to the tier name
+    // so subclasses usually don't need to override this.
+    virtual std::string GetTestLevel() const { return testTierName(GetTestTier()); }
 
     // Build the ordered list of test phases. Called once at startup with
     // the scenario context (aircraft config, profile, cruise altitude).
@@ -252,6 +309,17 @@ public:
         std::vector<std::string> names;
         names.reserve(scenarios_.size());
         for (const auto& kv : scenarios_) names.push_back(kv.first);
+        return names;
+    }
+
+    // List scenario names filtered by tier. Used by --level CLI flag and
+    // by the cascade runner to enumerate the scenarios in a single tier.
+    std::vector<std::string> listByTier(TestTier tier) const {
+        std::vector<std::string> names;
+        for (const auto& kv : scenarios_) {
+            auto s = kv.second();
+            if (s && s->GetTestTier() == tier) names.push_back(kv.first);
+        }
         return names;
     }
 
