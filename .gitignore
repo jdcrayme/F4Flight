@@ -12,6 +12,9 @@ out/
 *.dll
 *.dylib
 *.exe
+f4flight_report.html
+my_report.html
+my_report_all.html
 
 # CMake
 CMakeCache.txt
@@ -35,4 +38,3 @@ Thumbs.db
 
 # Logs
 *.log
-f4flight_report.html

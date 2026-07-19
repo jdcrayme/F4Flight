@@ -280,7 +280,7 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
       </div>
       <div class="panel">
         <h3>Scenario Data, Samples &amp; Event Log</h3>
-        <div class="data-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;height:500px">
+        <div class="data-grid" style="display:grid;grid-template-rows:1fr 1fr;gap:16px;height:500px">
           <div class="sub-panel" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h4 style="margin:0 0 10px 0;font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px">Discrete Events Log</h4>
             <div id="data-events-log" style="flex:1;overflow-y:auto;font-family:ui-monospace,monospace;font-size:12px;padding:4px"></div>
@@ -1429,7 +1429,7 @@ function initThreeJS(tr) {
     const theta = f.theta || 0;
     const phi = f.phi || 0;
     const psi = f.psi || 0;
-    const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+    const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
     const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
     const wing_half_width = span * 0.0035;
 
@@ -1492,7 +1492,7 @@ function initThreeJS(tr) {
         const theta = th.theta || 0;
         const phi = th.phi || 0;
         const psi = th.psi || 0;
-        const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+        const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
         const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
         const wing_half_width = span * 0.0025;
 
@@ -1652,7 +1652,7 @@ function render3D(tr){
   const theta = acFrame.theta || 0;
   const phi = acFrame.phi || 0;
   const psi = acFrame.psi || 0;
-  const euler = new THREE.Euler(theta, -phi, -psi, 'ZXY');
+  const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
   threeState.aircraft.rotation.copy(euler);
 
   const positions = threeState.tadpole.geometry.attributes.position.array;
@@ -1730,7 +1730,7 @@ function render3D(tr){
         const t_psi = th.psi || 0;
         const t_theta = th.theta || 0;
         const t_phi = th.phi || 0;
-        const t_euler = new THREE.Euler(t_theta, -t_phi, -t_psi, 'ZXY');
+        const t_euler = new THREE.Euler(t_theta, t_phi, -t_psi, 'ZXY');
         mesh.rotation.copy(t_euler);
       }
 
