@@ -25,6 +25,7 @@
 #include "f4flight/digi/digi_entity.h"
 #include "f4flight/flight/aircraft_state.h"
 #include "f4flight/flight/fcs.h"
+#include "f4flight/flight/core/units.h"
 
 namespace f4flight {
 namespace digi {
@@ -117,7 +118,7 @@ BvrTactic BvrChooseTactic(BvrProfile profile, const DigiEntity& self,
 void StickandThrottle(DigiState& digi, const DigiEntity& self,
                       const AircraftState& as,
                       const FlightControlSystem& fcs, FcsState& fcsState,
-                      double desiredSpeedKts, double desiredAltFt,
+                      CasKnots desiredSpeed, double desiredAltFt,
                       double dt);
 
 // ===========================================================================

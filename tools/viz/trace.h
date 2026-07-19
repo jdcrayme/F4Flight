@@ -36,6 +36,15 @@ struct ThreatEntity {
     double speed{0.0};  // ft/s
     std::string name;   // Name of the track, e.g., "Lead", "Slot 1" (optional)
     double psi{0.0}, theta{0.0}, phi{0.0}; // Euler yaw, pitch, roll orientation (radians)
+
+    // Default constructor for zero-initialization / deserialization
+    ThreatEntity() = default;
+
+    // Parameterized constructor to avoid missing-field-initializers warnings in aggregate lists
+    ThreatEntity(std::string t, double x_val, double y_val, double z_val, double spd,
+                 std::string nm = "", double p = 0.0, double th = 0.0, double ph = 0.0)
+        : type(std::move(t)), x(x_val), y(y_val), z(z_val), speed(spd), name(std::move(nm)),
+          psi(p), theta(th), phi(ph) {}
 };
 
 // TraceGeometry — static test geometry overlays to display in the 3D/2D views.

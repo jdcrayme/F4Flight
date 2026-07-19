@@ -105,6 +105,11 @@ private:
     double targetHeading_{0.0};  // rad
     double targetSpeed_{0.0};    // kts CAS (0 = use cornerSpeed)
 
+    // Captured attitude for PitchRollHold mode
+    double targetPitch_{0.0};    // deg
+    double targetRoll_{0.0};     // deg
+    bool attitudeCaptured_{false};
+
     // --- Per-mode implementations ---
     void altitudeHold(DigiState& digi, const AircraftState& as,
                        const FlightControlSystem& fcs, FcsState& fcsState,
