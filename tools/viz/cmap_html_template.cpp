@@ -1,6 +1,7 @@
 // f4flight - tools/viz/cmap_html_template.cpp
 //
 // HTML template definitions for the campaign visualizer.
+// Split into multiple smaller chunks to bypass MSVC's 65,535-byte string literal limit (C2026).
 
 namespace f4flight {
 namespace campaign {
@@ -179,9 +180,8 @@ button.active { background: var(--accent); color: #0f111a; border-color: var(--a
 <script>
 )HTML";
 
-const char* kCampaignHtmlTail = R"HTML(
-// JavaScript visualization implementation of Campaign State
-
+// Split Javascript segments to prevent MSVC C2026 "string too big" compiler errors
+const char* kCampaignHtmlTail1 = R"HTML(
 document.getElementById('app-title').textContent = CAMPAIGN_TITLE;
 
 const frames = CAMPAIGN_FRAMES;
@@ -259,7 +259,9 @@ document.getElementById('btn-reset-view').addEventListener('click', () => {
   panY = (viewport.clientHeight - mapHeight) / 2;
   updateTransform();
 });
+)HTML";
 
+const char* kCampaignHtmlTail2 = R"HTML(
 // Cover Type Coloring and Patterns
 function getCoverColor(cover) {
   switch(cover) {
@@ -283,14 +285,10 @@ function getFactionColor(faction) {
 }
 
 // Convert world coordinates (ft, ENU where origin is bottom left) to screen pixel coordinates on canvas
-// The procedural map is 32 NM x 32 NM. 1 NM = 6076.12 ft.
 const NM_FT = 6076.12;
 const MAP_SIZE_FT = 32 * NM_FT;
 
 function worldToCanvas(pos) {
-  // x goes from 0 to MAP_SIZE_FT -> mapWidth
-  // y goes from 0 to MAP_SIZE_FT -> mapHeight.
-  // In screen canvas, (0,0) is top-left, so we flip Y:
   const px = (pos[0] / MAP_SIZE_FT) * mapWidth;
   const py = mapHeight - (pos[1] / MAP_SIZE_FT) * mapHeight;
   return { x: px, y: py };
@@ -337,12 +335,10 @@ function render() {
       }
     }
   }
+)HTML";
 
+const char* kCampaignHtmlTail3 = R"HTML(
   // 2. Draw Road Node connections as highways
-  const rn = frame.roadNetwork;
-  ctx.strokeStyle = '#4b5563';
-  ctx.lineWidth = 2.5;
-  // Let's connect objectives procedurally since edges aren't fully listed in json serialization
   const objPosMap = {};
   frame.objectives.forEach(obj => {
     objPosMap[obj.id] = worldToCanvas(obj.pos);
@@ -357,6 +353,8 @@ function render() {
   objPosMap[10] = worldToCanvas([15 * NM_FT, 11 * NM_FT, 80]);
   objPosMap[11] = worldToCanvas([22 * NM_FT, 14 * NM_FT, 150]);
 
+  ctx.strokeStyle = '#4b5563';
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
   roadEdges.forEach(([from, to]) => {
     const p1 = objPosMap[from];
@@ -398,16 +396,13 @@ function render() {
 
     ctx.beginPath();
     if (obj.type === 'Airbase') {
-      // Triangle/wings for Airbase
       ctx.moveTo(sc.x, sc.y - 12);
       ctx.lineTo(sc.x + 12, sc.y + 8);
       ctx.lineTo(sc.x - 12, sc.y + 8);
       ctx.closePath();
     } else if (obj.type === 'Headquarters') {
-      // Star/shield for Headquarters
       ctx.rect(sc.x - 10, sc.y - 10, 20, 20);
     } else {
-      // Standard Circle
       ctx.arc(sc.x, sc.y, 8, 0, Math.PI * 2);
     }
     ctx.fill();
@@ -429,7 +424,9 @@ function render() {
     ctx.lineWidth = 0.5;
     ctx.strokeRect(sc.x - 10, sc.y + 12, 20, 3);
   });
+)HTML";
 
+const char* kCampaignHtmlTail4 = R"HTML(
   // 5. Draw Units and Column Vehicles
   frame.units.forEach(unit => {
     if (!unit.isActive) return;
@@ -445,10 +442,8 @@ function render() {
 
       ctx.beginPath();
       if (unit.type === 'GroundBattalion') {
-        // Draw Tiny tanks/APC dots
         ctx.arc(suPos.x, suPos.y, 4, 0, Math.PI * 2);
       } else {
-        // Draw Tiny airplanes
         ctx.moveTo(suPos.x, suPos.y - 6);
         ctx.lineTo(suPos.x + 5, suPos.y + 4);
         ctx.lineTo(suPos.x - 5, suPos.y + 4);
@@ -467,13 +462,11 @@ function render() {
     ctx.fill();
     ctx.stroke();
 
-    // Text Label inside unit
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
     ctx.fillText(unit.type === 'GroundBattalion' ? 'XX' : '++', uPos.x, uPos.y + 3);
 
-    // Unit Name above/below
     ctx.fillStyle = getFactionColor(unit.faction);
     ctx.font = '10px sans-serif';
     ctx.fillText(unit.name, uPos.x, uPos.y + 20);
@@ -487,7 +480,6 @@ function updateTimeline() {
 
   document.getElementById('timeline-scrubber').value = currentFrameIdx;
 
-  // Format time (simulated seconds since start)
   const totalSeconds = frame.time;
   const hrs = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
   const mins = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
@@ -530,7 +522,9 @@ function populateObjectiveList() {
     list.appendChild(card);
   });
 }
+)HTML";
 
+const char* kCampaignHtmlTail5 = R"HTML(
 function updateSidebar() {
   populateObjectiveList();
 
@@ -638,7 +632,6 @@ canvas.addEventListener('click', (e) => {
   const frame = frames[currentFrameIdx];
   if (!frame) return;
 
-  // 1. Try selecting a Unit
   let found = false;
   for (let unit of frame.units) {
     if (!unit.isActive) continue;
@@ -651,7 +644,6 @@ canvas.addEventListener('click', (e) => {
     }
   }
 
-  // 2. Try selecting an Objective
   if (!found) {
     for (let obj of frame.objectives) {
       const sc = worldToCanvas(obj.pos);

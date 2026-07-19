@@ -17,13 +17,21 @@ namespace campaign {
 
 // Forward declaration of HTML template strings
 extern const char* kCampaignHtmlHead;
-extern const char* kCampaignHtmlTail;
+extern const char* kCampaignHtmlTail1;
+extern const char* kCampaignHtmlTail2;
+extern const char* kCampaignHtmlTail3;
+extern const char* kCampaignHtmlTail4;
+extern const char* kCampaignHtmlTail5;
 
 void generateCampaignHtml(const std::string& title, const std::string& serializedFrames, std::ostream& out) {
     out << kCampaignHtmlHead;
     out << "\nconst CAMPAIGN_TITLE = \"" << title << "\";\n";
     out << "const CAMPAIGN_FRAMES = " << serializedFrames << ";\n";
-    out << kCampaignHtmlTail;
+    out << kCampaignHtmlTail1;
+    out << kCampaignHtmlTail2;
+    out << kCampaignHtmlTail3;
+    out << kCampaignHtmlTail4;
+    out << kCampaignHtmlTail5;
 }
 
 }
