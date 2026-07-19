@@ -263,19 +263,15 @@ public:
     // Draw the divert runway at the airbase position so the visualization
     // shows where the aircraft is trying to land. Runway points east (heading
     // 0), 6000 ft long, drawn as a gold centerline.
-    std::vector<SceneLine> sceneGeometry() const override {
+    std::vector<TraceGeometry> traceGeometry() const override {
         const double rwyLen = 6000.0;
         const double halfLen = rwyLen / 2.0;
-        SceneLine runway;
-        runway.label = "Runway";
-        runway.x1 = kRtbAirbaseX - halfLen;
-        runway.y1 = kRtbAirbaseY;
-        runway.z1 = kRtbAirbaseZ;
-        runway.x2 = kRtbAirbaseX + halfLen;
-        runway.y2 = kRtbAirbaseY;
-        runway.z2 = kRtbAirbaseZ;
+        TraceGeometry runway;
+        runway.name = "Runway";
+        runway.type = "runway";
+        runway.coords = {kRtbAirbaseX - halfLen, kRtbAirbaseY, kRtbAirbaseZ, kRtbAirbaseX + halfLen, kRtbAirbaseY, kRtbAirbaseZ};
         runway.color = "#FFD700";
-        runway.width = 100.0;  // 100 ft wide
+        runway.width = 100.0;
         return {runway};
     }
 

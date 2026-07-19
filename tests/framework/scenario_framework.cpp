@@ -182,10 +182,9 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     if (rec) {
         rec->start(aircraftName, scenario.name());
-        // Capture scene geometry (runway, taxiways, etc.) once per scenario.
-        for (const auto& line : scenario.sceneGeometry()) {
-            rec->addSceneLine(line);
-        }
+        rec->setTestMetadata(scenario.GetTestGroup(), scenario.GetTestLevel());
+        // Capture generalized geometry overlays.
+        rec->setGeometry(scenario.traceGeometry());
     }
 
     // Global simulation clock (continuous across phases) for the trace.
@@ -242,13 +241,30 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         if (rec) {
             const auto& wps = sc.brain().waypoints();
             if (!wps.empty()) {
-                std::vector<Waypoint> twps;
-                twps.reserve(wps.size());
+                std::vector<TraceGeometry> geom = rec->trace().geometry;
+                std::vector<double> pathCoords;
                 for (size_t i = 0; i < wps.size(); ++i) {
-                    twps.push_back({wps[i].x, wps[i].y, wps[i].z,
-                                    "WP" + std::to_string(i + 1)});
+                    TraceGeometry tg;
+                    tg.name = "WP" + std::to_string(i + 1);
+                    tg.type = "waypoint";
+                    tg.coords = {wps[i].x, wps[i].y, wps[i].z};
+                    tg.color = "#FFFFFF";
+                    geom.push_back(tg);
+
+                    pathCoords.push_back(wps[i].x);
+                    pathCoords.push_back(wps[i].y);
+                    pathCoords.push_back(wps[i].z);
                 }
-                rec->setWaypoints(twps);
+                if (pathCoords.size() >= 6) {
+                    TraceGeometry pathGeom;
+                    pathGeom.name = "Flight Plan";
+                    pathGeom.type = "corridor";
+                    pathGeom.coords = pathCoords;
+                    pathGeom.color = "#8a90a6";
+                    pathGeom.width = 1.0;
+                    geom.push_back(pathGeom);
+                }
+                rec->setGeometry(geom);
             }
         }
 
@@ -364,16 +380,16 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
         const double phaseEndT = simT;
         if (rec) {
-            // Capture the failure reason (why the phase failed) for the report.
-            // This is the key field for "Any test that fails needs to clearly
-            // communicate what conditions were not met."
-            std::string failReason;
-            if (!test->IsPassed()) {
-                failReason = test->failureReason();
+            std::string msg = "Phase [" + std::string(test->name()) + "] Finished: " +
+                              (test->IsPassed() ? "PASSED" : "FAILED (" + test->failureReason() + ")");
+            rec->addEvent(phaseEndT, "phase", msg, test->IsPassed() ? "info" : "fail");
+            for (const auto& cond : test->conditions()) {
+                std::string condMsg = "Condition [" + cond.name + "] (" + cond.description + "): " + (cond.passed ? "PASSED" : "FAILED");
+                rec->addEvent(phaseEndT, "condition", condMsg, cond.passed ? "info" : "warn");
             }
-            rec->markPhase(test->name(), phaseStartT, phaseEndT,
-                           test->IsPassed(), /*skipped=*/false,
-                           reinitializes, test->criteria(), failReason);
+            for (const auto& res : test->additionalResults()) {
+                rec->addEvent(phaseEndT, "result", "Metric: " + res.text, res.color == "danger" ? "fail" : (res.color == "warning" ? "warn" : "info"));
+            }
         }
 
         test->Finish();

@@ -545,17 +545,13 @@ public:
     }
 
     // Draw the divert runway at the airbase position (for the damage phase).
-    std::vector<SceneLine> sceneGeometry() const override {
+    std::vector<TraceGeometry> traceGeometry() const override {
         const double rwyLen = 6000.0;
         const double halfLen = rwyLen / 2.0;
-        SceneLine runway;
-        runway.label = "Divert";
-        runway.x1 = kSepAirbaseX - halfLen;
-        runway.y1 = kSepAirbaseY;
-        runway.z1 = kSepAirbaseZ;
-        runway.x2 = kSepAirbaseX + halfLen;
-        runway.y2 = kSepAirbaseY;
-        runway.z2 = kSepAirbaseZ;
+        TraceGeometry runway;
+        runway.name = "Divert";
+        runway.type = "runway";
+        runway.coords = {kSepAirbaseX - halfLen, kSepAirbaseY, kSepAirbaseZ, kSepAirbaseX + halfLen, kSepAirbaseY, kSepAirbaseZ};
         runway.color = "#FFD700";
         runway.width = 100.0;
         return {runway};

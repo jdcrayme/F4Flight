@@ -27,7 +27,7 @@
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/steering.h"  // SteeringController (AI compat shim)
-#include "trace.h"                    // SceneLine (for sceneGeometry())
+#include "trace.h"
 
 #include <cstdio>
 #include <cmath>
@@ -110,6 +110,12 @@ public:
     //   "Min dist to slot was 1200ft (needed < 800ft)"
     //   "Max G was 1.08 (needed >= 2.0) — aircraft did not maneuver"
     virtual std::string failureReason() const { return ""; }
+
+    // Checklist of explicit test conditions checked by this phase
+    virtual std::vector<TestCondition> conditions() const { return {}; }
+
+    // List of additional results, metrics, or summaries for this phase
+    virtual std::vector<AdditionalResult> additionalResults() const { return {}; }
 
     // Custom trace entities for visualization. Called each frame (when trace
     // recording is enabled) to let the test provide additional entities to draw
@@ -199,6 +205,12 @@ public:
     // Human-readable description shown by `maneuver_test --list`.
     virtual std::string GetDescription() const = 0;
 
+    // Test group metadata, e.g. "Fighter Formation", "Ground Ops"
+    virtual std::string GetTestGroup() const { return "General"; }
+
+    // Test level metadata, e.g. "Low Level", "High Level", "End-to-End"
+    virtual std::string GetTestLevel() const { return "Integration"; }
+
     // Build the ordered list of test phases. Called once at startup with
     // the scenario context (aircraft config, profile, cruise altitude).
     virtual std::vector<std::unique_ptr<ManeuverTest>>
@@ -207,7 +219,7 @@ public:
     // Static scene geometry overlays for the visualization (runway
     // centerline, taxiway paths, approach corridor, etc.). Called once
     // after StartScenario. Default: empty (no scene geometry).
-    virtual std::vector<SceneLine> sceneGeometry() const { return {}; }
+    virtual std::vector<TraceGeometry> traceGeometry() const { return {}; }
 
 protected:
     std::string scenarioName_;

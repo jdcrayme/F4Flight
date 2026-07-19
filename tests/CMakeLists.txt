@@ -120,43 +120,55 @@ file(GLOB_RECURSE F4FLIGHT_FIXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/aircraft/*.json"
 )
 
-# Flight-direct scenarios (test FM physics without AI)
+# Flight-direct scenarios (test FM physics without AI) - run on ALL aircraft
 set(F4FLIGHT_FLIGHT_SCENARIOS
     fcs_engine
     fcs_glimits
     fcs_roll
 )
-# AI-driven scenarios (test AI behavior through the FM)
-set(F4FLIGHT_DIGI_SCENARIOS
+
+# AI-driven autopilot & navigation scenarios - run on ALL aircraft
+set(F4FLIGHT_DIGI_SCENARIOS_ALL
     ai_basic
     ai_flightplan
     ai_cruise
+    digi_rtb
+    digi_loiter_orbit
+    digi_groundops
+)
+
+# AI-driven combat scenarios - only run on Fighters and Attack aircraft
+set(F4FLIGHT_DIGI_SCENARIOS_COMBAT
     digi_defensive
     digi_wvr
-    digi_groundops
+    digi_wvr_defensive
     digi_sensors
     digi_guns
-    digi_formation
-    digi_rtb
+    digi_guns_rear
+    digi_bvr
+    digi_missile_engage
+    digi_merge
+    digi_collision
+    digi_separate
     digi_tactics
-    # New scenarios (Task 5): cover untested digi modes.
-    digi_bvr              # BVREngage (8-35 NM target)
-    digi_missile_engage   # MissileEngage (SMS with AIM-9, 5 NM)
-    digi_merge            # Merge (close nose-to-nose)
-    digi_collision        # CollisionAvoid (head-on collision course)
-    digi_separate         # Separate / RTB / Bugout (damage + fuel-low)
-    digi_guns_rear        # GunsEngage rear-aspect (stern conversion)
-    digi_wvr_defensive    # WVR defensive (bandit on tail)
-    digi_formation_types  # Trail / Echelon / Spread formations
-    digi_loiter_orbit     # Loiter full orbit verification (180s)
-    digi_formation_maneuver  # Formation through lead turns (racetrack N→E→S)
-    digi_ground_attack    # Dive-bomb ground attack profile
-    digi_ground_attack_profiles  # Task 15-a: dive / level / toss profiles
-    digi_e2e_mission      # End-to-end: takeoff -> navigate -> intercept -> RTB
-    digi_e2e_ground_attack  # Task 16-a: End-to-end A/G strike (takeoff -> navigate -> dive-bomb -> RTB)
-    digi_e2e_formation    # Task 17-a: End-to-end formation (rejoin -> navigate -> maneuver)
-    digi_aar              # Air-to-air refueling (approach + contact + disconnect)
-    digi_e2e_aar          # Task 19-a: End-to-end AAR (takeoff -> navigate -> refuel -> RTB)
+    digi_e2e_mission
+)
+
+# AI-driven formation flying scenarios - only run on Fighters and Attack aircraft
+set(F4FLIGHT_DIGI_SCENARIOS_FORMATION
+    digi_formation
+    digi_formation_types
+    digi_formation_maneuver
+    digi_e2e_formation
+)
+
+# AI-driven refueling & strike scenarios - run on Fighters, Attack, and Bombers
+set(F4FLIGHT_DIGI_SCENARIOS_STRIKE
+    digi_aar
+    digi_e2e_aar
+    digi_ground_attack
+    digi_ground_attack_profiles
+    digi_e2e_ground_attack
 )
 
 foreach(fixture ${F4FLIGHT_FIXTURES})
@@ -165,7 +177,7 @@ foreach(fixture ${F4FLIGHT_FIXTURES})
     get_filename_component(category_dir "${fixture}" DIRECTORY)
     get_filename_component(category_name "${category_dir}" NAME)
 
-    # Flight-direct scenarios
+    # 1. Flight-direct scenarios (always run on all aircraft)
     foreach(sc ${F4FLIGHT_FLIGHT_SCENARIOS})
         add_test(
             NAME flight_${category_name}_${ac_name}_${sc}
@@ -173,11 +185,41 @@ foreach(fixture ${F4FLIGHT_FIXTURES})
         )
     endforeach()
 
-    # AI-driven scenarios
-    foreach(sc ${F4FLIGHT_DIGI_SCENARIOS})
+    # 2. AI autopilot / basic / navigation scenarios (always run on all aircraft)
+    foreach(sc ${F4FLIGHT_DIGI_SCENARIOS_ALL})
         add_test(
             NAME digi_${category_name}_${ac_name}_${sc}
             COMMAND f4flight_digi_scenarios "${fixture}" --scenario ${sc}
         )
     endforeach()
+
+    # 3. AI combat scenarios (only run on fighters and attack aircraft)
+    if(category_name STREQUAL "fighters" OR category_name STREQUAL "attack")
+        foreach(sc ${F4FLIGHT_DIGI_SCENARIOS_COMBAT})
+            add_test(
+                NAME digi_${category_name}_${ac_name}_${sc}
+                COMMAND f4flight_digi_scenarios "${fixture}" --scenario ${sc}
+            )
+        endforeach()
+    endif()
+
+    # 4. AI formation scenarios (only run on fighters and attack aircraft)
+    if(category_name STREQUAL "fighters" OR category_name STREQUAL "attack")
+        foreach(sc ${F4FLIGHT_DIGI_SCENARIOS_FORMATION})
+            add_test(
+                NAME digi_${category_name}_${ac_name}_${sc}
+                COMMAND f4flight_digi_scenarios "${fixture}" --scenario ${sc}
+            )
+        endforeach()
+    endif()
+
+    # 5. AI strike & AAR scenarios (run on fighters, attack, and bombers)
+    if(category_name STREQUAL "fighters" OR category_name STREQUAL "attack" OR category_name STREQUAL "bomber")
+        foreach(sc ${F4FLIGHT_DIGI_SCENARIOS_STRIKE})
+            add_test(
+                NAME digi_${category_name}_${ac_name}_${sc}
+                COMMAND f4flight_digi_scenarios "${fixture}" --scenario ${sc}
+            )
+        endforeach()
+    endif()
 endforeach()

@@ -207,7 +207,9 @@ static void runScenario() {
 
         const double phaseEnd = tracer.trace().frames.empty() ? 0.0
             : tracer.trace().frames.back().t;
-        tracer.markPhase(test->name(), phaseStart, phaseEnd, test->IsPassed(), test->ShouldSkip());
+        std::string msg = "Phase [" + std::string(test->name()) + "] Finished: " +
+                          (test->IsPassed() ? "PASSED" : "FAILED");
+        tracer.addEvent(phaseEnd, "phase", msg, test->IsPassed() ? "info" : "fail");
     }
 
     tracer.finish(tracer.trace().frames.empty() ? 0.0 : tracer.trace().frames.back().t);
@@ -370,24 +372,15 @@ static void drawHUD() {
     DrawText(TextFormat("Mode: %s   Phase: %s", f.mode.c_str(), f.phase.c_str()),
              20, 90, 14, modeColor(f.mode));
 
-    // Phase results
-    int py = 108;
-    for (const auto& p : g_trace.phases) {
-        const char* res = p.skipped ? "SKIP" : (p.passed ? "PASS" : "FAIL");
-        Color c = p.skipped ? GRAY : (p.passed ? GREEN : RED);
-        DrawText(TextFormat("  %s [%s]", p.name.c_str(), res), 20, py, 12, c);
-        py += 14;
-    }
-
     // Camera mode + playback state
     DrawText(TextFormat("Camera: %s  %s  %.1fx",
              g_camModeNames[(int)g_camMode],
              g_playing ? "PLAYING" : "PAUSED",
              g_playbackSpeed),
-             20, py + 4, 12, YELLOW);
+             20, 110, 12, YELLOW);
 
     // Timeline bar
-    int barY = 170;
+    int barY = 140;
     int barW = 600;
     DrawRectangle(10, barY, barW, 20, Fade(BLACK, 0.7f));
     float progress = g_trace.frames.empty() ? 0 :

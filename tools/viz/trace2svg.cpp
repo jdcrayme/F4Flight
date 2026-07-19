@@ -37,8 +37,50 @@
 using namespace f4flight;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers & Mock Phase extraction from events
 // ---------------------------------------------------------------------------
+
+struct MockPhase {
+    std::string name;
+    double start_s{0.0};
+    double end_s{0.0};
+    bool passed{false};
+    bool skipped{false};
+};
+
+static std::vector<MockPhase> extractPhasesFromEvents(const Trace& trace) {
+    std::vector<MockPhase> mockPhases;
+    double lastT = 0.0;
+    for (const auto& ev : trace.events) {
+        if (ev.category == "phase") {
+            MockPhase p;
+            p.start_s = lastT;
+            p.end_s = ev.t;
+            lastT = ev.t;
+
+            size_t startBracket = ev.message.find('[');
+            size_t endBracket = ev.message.find(']');
+            if (startBracket != std::string::npos && endBracket != std::string::npos && endBracket > startBracket) {
+                p.name = ev.message.substr(startBracket + 1, endBracket - startBracket - 1);
+            } else {
+                p.name = ev.message;
+            }
+            p.passed = (ev.message.find("PASSED") != std::string::npos);
+            p.skipped = (ev.message.find("SKIPPED") != std::string::npos);
+            mockPhases.push_back(p);
+        }
+    }
+    if (mockPhases.empty()) {
+        MockPhase p;
+        p.name = "Entire Mission";
+        p.start_s = 0.0;
+        p.end_s = trace.duration_s;
+        p.passed = true;
+        p.skipped = false;
+        mockPhases.push_back(p);
+    }
+    return mockPhases;
+}
 
 // Deterministic color from a string (aircraft name → consistent color).
 // Uses a simple hash → HSV → RGB. Same aircraft always gets the same color.
@@ -93,7 +135,8 @@ static bool isGroundOpsPhase(const std::string& phaseName) {
 
 // Check if any phase in the trace involves ground ops
 static bool hasGroundOps(const Trace& trace) {
-    for (const auto& p : trace.phases) {
+    auto phases = extractPhasesFromEvents(trace);
+    for (const auto& p : phases) {
         if (isGroundOpsPhase(p.name)) return true;
     }
     // Also check frames for ground-ops modes
@@ -121,11 +164,13 @@ static Bounds computeBounds(const Trace& trace, int phaseIdx = -1) {
     b.minT = b.maxT = 0;
     bool first = true;
 
+    auto phases = extractPhasesFromEvents(trace);
+
     for (const auto& f : trace.frames) {
         // Filter by phase if phaseIdx specified
-        if (phaseIdx >= 0 && phaseIdx < (int)trace.phases.size()) {
-            if (f.t < trace.phases[phaseIdx].start_s ||
-                f.t > trace.phases[phaseIdx].end_s) continue;
+        if (phaseIdx >= 0 && phaseIdx < (int)phases.size()) {
+            if (f.t < phases[phaseIdx].start_s ||
+                f.t > phases[phaseIdx].end_s) continue;
         }
 
         double alt = -f.z;
@@ -148,9 +193,9 @@ static Bounds computeBounds(const Trace& trace, int phaseIdx = -1) {
     }
     // Include threat positions
     for (const auto& f : trace.frames) {
-        if (phaseIdx >= 0 && phaseIdx < (int)trace.phases.size()) {
-            if (f.t < trace.phases[phaseIdx].start_s ||
-                f.t > trace.phases[phaseIdx].end_s) continue;
+        if (phaseIdx >= 0 && phaseIdx < (int)phases.size()) {
+            if (f.t < phases[phaseIdx].start_s ||
+                f.t > phases[phaseIdx].end_s) continue;
         }
         for (const auto& t : f.threats) {
             b.minX = std::min(b.minX, t.x);
@@ -181,7 +226,8 @@ struct PhaseRange {
 
 static std::vector<PhaseRange> computePhaseRanges(const Trace& trace) {
     std::vector<PhaseRange> ranges;
-    if (trace.phases.empty()) {
+    auto phases = extractPhasesFromEvents(trace);
+    if (phases.empty()) {
         if (!trace.frames.empty()) {
             ranges.push_back({0, (int)trace.frames.size() - 1});
         }
@@ -189,8 +235,8 @@ static std::vector<PhaseRange> computePhaseRanges(const Trace& trace) {
     }
 
     int fi = 0;
-    for (size_t pi = 0; pi < trace.phases.size(); ++pi) {
-        const auto& p = trace.phases[pi];
+    for (size_t pi = 0; pi < phases.size(); ++pi) {
+        const auto& p = phases[pi];
         int start = fi;
         while (fi < (int)trace.frames.size() && trace.frames[fi].t <= p.end_s) {
             fi++;
@@ -209,6 +255,7 @@ static std::vector<PhaseRange> computePhaseRanges(const Trace& trace) {
 static void generateSVG(const Trace& trace, const std::string& outPath,
                          int phaseIdx = -1) {
     Bounds b = computeBounds(trace, phaseIdx);
+    auto phases = extractPhasesFromEvents(trace);
 
     // SVG dimensions
     const int svgW = 1200;
@@ -263,8 +310,8 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
 
     // Title
     std::string title = trace.aircraft + " — " + trace.scenario;
-    if (phaseIdx >= 0 && phaseIdx < (int)trace.phases.size()) {
-        title += " — " + trace.phases[phaseIdx].name;
+    if (phaseIdx >= 0 && phaseIdx < (int)phases.size()) {
+        title += " — " + phases[phaseIdx].name;
     }
     svg += "<text x=\"" + std::to_string(panelMargin) + "\" y=\"28\" class=\"title\" fill=\"white\">" +
            esc(title) + "  (" + std::to_string(trace.frames.size()) + " frames, " +
@@ -335,7 +382,7 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
             double sx = toScreenTD_X(f0.x);
             double sy = toScreenTD_Y(f0.y);
             std::string phaseLabel;
-            if (pi < trace.phases.size()) phaseLabel = trace.phases[pi].name;
+            if (pi < phases.size()) phaseLabel = phases[pi].name;
             else phaseLabel = "P" + std::to_string(pi + 1);
             svg += "<circle cx=\"" + std::to_string(sx) + "\" cy=\"" +
                    std::to_string(sy) + "\" r=\"7\" fill=\"" + aircraftCol +
@@ -408,8 +455,8 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
     // Altitude + speed profiles (split by phase, no connecting lines)
     double maxVcas = 1;
     for (const auto& f : trace.frames) {
-        if (phaseIdx >= 0) {
-            if (f.t < trace.phases[phaseIdx].start_s || f.t > trace.phases[phaseIdx].end_s) continue;
+        if (phaseIdx >= 0 && phaseIdx < (int)phases.size()) {
+            if (f.t < phases[phaseIdx].start_s || f.t > phases[phaseIdx].end_s) continue;
         }
         maxVcas = std::max(maxVcas, f.vcas);
     }
@@ -432,8 +479,8 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
     }
 
     // Phase boundary lines + centered labels with alternating offset
-    for (size_t pi = 0; pi < trace.phases.size(); ++pi) {
-        const auto& p = trace.phases[pi];
+    for (size_t pi = 0; pi < phases.size(); ++pi) {
+        const auto& p = phases[pi];
         if (phaseIdx >= 0 && (int)pi != phaseIdx) continue;
 
         double startX = toScreenSP_X(p.start_s);
@@ -446,7 +493,7 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
                std::to_string(spTop + bottomPanelH) +
                "\" stroke=\"" + (p.passed ? "#4CAF50" : "#F44336") +
                "\" stroke-width=\"1\" stroke-dasharray=\"4,4\" opacity=\"0.5\"/>\n";
-        if (pi == trace.phases.size() - 1 || (phaseIdx >= 0 && (int)pi == phaseIdx)) {
+        if (pi == phases.size() - 1 || (phaseIdx >= 0 && (int)pi == phaseIdx)) {
             svg += "<line x1=\"" + std::to_string(endX) + "\" y1=\"" +
                    std::to_string(spTop) + "\" x2=\"" + std::to_string(endX) + "\" y2=\"" +
                    std::to_string(spTop + bottomPanelH) +
@@ -456,10 +503,6 @@ static void generateSVG(const Trace& trace, const std::string& outPath,
 
         // Centered label with alternating vertical offset
         const int yOffset = (pi % 2) * 16;  // alternate up/down
-        // spTop is a double (panel geometry); round to nearest pixel so the
-        // SVG text baseline lands on an integer y. Previously the implicit
-        // double→int truncation triggered -Wfloat-conversion and also nudged
-        // labels half a pixel low on sub-pixel panel margins.
         const int labelY = static_cast<int>(std::round(spTop - 5.0)) + yOffset;
         const char* res = p.skipped ? "SKIP" : (p.passed ? "PASS" : "FAIL");
         std::string label = std::to_string(pi + 1) + ". " + p.name + " [" + res + "]";
@@ -545,9 +588,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    auto phases = extractPhasesFromEvents(trace);
+
     std::printf("Loaded trace: %s / %s (%zu frames, %.1fs, %zu phases)\n",
                 trace.aircraft.c_str(), trace.scenario.c_str(),
-                trace.frames.size(), trace.duration_s, trace.phases.size());
+                trace.frames.size(), trace.duration_s, phases.size());
 
     if (split) {
         // Generate one SVG per phase
@@ -559,11 +604,11 @@ int main(int argc, char** argv) {
             ext = base.substr(dotPos);
             base = base.substr(0, dotPos);
         }
-        for (size_t i = 0; i < trace.phases.size(); ++i) {
+        for (size_t i = 0; i < phases.size(); ++i) {
             std::string phasePath = base + "_" + std::to_string(i + 1) + ext;
             std::printf("Phase %zu: %s (%.1f-%.1fs)\n", i + 1,
-                        trace.phases[i].name.c_str(),
-                        trace.phases[i].start_s, trace.phases[i].end_s);
+                        phases[i].name.c_str(),
+                        phases[i].start_s, phases[i].end_s);
             generateSVG(trace, phasePath, (int)i);
         }
     } else {
