@@ -245,4 +245,3 @@ See `tests/COVERAGE.md` for the authoritative mapping of:
 
 This matrix is the source of truth for "what is covered" and "what is
 missing". When adding a new test, update the matrix.
-

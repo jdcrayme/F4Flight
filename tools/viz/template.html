@@ -120,6 +120,79 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
 .readout .cell.sample .l{color:var(--accent)}
 .readout .cell.sample .v{font-size:13px;color:var(--text)}
 
+/* stacked charts */
+.chart-row {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0;
+  height: 80px;
+  display: flex;
+  flex-direction: column;
+  cursor: ew-resize;
+  overflow: hidden;
+  user-select: none;
+}
+.chart-row.event-row {
+  height: 55px;
+}
+.chart-row canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.chart-label {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: 600;
+  pointer-events: none;
+  background: rgba(22,25,34,0.7);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.chart-value {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--text);
+  pointer-events: none;
+  background: rgba(22,25,34,0.7);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.chart-cursor-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: var(--accent);
+  pointer-events: none;
+  opacity: 0.85;
+}
+.chart-tooltip {
+  position: absolute;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  display: none;
+  max-width: 280px;
+  pointer-events: none;
+}
+
 /* 3D view */
 #topdown-host svg,#threed-host svg{cursor:grab}
 #threed-host svg:active{cursor:grabbing}
@@ -164,6 +237,13 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
       <span class="badge" id="detail-badge"></span>
     </div>
     <div class="detail-summary" id="detail-summary"></div>
+
+    <!-- Test Conditionals / Checklist Panel -->
+    <div class="panel" id="conditionals-panel" style="margin-bottom:16px">
+      <h3 style="margin:0 0 12px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Test Conditionals Checklist</h3>
+      <div id="conditionals-list" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+    </div>
+
     <div class="controls">
       <div class="group">
         <button class="btn play" id="play-btn">&#9654; Play</button>
@@ -206,8 +286,8 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
             <div id="data-events-log" style="flex:1;overflow-y:auto;font-family:ui-monospace,monospace;font-size:12px;padding:4px"></div>
           </div>
           <div class="sub-panel" style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column">
-            <h4 style="margin:0 0 10px 0;font-size:13px;color:var(--accent2);text-transform:uppercase;letter-spacing:.5px">Telemetry &amp; Custom Samples Readout</h4>
-            <div id="data-samples-readout" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px"></div>
+            <h4 style="margin:0 0 10px 0;font-size:13px;color:var(--accent2);text-transform:uppercase;letter-spacing:.5px">Telemetry &amp; Custom Samples Graphs</h4>
+            <div id="charts-container" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-right:4px"></div>
           </div>
         </div>
       </div>
@@ -252,6 +332,456 @@ const threeState = {
   grid: null,
   span: 1.0,
 };
+
+// ---------------------------------------------------------------------------
+// Stacked Interactive Charts (Timeline + Metrics)
+// ---------------------------------------------------------------------------
+const chartState = {
+  charts: [],
+  maxT: 0
+};
+
+function initCharts(tr) {
+  const container = document.getElementById('charts-container');
+  if (!container) return;
+  container.innerHTML = '';
+  chartState.charts = [];
+  chartState.maxT = traceDuration(tr);
+
+  // 1. Identify all dynamic numeric custom sample keys
+  const sampleKeys = new Set();
+  const sampleUnits = {};
+  for (const f of tr.frames) {
+    if (f.samples) {
+      for (const s of f.samples) {
+        if (typeof s.value === 'number') {
+          sampleKeys.add(s.key);
+          if (s.unit) sampleUnits[s.key] = s.unit;
+        }
+      }
+    }
+  }
+
+  // 2. Define list of charts: Events, then Standard metrics, then Custom metrics
+  const specs = [];
+
+  specs.push({
+    type: 'events',
+    key: 'events',
+    label: 'Events Track',
+    color: 'var(--accent)',
+    unit: ''
+  });
+
+  specs.push({
+    type: 'metric',
+    key: 'altitude',
+    label: 'Altitude',
+    color: '#4ade80',
+    unit: 'ft',
+    getValue: f => -f.z
+  });
+  specs.push({
+    type: 'metric',
+    key: 'vcas',
+    label: 'Airspeed (VCAS)',
+    color: '#60a5fa',
+    unit: 'kts',
+    getValue: f => f.vcas
+  });
+  specs.push({
+    type: 'metric',
+    key: 'nzcgs',
+    label: 'G-load',
+    color: '#f59e0b',
+    unit: 'G',
+    getValue: f => f.nzcgs
+  });
+
+  for (const sk of sampleKeys) {
+    specs.push({
+      type: 'metric',
+      key: 'sample_' + sk,
+      label: sk,
+      color: '#f472b6',
+      unit: sampleUnits[sk] || '',
+      getValue: f => {
+        if (!f.samples) return null;
+        const found = f.samples.find(s => s.key === sk);
+        return found ? found.value : null;
+      }
+    });
+  }
+
+  // 3. Create DOM elements and render each chart
+  const containerWidth = container.clientWidth || 400;
+
+  let tooltip = document.getElementById('chart-tooltip-el');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'chart-tooltip-el';
+    tooltip.className = 'chart-tooltip';
+    document.body.appendChild(tooltip);
+  }
+
+  for (const spec of specs) {
+    const row = document.createElement('div');
+    row.className = 'chart-row' + (spec.type === 'events' ? ' event-row' : '');
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'chart-label';
+    labelSpan.textContent = spec.label;
+    row.appendChild(labelSpan);
+
+    const valSpan = document.createElement('span');
+    valSpan.className = 'chart-value';
+    valSpan.textContent = '—';
+    row.appendChild(valSpan);
+
+    const canvas = document.createElement('canvas');
+    row.appendChild(canvas);
+
+    const cursorLine = document.createElement('div');
+    cursorLine.className = 'chart-cursor-line';
+    row.appendChild(cursorLine);
+
+    container.appendChild(row);
+
+    const rect = row.getBoundingClientRect();
+    const w = containerWidth || rect.width || 400;
+    const h = spec.type === 'events' ? 55 : 80;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    if (spec.type === 'events') {
+      renderEventsTrack(ctx, w, h, tr, spec);
+    } else {
+      renderMetricChart(ctx, w, h, tr, spec);
+    }
+
+    const chartObj = {
+      spec,
+      row,
+      canvas,
+      ctx,
+      valSpan,
+      cursorLine,
+      width: w,
+      height: h
+    };
+    chartState.charts.push(chartObj);
+
+    const handleInteract = (e) => {
+      const rowRect = row.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rowRect.width, e.clientX - rowRect.left));
+      const frac = x / rowRect.width;
+      const t = frac * chartState.maxT;
+      state.t = t;
+      updatePlayhead();
+    };
+
+    let isDragging = false;
+    row.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      handleInteract(e);
+    });
+    row.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        handleInteract(e);
+      }
+      showChartTooltip(e, row, spec, tr);
+    });
+    row.addEventListener('mouseleave', () => {
+      tooltip.style.display = 'none';
+    });
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+  }
+
+  updateChartsCursor();
+}
+
+function renderEventsTrack(ctx, w, h, tr, spec) {
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.strokeStyle = '#2a2f42';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+
+  if (!tr.events || !tr.events.length) return;
+
+  const maxT = chartState.maxT || 1;
+
+  for (const ev of tr.events) {
+    const x = (ev.t / maxT) * w;
+    const y = h / 2;
+
+    let color = '#60a5fa';
+    if (ev.severity === 'fail' || ev.message.includes('FAILED')) color = '#f87171';
+    else if (ev.severity === 'warn' || ev.message.includes('Condition')) color = '#fbbf24';
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#0f1117';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function renderMetricChart(ctx, w, h, tr, spec) {
+  ctx.clearRect(0, 0, w, h);
+
+  if (!tr.frames || !tr.frames.length) return;
+
+  const maxT = chartState.maxT || 1;
+
+  let minVal = Infinity;
+  let maxVal = -Infinity;
+  const pts = [];
+
+  for (const f of tr.frames) {
+    const val = spec.getValue(f);
+    if (val !== null && typeof val === 'number') {
+      pts.push({ t: f.t, v: val });
+      if (val < minVal) minVal = val;
+      if (val > maxVal) maxVal = val;
+    }
+  }
+
+  if (pts.length === 0) return;
+
+  if (minVal === maxVal) {
+    minVal -= 1;
+    maxVal += 1;
+  } else {
+    const pad = (maxVal - minVal) * 0.1;
+    minVal -= pad;
+    maxVal += pad;
+  }
+
+  ctx.strokeStyle = 'rgba(42, 47, 66, 0.4)';
+  ctx.lineWidth = 0.5;
+  const gridRows = 3;
+  for (let i = 1; i < gridRows; i++) {
+    const y = (i / gridRows) * h;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  const mapX = t => (t / maxT) * w;
+  const mapY = v => h - 6 - ((v - minVal) / (maxVal - minVal)) * (h - 12);
+
+  ctx.strokeStyle = spec.color;
+  ctx.lineWidth = 1.75;
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const x = mapX(pts[i].t);
+    const y = mapY(pts[i].v);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, spec.color + '26');
+  grad.addColorStop(1, spec.color + '00');
+  ctx.fillStyle = grad;
+  ctx.lineTo(mapX(pts[pts.length - 1].t), h);
+  ctx.lineTo(mapX(pts[0].t), h);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function updateChartsCursor() {
+  if (state.traceIdx < 0 || !chartState.maxT || !chartState.charts.length) return;
+  const maxT = chartState.maxT;
+  const tr = TRACES[state.traceIdx]; if (!tr) return;
+
+  const fi = findFrameIndex(tr, state.t);
+  const f = tr.frames[fi];
+
+  for (const c of chartState.charts) {
+    const xFraction = state.t / maxT;
+    c.cursorLine.style.left = (xFraction * 100) + '%';
+
+    if (c.spec.type === 'metric') {
+      const val = c.spec.getValue(f);
+      if (val !== null && typeof val === 'number') {
+        c.valSpan.textContent = val.toFixed(c.spec.key === 'nzcgs' ? 2 : 0) + ' ' + c.spec.unit;
+      } else {
+        c.valSpan.textContent = '—';
+      }
+    } else {
+      const nearby = tr.events ? tr.events.filter(e => Math.abs(e.t - state.t) < 1.5) : [];
+      if (nearby.length > 0) {
+        c.valSpan.textContent = nearby[0].message;
+        c.valSpan.style.color = nearby[0].severity === 'fail' ? 'var(--fail)' : (nearby[0].severity === 'warn' ? 'var(--warn)' : 'var(--accent)');
+      } else {
+        c.valSpan.textContent = 'Swipe / Click to scrub';
+        c.valSpan.style.color = 'var(--muted)';
+      }
+    }
+  }
+}
+
+function showChartTooltip(e, row, spec, tr) {
+  const tooltip = document.getElementById('chart-tooltip-el');
+  if (!tooltip) return;
+
+  const rowRect = row.getBoundingClientRect();
+  const x = e.clientX - rowRect.left;
+  const frac = x / rowRect.width;
+  const t = frac * chartState.maxT;
+
+  let html = `<div style="font-weight:bold;margin-bottom:2px;color:var(--accent)">Time: ${t.toFixed(1)}s</div>`;
+
+  if (spec.type === 'events') {
+    let closest = null;
+    let minDist = Infinity;
+    if (tr.events) {
+      for (const ev of tr.events) {
+        const dist = Math.abs(ev.t - t);
+        if (dist < minDist) {
+          minDist = dist;
+          closest = ev;
+        }
+      }
+    }
+    const timeThreshold = chartState.maxT * 0.05;
+    if (closest && minDist < timeThreshold) {
+      const sevCol = closest.severity === 'fail' ? 'var(--fail)' : (closest.severity === 'warn' ? 'var(--warn)' : 'var(--text)');
+      html += `<div style="color:${sevCol};font-weight:600;text-transform:uppercase;font-size:10px">${closest.category}</div>`;
+      html += `<div style="margin-top:2px;word-break:break-word">${closest.message}</div>`;
+    } else {
+      tooltip.style.display = 'none';
+      return;
+    }
+  } else {
+    const fi = findFrameIndex(tr, t);
+    const f = tr.frames[fi];
+    const val = spec.getValue(f);
+    if (val !== null && typeof val === 'number') {
+      html += `<div>${spec.label}: <b style="color:${spec.color}">${val.toFixed(spec.key === 'nzcgs' ? 2 : 0)} ${spec.unit}</b></div>`;
+    } else {
+      tooltip.style.display = 'none';
+      return;
+    }
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (e.clientX + 12) + 'px';
+  tooltip.style.top = (e.clientY + 12) + 'px';
+}
+
+function updateConditionalsPanel(tr) {
+  const list = document.getElementById('conditionals-list');
+  if (!list) return;
+  list.innerHTML = '';
+
+  const conditions = [];
+
+  if (tr.events) {
+    for (const ev of tr.events) {
+      if (ev.category === 'condition') {
+        const condRegex = /Condition\s+\[(.*?)\]\s+\((.*?)\):\s+(PASSED|FAILED)/i;
+        const match = ev.message.match(condRegex);
+        if (match) {
+          conditions.push({
+            name: match[1],
+            desc: match[2],
+            passed: match[3].toUpperCase() === 'PASSED',
+            t: ev.t
+          });
+        } else {
+          conditions.push({
+            name: ev.category,
+            desc: ev.message,
+            passed: !ev.message.includes('FAILED') && ev.severity !== 'fail',
+            t: ev.t
+          });
+        }
+      } else if (ev.category === 'phase') {
+        const phaseRegex = /Phase\s+\[(.*?)\]\s+Finished:\s+(PASSED|FAILED(?:\s+\((.*?)\))?)/i;
+        const match = ev.message.match(phaseRegex);
+        if (match) {
+          const isPassed = match[2].startsWith('PASSED');
+          conditions.push({
+            name: 'Phase: ' + match[1],
+            desc: isPassed ? 'Completed successfully' : (match[3] || 'Phase failed'),
+            passed: isPassed,
+            t: ev.t
+          });
+        }
+      }
+    }
+  }
+
+  if (conditions.length === 0) {
+    list.innerHTML = '<div style="color:var(--dim);font-style:italic">No explicit pass/fail conditions recorded for this test.</div>';
+    return;
+  }
+
+  for (const cond of conditions) {
+    const card = document.createElement('div');
+    card.style.display = 'flex';
+    card.style.alignItems = 'center';
+    card.style.gap = '8px';
+    card.style.padding = '8px 12px';
+    card.style.borderRadius = '6px';
+    card.style.border = '1px solid ' + (cond.passed ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)');
+    card.style.background = cond.passed ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
+    card.style.minWidth = '220px';
+    card.style.flex = '1 1 220px';
+
+    const icon = document.createElement('span');
+    icon.textContent = cond.passed ? '✓' : '✗';
+    icon.style.fontWeight = 'bold';
+    icon.style.fontSize = '15px';
+    icon.style.color = cond.passed ? 'var(--pass)' : 'var(--fail)';
+    card.appendChild(icon);
+
+    const textDiv = document.createElement('div');
+    textDiv.style.display = 'flex';
+    textDiv.style.flexDirection = 'column';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = cond.name;
+    nameSpan.style.fontWeight = 'bold';
+    nameSpan.style.fontSize = '12px';
+    nameSpan.style.color = 'var(--text)';
+    textDiv.appendChild(nameSpan);
+
+    const descSpan = document.createElement('span');
+    descSpan.textContent = cond.desc;
+    descSpan.style.fontSize = '11px';
+    descSpan.style.color = 'var(--muted)';
+    textDiv.appendChild(descSpan);
+
+    card.appendChild(textDiv);
+
+    card.style.cursor = 'pointer';
+    card.addEventListener('click', () => {
+      state.t = cond.t;
+      updatePlayhead();
+    });
+
+    list.appendChild(card);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Color utilities
@@ -728,23 +1258,7 @@ function updatePlayhead(){
     }
   }
 
-  const samplesHost = document.getElementById('data-samples-readout');
-  if (samplesHost) {
-    let samplesHtml = '';
-    samplesHtml += dataRow('Altitude', alt.toFixed(0) + ' ft', '#4ade80');
-    samplesHtml += dataRow('Airspeed (VCAS)', f.vcas.toFixed(0) + ' kts', '#60a5fa');
-    samplesHtml += dataRow('G-load', f.nzcgs.toFixed(2) + ' G', '#f59e0b');
-    samplesHtml += dataRow('Pitch', (f.theta * 180 / Math.PI).toFixed(1) + '\u00b0', '#a78bfa');
-    samplesHtml += dataRow('Roll', (f.phi * 180 / Math.PI).toFixed(1) + '\u00b0', '#f472b6');
-
-    if (f.samples && f.samples.length) {
-      for (const s of f.samples) {
-        const valStr = s.value.toFixed(1) + (s.unit ? ' ' + s.unit : '');
-        samplesHtml += dataRow(s.key, valStr, '#fbbf24');
-      }
-    }
-    samplesHost.innerHTML = samplesHtml;
-  }
+  updateChartsCursor();
 }
 function cell(l,v,cls){return '<div class="cell '+(cls||'')+'"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>';}
 
@@ -771,50 +1285,14 @@ function renderPathView(tr){
 // ---------------------------------------------------------------------------
 // 3D orbit view using Three.js WebGL Renderer
 // ---------------------------------------------------------------------------
-function initThreeJS(tr) {
-  const host = document.getElementById('threed-host');
-  host.innerHTML = '';
-
-  const width = host.clientWidth || 1000;
-  const height = 620;
-  host.style.height = height + 'px';
-  host.style.position = 'relative';
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0c12);
-
-  const camera = new THREE.PerspectiveCamera(45, width / height, 1, 10000000);
-  camera.up.set(0, 0, 1); // Z-axis is UP
-  scene.add(camera);
-
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(width, height);
-  host.appendChild(renderer.domElement);
-
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
-  scene.add(ambientLight);
-
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
-  dirLight.position.set(0, 0, 1);
-  camera.add(dirLight);
-
-  const b = computeBounds(tr);
-  const span = Math.max(b.maxX-b.minX, b.maxY-b.minY, b.maxAlt-b.minAlt, 1);
-
-  const gridHelper = new THREE.GridHelper(span * 2, 50, 0x5a6275, 0x222637);
-  gridHelper.rotation.x = Math.PI / 2;
-  const centerX = (b.minX + b.maxX) / 2;
-  const centerY = (b.minY + b.maxY) / 2;
-  gridHelper.position.set(centerX, centerY, 0);
-  scene.add(gridHelper);
-
+function createAircraftMesh(span, colorHex) {
   const jetGroup = new THREE.Group();
 
   const fuseLen = span * 0.015;
   const fuseRadius = span * 0.001;
   const fuseGeom = new THREE.CylinderGeometry(fuseRadius * 0.4, fuseRadius, fuseLen * 0.7, 16);
   fuseGeom.translate(0, -fuseLen * 0.15, 0);
-  const fuseMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.4, metalness: 0.3 });
+  const fuseMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4, metalness: 0.3 });
   const fuselage = new THREE.Mesh(fuseGeom, fuseMat);
   jetGroup.add(fuselage);
 
@@ -858,7 +1336,7 @@ function initThreeJS(tr) {
   wingGeom.setAttribute('position', new THREE.BufferAttribute(wingVertices, 3));
   wingGeom.setIndex(wingIndices);
   wingGeom.computeVertexNormals();
-  const wingMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.4, side: THREE.DoubleSide });
+  const wingMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4, side: THREE.DoubleSide });
   const wings = new THREE.Mesh(wingGeom, wingMat);
   wings.position.set(0, fuseLen * 0.05, -fuseRadius * 0.1);
   jetGroup.add(wings);
@@ -883,6 +1361,59 @@ function initThreeJS(tr) {
   const tail = new THREE.Mesh(tailGeom, wingMat);
   jetGroup.add(tail);
 
+  return jetGroup;
+}
+
+function initThreeJS(tr) {
+  const host = document.getElementById('threed-host');
+  host.innerHTML = '';
+
+  const width = host.clientWidth || 1000;
+  const height = 620;
+  host.style.height = height + 'px';
+  host.style.position = 'relative';
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0c12);
+
+  const camera = new THREE.PerspectiveCamera(45, width / height, 1, 10000000);
+  camera.up.set(0, 0, 1); // Z-axis is UP
+  scene.add(camera);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(width, height);
+  host.appendChild(renderer.domElement);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'labels-overlay';
+  overlay.style.position = 'absolute';
+  overlay.style.top = '0';
+  overlay.style.left = '0';
+  overlay.style.width = '100%';
+  overlay.style.height = '100%';
+  overlay.style.pointerEvents = 'none';
+  overlay.style.overflow = 'hidden';
+  overlay.style.zIndex = '10';
+  host.appendChild(overlay);
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+  scene.add(ambientLight);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+  dirLight.position.set(0, 0, 1);
+  camera.add(dirLight);
+
+  const b = computeBounds(tr);
+  const span = Math.max(b.maxX-b.minX, b.maxY-b.minY, b.maxAlt-b.minAlt, 1);
+
+  const gridHelper = new THREE.GridHelper(span * 2, 50, 0x5a6275, 0x222637);
+  gridHelper.rotation.x = Math.PI / 2;
+  const centerX = (b.minX + b.maxX) / 2;
+  const centerY = (b.minY + b.maxY) / 2;
+  gridHelper.position.set(centerX, centerY, 0);
+  scene.add(gridHelper);
+
+  const jetGroup = createAircraftMesh(span, 0x94a3b8);
   scene.add(jetGroup);
 
   // Render continuous 3D Ribbon Trail for the main aircraft
@@ -1156,26 +1687,40 @@ function render3D(tr){
       guns: { color: 0xff9800, r: 0.005 },
       target: { color: 0x9c27b0, r: 0.005 },
       airbase: { color: 0xffc107, r: 0.006 },
+      aircraft: { color: 0x94a3b8, r: 0.005 }
     };
     for (let i = 0; i < acFrame.threats.length; i++) {
       const th = acFrame.threats[i];
       const st = tStyle[th.type] || tStyle.missile;
       const r = threeState.span * st.r;
-      let geom;
-      if (th.type === 'target') {
-        geom = new THREE.BoxGeometry(r*2, r*2, r*2);
-      } else if (th.type === 'airbase') {
-        geom = new THREE.CylinderGeometry(r, r, r*2, 8);
-        geom.rotateX(Math.PI / 2);
-      } else if (th.type === 'missile') {
-        geom = new THREE.CylinderGeometry(r*0.3, r*0.3, r*3, 8);
-        geom.rotateX(Math.PI / 2);
+      let mesh;
+
+      if (th.type === 'lead' || th.type === 'wingman' || th.type === 'aircraft') {
+        mesh = createAircraftMesh(threeState.span, st.color);
+        const isTanker = th.name && th.name.toLowerCase().includes('tanker');
+        if (isTanker) {
+          mesh.scale.set(1.8, 1.8, 1.8);
+        } else {
+          mesh.scale.set(0.9, 0.9, 0.9);
+        }
       } else {
-        geom = new THREE.ConeGeometry(r, r*2, 4);
-        geom.rotateX(Math.PI / 2);
+        let geom;
+        if (th.type === 'target') {
+          geom = new THREE.BoxGeometry(r*2, r*2, r*2);
+        } else if (th.type === 'airbase') {
+          geom = new THREE.CylinderGeometry(r, r, r*2, 8);
+          geom.rotateX(Math.PI / 2);
+        } else if (th.type === 'missile') {
+          geom = new THREE.CylinderGeometry(r*0.3, r*0.3, r*3, 8);
+          geom.rotateX(Math.PI / 2);
+        } else {
+          geom = new THREE.ConeGeometry(r, r*2, 4);
+          geom.rotateX(Math.PI / 2);
+        }
+        const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.4 });
+        mesh = new THREE.Mesh(geom, mat);
       }
-      const mat = new THREE.MeshStandardMaterial({ color: st.color, roughness: 0.4 });
-      const mesh = new THREE.Mesh(geom, mat);
+
       mesh.position.set(th.y, th.x, -th.z);
 
       if (th.type === 'target') {
@@ -1218,6 +1763,90 @@ function render3D(tr){
   threeState.renderer.setSize(width, 620);
 
   threeState.renderer.render(threeState.scene, threeState.camera);
+
+  // --- Render HTML overlay labels ---
+  const overlay = document.getElementById('labels-overlay');
+  if (overlay) {
+    overlay.innerHTML = '';
+    const height = 620;
+    const labelPoints = [];
+
+    // 1. Receiver / Main aircraft
+    const isRefueling = tr.scenario && tr.scenario.includes('aar');
+    const rxName = isRefueling ? 'Receiver' : (tr.aircraft ? tr.aircraft.toUpperCase() : 'Aircraft');
+    labelPoints.push({
+      x: cx, y: cy, z: cz,
+      name: rxName,
+      color: '#00ffcc'
+    });
+
+    // 2. Other moving tracks (threats)
+    if (acFrame.threats) {
+      for (const th of acFrame.threats) {
+        let thName = th.name;
+        if (!thName) {
+          if (th.type === 'missile') thName = 'AA01';
+          else if (th.type === 'guns') thName = 'Guns';
+          else if (th.type === 'target') thName = 'Target';
+          else thName = th.type.toUpperCase();
+        }
+        let colorStr = '#f44336';
+        if (th.type === 'lead') colorStr = '#ffd700';
+        else if (th.type === 'wingman') colorStr = '#00e5ff';
+        else if (th.type === 'aircraft') colorStr = '#94a3b8';
+        else if (th.type === 'target') colorStr = '#9c27b0';
+        else if (th.type === 'airbase') colorStr = '#ffc107';
+        else if (th.type === 'slot') colorStr = '#2196f3';
+
+        labelPoints.push({
+          x: th.y, y: th.x, z: -th.z,
+          name: thName,
+          color: colorStr
+        });
+      }
+    }
+
+    // 3. Static waypoints
+    if (tr.geometry) {
+      for (const g of tr.geometry) {
+        if (g.type === 'waypoint' && g.coords.length >= 3) {
+          labelPoints.push({
+            x: g.coords[1], y: g.coords[0], z: -g.coords[2],
+            name: g.name || 'Waypoint',
+            color: g.color || '#fff'
+          });
+        }
+      }
+    }
+
+    // Project and render
+    for (const pt of labelPoints) {
+      const pos = new THREE.Vector3(pt.x, pt.y, pt.z);
+      pos.project(threeState.camera);
+
+      if (pos.z <= 1 && pos.x >= -1 && pos.x <= 1 && pos.y >= -1 && pos.y <= 1) {
+        const screenX = (pos.x * 0.5 + 0.5) * width;
+        const screenY = (-(pos.y * 0.5) + 0.5) * height;
+
+        const labelDiv = document.createElement('div');
+        labelDiv.style.position = 'absolute';
+        labelDiv.style.left = screenX + 'px';
+        labelDiv.style.top = (screenY - 15) + 'px';
+        labelDiv.style.transform = 'translate(-50%, -100%)';
+        labelDiv.style.background = 'rgba(15, 17, 23, 0.85)';
+        labelDiv.style.border = '1px solid ' + pt.color;
+        labelDiv.style.borderRadius = '4px';
+        labelDiv.style.padding = '2px 6px';
+        labelDiv.style.color = pt.color;
+        labelDiv.style.fontSize = '10px';
+        labelDiv.style.fontWeight = 'bold';
+        labelDiv.style.whiteSpace = 'nowrap';
+        labelDiv.style.boxShadow = '0 2px 4px rgba(0,0,0,0.5)';
+        labelDiv.textContent = pt.name;
+        overlay.appendChild(labelDiv);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,6 +1875,8 @@ function showDetail(i){
     '<span>Aircraft: <b>'+esc(tr.aircraft)+'</b></span>';
   document.getElementById('time-end').textContent=fmt(traceDuration(tr),1)+'s';
   renderPathView(tr);
+  initCharts(tr);
+  updateConditionalsPanel(tr);
   updatePlayhead();
 }
 function showIndex(){
