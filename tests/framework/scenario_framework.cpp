@@ -283,6 +283,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     // Global simulation clock (continuous across phases) for the trace.
     double simT = 0.0;
+    int frameCount = 0;
+    bool printedHeader = false;
 
     for (auto& test : tests) {
         // Detect whether this phase re-initializes the flight model (calls
@@ -298,42 +300,50 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         //     aircraft was maneuvering (rates > 0.01) and they dropped to
         //     ~0 after Init, a reinit happened even if the position didn't
         //     change much (e.g. attitude/velocity reset in place).
-        const double preX = fm.state().kin.x;
-        const double preY = fm.state().kin.y;
-        const double preZ = fm.state().kin.z;
-        const double preP = fm.state().kin.p;
-        const double preQ = fm.state().kin.q;
-        const double preR = fm.state().kin.r;
+        const double preX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
+        const double preY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
+        const double preZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
+        const double preP = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.p : fm.state().kin.p;
+        const double preQ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.q : fm.state().kin.q;
+        const double preR = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.r : fm.state().kin.r;
 
-        sc.brain().setFrameInputs({});
-        // Reset per-phase navigation state (integrators + stick commands).
-        // Without this, a previous phase's wound-up GammaHold integrator and
-        // smoothed stick commands carry over to the next phase, causing
-        // transients (e.g. Takeoff's full-throttle + nose-up command leaks
-        // into Landing, exciting the Phugoid). The mode, config, and
-        // waypoints are preserved — only transient control state is cleared.
-        // Each phase's Init() can still override anything it needs.
-        sc.brain().resetPhaseState();
-        test->Init(sc, fm);
+        if (!scenario.aircraftList().empty()) {
+            auto& primaryAc = scenario.aircraftList()[0];
+            primaryAc->sc.brain().setFrameInputs({});
+            primaryAc->sc.brain().resetPhaseState();
+            test->Init(primaryAc->sc, primaryAc->fm);
+        } else {
+            sc.brain().setFrameInputs({});
+            sc.brain().resetPhaseState();
+            test->Init(sc, fm);
+        }
 
-        const double dx = fm.state().kin.x - preX;
-        const double dy = fm.state().kin.y - preY;
-        const double dz = fm.state().kin.z - preZ;
+        const double currX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
+        const double currY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
+        const double currZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
+        const double currP = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.p : fm.state().kin.p;
+        const double currQ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.q : fm.state().kin.q;
+        const double currR = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.r : fm.state().kin.r;
+
+        const double dx = currX - preX;
+        const double dy = currY - preY;
+        const double dz = currZ - preZ;
         const double jumpFt = std::sqrt(dx * dx + dy * dy + dz * dz);
 
         const bool posJumped = jumpFt > 50.0;
         const bool ratesDropped =
             (std::fabs(preP) > 0.01 || std::fabs(preQ) > 0.01 || std::fabs(preR) > 0.01) &&
-            (std::fabs(fm.state().kin.p) < 0.001 &&
-             std::fabs(fm.state().kin.q) < 0.001 &&
-             std::fabs(fm.state().kin.r) < 0.001);
+            (std::fabs(currP) < 0.001 &&
+             std::fabs(currQ) < 0.001 &&
+             std::fabs(currR) < 0.001);
         const bool reinitializes = posJumped || ratesDropped;
 
         // After Init, capture waypoints from the brain (set by Waypoint mode).
         // Done once per phase — if a later phase changes waypoints, the trace
         // picks up the latest set.
         if (rec) {
-            const auto& wps = sc.brain().waypoints();
+            const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
+            const auto& wps = brain.waypoints();
             if (!wps.empty()) {
                 std::vector<TraceGeometry> geom = rec->trace().geometry;
                 std::vector<double> pathCoords;
@@ -369,31 +379,92 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         while (!test->IsFinished()) {
             PilotInput input;
             std::string modeName;
-            if (test->inputOverride(input, fm.state())) {
-                modeName = "Manual";
-            } else {
-                input = sc.compute(fm.state(), dt, 0.0, fm.fcs(), fm.state().fcs);
-                const double bankCmd = test->bankOverride_rad();
-                if (bankCmd >= 0.0) {
-                    input.rstick = limit((bankCmd - fm.state().kin.phi) * 2.0, -1.0, 1.0);
+
+            if (!scenario.aircraftList().empty()) {
+                // Multi-aircraft update path
+                for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
+                    auto& ac = scenario.aircraftList()[idx];
+                    PilotInput acInput;
+                    std::string acModeName;
+
+                    if (idx == 0 && test->inputOverride(acInput, ac->fm.state())) {
+                        acModeName = "Manual";
+                    } else {
+                        acInput = ac->sc.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
+                        if (idx == 0) {
+                            const double bankCmd = test->bankOverride_rad();
+                            if (bankCmd >= 0.0) {
+                                acInput.rstick = limit((bankCmd - ac->fm.state().kin.phi) * 2.0, -1.0, 1.0);
+                            }
+                        }
+                        acModeName = digiModeName(ac->sc.brain().activeMode());
+                    }
+
+                    ac->input = acInput;
+                    ac->activeModeName = acModeName;
+                    ac->fm.update(dt, acInput, 0.0, Vec3{0.0, 0.0, 1.0});
                 }
-                modeName = digiModeName(sc.brain().activeMode());
+
+                auto& primaryAc = scenario.aircraftList()[0];
+                input = primaryAc->input;
+                modeName = primaryAc->activeModeName;
+
+                test->Evaluate(primaryAc->fm.state(), input, dt);
+            } else {
+                // Fallback single aircraft path (compatible with existing scenarios)
+                if (test->inputOverride(input, fm.state())) {
+                    modeName = "Manual";
+                } else {
+                    input = sc.compute(fm.state(), dt, 0.0, fm.fcs(), fm.state().fcs);
+                    const double bankCmd = test->bankOverride_rad();
+                    if (bankCmd >= 0.0) {
+                        input.rstick = limit((bankCmd - fm.state().kin.phi) * 2.0, -1.0, 1.0);
+                    }
+                    modeName = digiModeName(sc.brain().activeMode());
+                }
+
+                fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
+                test->Evaluate(fm.state(), input, dt);
             }
 
-            fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
-            test->Evaluate(fm.state(), input, dt);
+            // Update Telemetry
+            if (!scenario.telemetries().empty()) {
+                for (auto& tel : scenario.telemetries()) {
+                    tel->sample();
+                }
+            }
+
+            // Evaluate Conditionals
+            if (!scenario.conditionals().empty()) {
+                for (auto& cond : scenario.conditionals()) {
+                    cond->Evaluate(dt);
+                }
+            }
+
+            // Print Telemetry columns every 10 frames
+            if (!scenario.telemetries().empty()) {
+                if (!printedHeader) {
+                    std::printf("%-10s", "Frame");
+                    for (const auto& tel : scenario.telemetries()) {
+                        std::printf(" %-15s", tel->name().c_str());
+                    }
+                    std::printf("\n");
+                    printedHeader = true;
+                }
+                if (frameCount % 10 == 0) {
+                    std::printf("%-10d", frameCount);
+                    for (const auto& tel : scenario.telemetries()) {
+                        std::printf(" %-15.3f", tel->lastValue());
+                    }
+                    std::printf("\n");
+                }
+            }
 
             if (rec) {
-                // Extract active threats/targets from the brain state for
-                // the trace. These are per-frame snapshots — the HTML viewer
-                // draws missile tracks (moving points + trails) and bearing
-                // lines from them.
                 std::vector<ThreatEntity> threats;
-                // Bind to a const DigiBrain& so overload resolution picks
-                // the non-deprecated const state() overload (the non-const
-                // state() is [[deprecated]] — see digi_brain.h).
-                const auto& brain = sc.brain();
+                const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
                 const auto& ds = brain.state();
+
                 if (ds.missileDefeat.incomingMissile) {
                     threats.push_back({"missile",
                         ds.missileDefeat.incomingMissile->x, ds.missileDefeat.incomingMissile->y,
@@ -409,14 +480,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                         ds.ag.groundTarget->x, ds.ag.groundTarget->y,
                         ds.ag.groundTarget->z, ds.ag.groundTarget->speed});
                 }
-                // Extract the RESOLVED offensive target (injected or auto-tracked
-                // via SensorFusion). Without this, targets detected autonomously
-                // (via truth/SensorFusion) never appear in the report — the old
-                // code only drew injected targets.
                 if (brain.resolvedTarget()) {
                     const auto* tgt = brain.resolvedTarget();
-                    // Only add if not already covered by injectedTarget/groundTarget
-                    // to avoid duplicate rendering.
                     bool alreadyHave = false;
                     for (const auto& th : threats) {
                         if (th.type == "target" &&
@@ -431,38 +496,58 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                             tgt->x, tgt->y, tgt->z, tgt->speed});
                     }
                 }
-                // Also extract the flight lead (if injected) so it shows up
-                // in the visualization as a green track.
                 if (brain.frameInputs().injectedLead) {
                     const auto* lead = brain.frameInputs().injectedLead;
                     threats.push_back({"lead",
                         lead->x, lead->y, lead->z, lead->speed});
                 }
-                // Merge custom trace entities from the test (formation slots,
-                // ghost wingmen, airbases, etc.)
+
+                // Automatically include other simulated aircraft as moving entities
+                if (!scenario.aircraftList().empty()) {
+                    for (size_t idx = 1; idx < scenario.aircraftList().size(); ++idx) {
+                        auto& ac = scenario.aircraftList()[idx];
+                        ThreatEntity t;
+                        if (ac->name == "Tanker") {
+                            t.type = "lead";
+                        } else {
+                            t.type = "wingman";
+                        }
+                        t.name = ac->name;
+                        t.x = ac->fm.state().kin.x;
+                        t.y = ac->fm.state().kin.y;
+                        t.z = ac->fm.state().kin.z;
+                        t.speed = ac->fm.state().kin.vt;
+                        t.psi = ac->fm.state().kin.psi;
+                        threats.push_back(t);
+                    }
+                }
+
                 auto custom = test->traceEntities();
                 threats.insert(threats.end(), custom.begin(), custom.end());
-                rec->record(simT, fm.state(), input, modeName, test->name(), threats);
 
-                // Publish per-frame samples from the test (range, heading
-                // error, fuel, TTGO, etc.) for the frame readout + time-series.
+                if (!scenario.aircraftList().empty()) {
+                    auto& primaryAc = scenario.aircraftList()[0];
+                    rec->record(simT, primaryAc->fm.state(), primaryAc->input, primaryAc->activeModeName, test->name(), threats);
+                } else {
+                    rec->record(simT, fm.state(), input, modeName, test->name(), threats);
+                }
+
                 for (const auto& s : test->traceSamples()) {
                     rec->addSample(s.key, s.value, s.unit);
                 }
 
-                // Emit a mode-change event when the AI mode transitions.
-                // This gives the report an event log of what the brain did
-                // and when — critical for diagnosing "why didn't it enter
-                // GunsEngage?" type failures.
+                // Automatically include scenario telemetry variables as trace samples
+                for (const auto& tel : scenario.telemetries()) {
+                    rec->addSample(tel->name(), tel->lastValue(), "");
+                }
+
                 if (!lastModeName.empty() && modeName != lastModeName) {
                     rec->addEvent(simT, "mode",
                         "Mode: " + lastModeName + " -> " + modeName, "info");
                 }
                 lastModeName = modeName;
 
-                // Emit a weapon-fire event when the gun fires.
                 if (input.fireGun) {
-                    // Only log the first fire frame per burst to avoid spam.
                     if (simT - lastFireEventT > 0.5) {
                         rec->addEvent(simT, "weapon", "Gun fired", "info");
                         lastFireEventT = simT;
@@ -470,6 +555,7 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 }
             }
             simT += dt;
+            frameCount++;
         }
 
         const double phaseEndT = simT;

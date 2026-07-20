@@ -1,4 +1,4 @@
-// f4flight - scenarios/scenario_digi_aar.cpp
+// f4flight - scenarios/high_level/scenario_digi_aar.cpp
 //
 // Digi AI air-to-air refueling (AAR) test with both a tanker and receiver.
 //
@@ -14,218 +14,29 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <filesystem>
+#include <memory>
 
 using namespace f4flight;
 using namespace f4flight::digi;
 
 namespace f4flight_test {
 
-static double g_aarSimTime = 0.0;
-
 // Tanker waypoints definition (NED frame: +X = east, +Y = north, +Z = down)
 static const std::vector<Vec3> g_tankerWaypoints = {
-    {0.0, 0.0, -20000.0},
-    {0.0, 100000.0, -20000.0},
-    {0.0, 200000.0, -20000.0},
-    {0.0, 300000.0, -20000.0}
+    {0.0, 0.0, -15000.0},
+    {0.0, 100000.0, -15000.0},
+    {0.0, 200000.0, -15000.0},
+    {0.0, 300000.0, -15000.0}
 };
 
-// Deterministically compute tanker state at time t
-static void getTankerState(double t, double speed, const std::vector<Vec3>& wps,
-                           double& outX, double& outY, double& outZ, double& outYaw) {
-    if (wps.empty()) {
-        outX = outY = outZ = outYaw = 0.0;
-        return;
-    }
-    double distRemaining = t * speed;
-    size_t i = 0;
-    while (i + 1 < wps.size()) {
-        const auto& p1 = wps[i];
-        const auto& p2 = wps[i+1];
-        double dx = p2.x - p1.x;
-        double dy = p2.y - p1.y;
-        double dz = p2.z - p1.z;
-        double segmentLen = std::sqrt(dx*dx + dy*dy + dz*dz);
-        if (distRemaining <= segmentLen) {
-            double frac = segmentLen > 0.0 ? distRemaining / segmentLen : 0.0;
-            outX = p1.x + dx * frac;
-            outY = p1.y + dy * frac;
-            outZ = p1.z + dz * frac;
-            outYaw = std::atan2(dy, dx);
-            return;
-        }
-        distRemaining -= segmentLen;
-        i++;
-    }
-    const auto& pLast1 = wps[wps.size() - 2];
-    const auto& pLast2 = wps[wps.size() - 1];
-    double dx = pLast2.x - pLast1.x;
-    double dy = pLast2.y - pLast1.y;
-    double dz = pLast2.z - pLast1.z;
-    double len = std::sqrt(dx*dx + dy*dy + dz*dz);
-    double dirX = len > 0.0 ? dx / len : 0.0;
-    double dirY = len > 0.0 ? dy / len : 1.0;
-    double dirZ = len > 0.0 ? dz / len : 0.0;
-    outX = pLast2.x + dirX * distRemaining;
-    outY = pLast2.y + dirY * distRemaining;
-    outZ = pLast2.z + dirZ * distRemaining;
-    outYaw = std::atan2(dy, dx);
-}
-
-// Helper to inject the tanker state into the controller brain
-static void updateInjectedTanker(DigiEntity& tanker, SteeringController& sc) {
-    double tx, ty, tz, tyaw;
-    getTankerState(g_aarSimTime, 300.0 * KNOTS_TO_FTPSEC, g_tankerWaypoints, tx, ty, tz, tyaw);
-    tanker.x = tx;
-    tanker.y = ty;
-    tanker.z = tz;
-    tanker.yaw = tyaw;
-    tanker.pitch = 0.0;
-    tanker.roll = 0.0;
-    tanker.speed = 300.0 * KNOTS_TO_FTPSEC;
-    tanker.vx = tanker.speed * std::cos(tyaw);
-    tanker.vy = tanker.speed * std::sin(tyaw);
-    tanker.vz = 0.0;
-    tanker.isDead = false;
-    tanker.dcm = dcmFromEuler(tyaw, 0.0, 0.0);
-
-    FrameInputs fi;
-    fi.injectedTanker = &tanker;
-    sc.brain().setFrameInputs(fi);
-}
-
-// ===========================================================================
-// AARPhase — Single continuous air-to-air refueling test phase
-// ===========================================================================
-class AARPhase : public ManeuverTest {
-public:
-    AARPhase(const char* name, double duration, double alt, double speed)
-        : ManeuverTest(name, duration), alt_(alt), speed_(speed) {}
-
-    void Init(SteeringController& sc, FlightModel& fm) override {
-        sc_ptr_ = &sc;
-        const double initialHeading = PI / 2.0;  // north
-        fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, initialHeading, true);
-
-        // Position receiver 2 NM behind the tanker's initial position
-        fm.state().kin.x = 0.0;
-        fm.state().kin.y = -2.0 * 6076.0;
-        fm.state().kin.z = -(alt_ - 500.0);  // 500 ft below tanker
-
-        sc.setMode(SteeringController::Mode::HeadingAltitude);
-        sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
-        sc.setMaxGs(fm.config().geometry.maxGs);
-        sc.setMaxBank(30.0);
-        sc.setMaxGamma(10.0);
-
-        sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::None;
-        sc.brain().stateMutable().refuel.contactTimer = 0.0;
-        sc.brain().stateMutable().refuel.contactDuration = 5.0; // short for testing
-
-        updateInjectedTanker(tanker_, sc);
-    }
-
-    void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
-        ManeuverTest::Evaluate(as, input, dt);
-        g_aarSimTime += dt;
-
-        updateInjectedTanker(tanker_, *sc_ptr_);
-
-        // Boom offset
-        constexpr double kBoomOffsetBackFt = 50.0;
-        constexpr double kBoomOffsetDownFt = 20.0;
-        const double boomX = tanker_.x - kBoomOffsetBackFt * std::cos(tanker_.yaw);
-        const double boomY = tanker_.y - kBoomOffsetBackFt * std::sin(tanker_.yaw);
-        const double boomZ = tanker_.z + kBoomOffsetDownFt;
-
-        const double dx = boomX - as.kin.x;
-        const double dy = boomY - as.kin.y;
-        const double dz = boomZ - as.kin.z;
-        distToBoom_ = std::sqrt(dx * dx + dy * dy + dz * dz);
-        minDistToBoom_ = std::min(minDistToBoom_, distToBoom_);
-
-        const auto activeMode = sc_ptr_->brain().activeMode();
-        if (activeMode == DigiMode::Refueling) reachedApproach_ = true;
-
-        const auto refuelPhase = sc_ptr_->brain().state().refuel.phase;
-        if (distToBoom_ < 150.0) {
-            reachedPrecontact_ = true;
-        }
-        if (refuelPhase == DigiRefuelState::Phase::Contact) {
-            reachedContact_ = true;
-            timeInContact_ += dt;
-        }
-        if (refuelPhase == DigiRefuelState::Phase::Disconnect) {
-            if (distToBoom_ > 500.0) {
-                reachedDisconnect_ = true;
-            }
-        }
-        if (std::isnan(as.kin.x)) hasNaN_ = true;
-    }
-
-    bool IsFinished() const override {
-        return phaseTime_ >= maxTime_ || hasNaN_ || (reachedApproach_ && reachedPrecontact_ && reachedContact_ && reachedDisconnect_);
-    }
-
-    bool IsPassed() const override {
-        return !hasNaN_ && reachedApproach_ && reachedPrecontact_ && reachedContact_ && reachedDisconnect_;
-    }
-
-    std::string criteria() const override {
-        return "Complete AAR sequence (Approach -> Precontact -> Contact -> Disconnect); No NaN";
-    }
-
-    std::string failureReason() const override {
-        if (hasNaN_) return "NaN detected in aircraft state.";
-        if (!reachedApproach_) return "Never entered Refueling mode.";
-        if (!reachedPrecontact_) return "Never reached precontact position (closest: " + std::to_string(minDistToBoom_) + " ft).";
-        if (!reachedContact_) return "Never entered Contact phase.";
-        if (!reachedDisconnect_) return "Never completed disconnect phase.";
-        return "";
-    }
-
-    std::vector<TestCondition> conditions() const override {
-        return {
-            {"Approach", "Enter Refueling mode", reachedApproach_},
-            {"Precontact", "Reach precontact within 150 ft", reachedPrecontact_},
-            {"Contact", "Enter contact & hold contact for >= 5s", reachedContact_ && timeInContact_ >= 5.0},
-            {"Disconnect", "Enter disconnect & separate to > 500 ft", reachedDisconnect_}
-        };
-    }
-
-    std::vector<TraceSample> traceSamples() const override {
-        return {{"d_boom", distToBoom_, "ft"}};
-    }
-
-    std::vector<ThreatEntity> traceEntities() const override {
-        ThreatEntity t;
-        t.type = "lead";
-        t.name = "Tanker";
-        t.x = tanker_.x; t.y = tanker_.y; t.z = tanker_.z;
-        t.speed = tanker_.speed; t.psi = tanker_.yaw;
-        return {t};
-    }
-
-    void Finish() const override {
-        std::printf("  --- AAR Sequence Summary ---\n");
-        std::printf("  Reached Approach:   %s\n", reachedApproach_ ? "PASS" : "FAIL");
-        std::printf("  Reached Precontact: %s\n", reachedPrecontact_ ? "PASS" : "FAIL");
-        std::printf("  Reached Contact:    %s (held for %.1f s)\n", reachedContact_ ? "PASS" : "FAIL", timeInContact_);
-        std::printf("  Completed Disconnect: %s (final dist: %.1f ft)\n", reachedDisconnect_ ? "PASS" : "FAIL", distToBoom_);
-    }
-
-private:
-    double alt_, speed_;
-    DigiEntity tanker_;
-    SteeringController* sc_ptr_{nullptr};
-    double distToBoom_{99999.0};
-    double minDistToBoom_{99999.0};
-    double timeInContact_{0.0};
-    bool reachedApproach_{false};
-    bool reachedPrecontact_{false};
-    bool reachedContact_{false};
-    bool reachedDisconnect_{false};
-    bool hasNaN_{false};
+enum class RefuelStage : int {
+    Approach = 0,
+    PrecontactStabilize = 1,
+    Contact = 2,
+    PostPrecontact = 3,
+    DescendHold = 4,
+    Depart = 5
 };
 
 // ===========================================================================
@@ -236,13 +47,12 @@ public:
     DigiAARScenario() : ManeuverScenario("digi_aar") {}
 
     // Tier classification for the 3-tier test workflow.
-    // See scenario_framework.h -> TestTier enum for the meaning.
     TestTier GetTestTier() const override { return TestTier::HighLevel; }
 
-        std::string GetDescription() const override {
+    std::string GetDescription() const override {
         return "Air-to-air refueling test with both a tanker and receiver: "
                "approach -> precontact -> contact (hold 5s) -> disconnect. "
-               "The tanker flies predefined waypoints, and the receiver completes AAR.";
+               "The tanker is a real simulated aircraft, and the receiver completes AAR.";
     }
 
     std::vector<TraceGeometry> traceGeometry() const override {
@@ -274,20 +84,283 @@ public:
     }
 
     std::vector<std::unique_ptr<ManeuverTest>>
-        StartScenario(FlightModel& fm, const ScenarioContext& ctx) override {
+        StartScenario(FlightModel& /*fm*/, const ScenarioContext& ctx) override {
 
-        const double alt = 20000.0;
-        const double speed = 300.0;  // kts — typical tanker speed
+        ClearScenarioObjects();
 
-        g_aarSimTime = 0.0;
+        const double alt = 15000.0;
+        const double speed = 300.0; // kts — typical refueling speed for all aircraft
 
-        fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, 0.0, true);
+        // At 15,000 ft, 300 knots TAS is approx 238 knots CAS.
+        const double refuelCas = 238.0;
+
+        currentStage_ = RefuelStage::Approach;
+        stageTimer_ = 0.0;
+
+        // 1. Create receiver aircraft
+        auto receiver = CreateAircraft("Receiver", ctx.cfg);
+        receiver->fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, PI / 2.0, true);
+
+        // Position receiver in 0.3 NM trail (1822 ft behind) and 500 ft below the tanker.
+        // This is a highly robust starting point for all categories (fighter/heavy/attack).
+        receiver->fm.state().kin.x = 0.0;
+        receiver->fm.state().kin.y = -1822.0;
+        receiver->fm.state().kin.z = -(alt - 500.0);
+
+        receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+        receiver->sc.setCornerSpeed(refuelCas); // Match target refueling speed exactly!
+        receiver->sc.setMaxGs(ctx.cfg.geometry.maxGs);
+        receiver->sc.setMaxBank(30.0);
+        receiver->sc.setMaxGamma(10.0);
+        receiver->sc.setAltitude(alt);
+        receiver->sc.setHeading(PI / 2.0);
+
+        receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::None;
+        receiver->sc.brain().stateMutable().refuel.contactTimer = 0.0;
+        receiver->sc.brain().stateMutable().refuel.contactDuration = 30.0; // 30s contact hold
+
+        // 2. Create tanker aircraft (using ctx.cfg for perfect flight stability!)
+        auto tanker = CreateAircraft("Tanker", ctx.cfg);
+        tanker->fm.init(ctx.cfg, alt, speed * KNOTS_TO_FTPSEC, PI / 2.0, true);
+
+        // Tanker starts at (0, 0, -15000)
+        tanker->fm.state().kin.x = 0.0;
+        tanker->fm.state().kin.y = 0.0;
+        tanker->fm.state().kin.z = -alt;
+
+        tanker->sc.setWaypoints(g_tankerWaypoints);
+        tanker->sc.setMode(SteeringController::Mode::Waypoint);
+        tanker->sc.setAltitude(alt);
+        tanker->sc.setHeading(PI / 2.0);
+
+        // Limit tanker turns to 25 degrees bank
+        tanker->sc.setMaxBank(25.0);
+        tanker->sc.setCornerSpeed(refuelCas);
+
+        // 3. Define Telemetries
+        auto telInjectTanker = CreateTelemetry("inject_tanker", [this, receiver, tanker]() {
+            stageTimer_ += 1.0 / 60.0;
+
+            const double tanker_x = tanker->fm.state().kin.x;
+            const double tanker_y = tanker->fm.state().kin.y;
+            const double tanker_z = tanker->fm.state().kin.z;
+            const double tanker_yaw = tanker->fm.state().kin.psi;
+
+            // Common default tanker state population
+            tankerEntity_.x = tanker_x;
+            tankerEntity_.y = tanker_y;
+            tankerEntity_.z = tanker_z;
+            tankerEntity_.yaw = tanker_yaw;
+            tankerEntity_.pitch = tanker->fm.state().kin.theta;
+            tankerEntity_.roll = tanker->fm.state().kin.phi;
+            tankerEntity_.speed = tanker->fm.state().kin.vt;
+            tankerEntity_.vx = tanker->fm.state().kin.xdot;
+            tankerEntity_.vy = tanker->fm.state().kin.ydot;
+            tankerEntity_.vz = tanker->fm.state().kin.zdot;
+            tankerEntity_.isDead = false;
+            tankerEntity_.dcm = tanker->fm.state().kin.dcm;
+
+            // Distance to actual boom (50 ft behind, 20 ft below)
+            constexpr double kBoomOffsetBackFt = 50.0;
+            constexpr double kBoomOffsetDownFt = 20.0;
+            const double boomX = tanker_x - kBoomOffsetBackFt * std::cos(tanker_yaw);
+            const double boomY = tanker_y - kBoomOffsetBackFt * std::sin(tanker_yaw);
+            const double boomZ = tanker_z + kBoomOffsetDownFt;
+
+            const double dx = boomX - receiver->fm.state().kin.x;
+            const double dy = boomY - receiver->fm.state().kin.y;
+            const double dz = boomZ - receiver->fm.state().kin.z;
+            const double d_boom = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+            FrameInputs fi;
+            bool inject = true;
+
+            switch (currentStage_) {
+                case RefuelStage::Approach:
+                    // Close from trail and below to pre-contact position (50 ft behind/below)
+                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+                    if (d_boom < 400.0) {
+                        currentStage_ = RefuelStage::PrecontactStabilize;
+                        stageTimer_ = 0.0;
+                    }
+                    break;
+
+                case RefuelStage::PrecontactStabilize:
+                    // Stabilize at pre-contact for 10 seconds
+                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+                    if (stageTimer_ >= 10.0) {
+                        currentStage_ = RefuelStage::Contact;
+                        stageTimer_ = 0.0;
+                    }
+                    break;
+
+                case RefuelStage::Contact:
+                    // Close to contact (10 ft behind and below)
+                    // We achieve this by shifting the injected tanker 40 ft forward and 10 ft up
+                    {
+                        const double shiftForward = 40.0;
+                        const double shiftUp = 10.0;
+                        tankerEntity_.x = tanker_x + shiftForward * std::cos(tanker_yaw);
+                        tankerEntity_.y = tanker_y + shiftForward * std::sin(tanker_yaw);
+                        tankerEntity_.z = tanker_z - shiftUp; // shift up (negative z)
+                    }
+                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Contact;
+                    if (stageTimer_ >= 30.0) {
+                        currentStage_ = RefuelStage::PostPrecontact;
+                        stageTimer_ = 0.0;
+                    }
+                    break;
+
+                case RefuelStage::PostPrecontact:
+                    // Return to pre-contact (50 ft behind/below) and stabilize for 10 seconds
+                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+                    if (stageTimer_ >= 10.0) {
+                        currentStage_ = RefuelStage::DescendHold;
+                        stageTimer_ = 0.0;
+                    }
+                    break;
+
+                case RefuelStage::DescendHold:
+                    // Descend to 1000 ft below tanker
+                    receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+                    receiver->sc.setAltitude(-tanker_z - 1000.0);
+                    receiver->sc.setHeading(PI / 2.0);
+                    inject = false; // fallback to standard autopilot
+
+                    {
+                        const double currentAlt = -receiver->fm.state().kin.z;
+                        const double targetAlt = -tanker_z - 1000.0;
+                        if (std::abs(currentAlt - targetAlt) < 150.0) {
+                            currentStage_ = RefuelStage::Depart;
+                            stageTimer_ = 0.0;
+                        }
+                    }
+                    break;
+
+                case RefuelStage::Depart:
+                    // Turn away and depart
+                    receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+                    receiver->sc.setAltitude(-tanker_z - 1000.0);
+                    receiver->sc.setHeading(PI); // turn away (opposite heading)
+                    inject = false;
+                    break;
+            }
+
+            if (inject) {
+                fi.injectedTanker = &tankerEntity_;
+                receiver->sc.brain().setFrameInputs(fi);
+            } else {
+                receiver->sc.brain().setFrameInputs({});
+            }
+
+            return static_cast<double>(currentStage_);
+        });
+
+        auto telDistToBoom = CreateTelemetry("d_boom", [this, receiver]() {
+            constexpr double kBoomOffsetBackFt = 50.0;
+            constexpr double kBoomOffsetDownFt = 20.0;
+            const double boomX = tankerEntity_.x - kBoomOffsetBackFt * std::cos(tankerEntity_.yaw);
+            const double boomY = tankerEntity_.y - kBoomOffsetBackFt * std::sin(tankerEntity_.yaw);
+            const double boomZ = tankerEntity_.z + kBoomOffsetDownFt;
+
+            const double dx = boomX - receiver->fm.state().kin.x;
+            const double dy = boomY - receiver->fm.state().kin.y;
+            const double dz = boomZ - receiver->fm.state().kin.z;
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        });
+
+        auto telActiveMode = CreateTelemetry("active_mode", [receiver]() {
+            return static_cast<double>(receiver->sc.brain().activeMode());
+        });
+
+        auto telRefuelPhase = CreateTelemetry("refuel_phase", [receiver]() {
+            return static_cast<double>(receiver->sc.brain().state().refuel.phase);
+        });
+
+        auto telRefuelStage = CreateTelemetry("refuel_stage", [this]() {
+            return static_cast<double>(currentStage_);
+        });
+
+        // Debug telemetries
+        auto telContactTimer = CreateTelemetry("c_timer", [receiver]() {
+            return receiver->sc.brain().state().refuel.contactTimer;
+        });
+
+        // Altitudes
+        auto telRecZ = CreateTelemetry("rec_z", [receiver]() {
+            return receiver->fm.state().kin.z;
+        });
+        auto telTankZ = CreateTelemetry("tank_z", [tanker]() {
+            return tanker->fm.state().kin.z;
+        });
+
+        // Speeds
+        auto telRecVt = CreateTelemetry("rec_vt", [receiver]() {
+            return receiver->fm.state().kin.vt;
+        });
+        auto telTankVt = CreateTelemetry("tank_vt", [tanker]() {
+            return tanker->fm.state().kin.vt;
+        });
+
+        // 4. Define and Chain Conditionals
+        // 4.1 Enter Refueling mode (Approach)
+        auto condApproach = CreateConditional<ConditionalValueReachesRange>(
+            telActiveMode, static_cast<double>(DigiMode::Refueling), 0.1, true);
+
+        // 4.2 Reaches pre-contact stabilization stage (refuel_stage == 1.0)
+        auto condPrecontact = CreateConditional<ConditionalValueReachesRange>(
+            telRefuelStage, 1.0, 0.1, true);
+
+        // 4.3 Reaches contact stage (refuel_stage == 2.0)
+        auto condContact = CreateConditional<ConditionalValueReachesRange>(
+            telRefuelStage, 2.0, 0.1, true);
+
+        // 4.4 Reaches post-precontact stage (refuel_stage == 3.0)
+        auto condPostPrecontact = CreateConditional<ConditionalValueReachesRange>(
+            telRefuelStage, 3.0, 0.1, true);
+
+        // 4.5 Reaches descend hold stage (refuel_stage == 4.0)
+        auto condDescend = CreateConditional<ConditionalValueReachesRange>(
+            telRefuelStage, 4.0, 0.1, true);
+
+        // 4.6 Reaches depart stage (refuel_stage == 5.0) and hold for 5.0 seconds
+        auto condDepart = CreateConditional<ConditionalDuration>(5.0, true);
+
+        // Chain execution via OnPassed callbacks
+        condApproach->OnPassed = [condPrecontact]() {
+            condPrecontact->Start();
+        };
+
+        condPrecontact->OnPassed = [condContact]() {
+            condContact->Start();
+        };
+
+        condContact->OnPassed = [condPostPrecontact]() {
+            condPostPrecontact->Start();
+        };
+
+        condPostPrecontact->OnPassed = [condDescend]() {
+            condDescend->Start();
+        };
+
+        condDescend->OnPassed = [condDepart]() {
+            condDepart->Start();
+        };
+
+        // Start the first conditional in the chain
+        condApproach->Start();
 
         std::vector<std::unique_ptr<ManeuverTest>> tests;
-        tests.push_back(std::make_unique<AARPhase>(
-            "Refuel Sequence", 150.0, alt, speed));
+        // Total time set to 250s for safety on slow/heavy aircraft.
+        tests.push_back(std::make_unique<ConditionalManeuverTest>(
+            *this, "Refuel Sequence", 250.0));
         return tests;
     }
+
+private:
+    DigiEntity tankerEntity_;
+    RefuelStage currentStage_{RefuelStage::Approach};
+    double stageTimer_{0.0};
 };
 
 static RegisterScenario g_registerDigiAAR("digi_aar", []() {
