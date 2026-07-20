@@ -54,6 +54,10 @@ set(F4FLIGHT_DIGI_SOURCES
 )
 
 set(F4FLIGHT_DIGI_HEADERS
+    include/f4flight/digi/behavior_tree/node.h
+    include/f4flight/digi/behavior_tree/blackboard.h
+    include/f4flight/digi/behavior_tree/flight_plan.h
+    include/f4flight/digi/behavior_tree/flight_plan_nodes.h
     include/f4flight/digi/digi.h
     include/f4flight/digi/digi_brain.h
     include/f4flight/digi/digi_state.h

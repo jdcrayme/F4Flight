@@ -554,10 +554,12 @@ struct DigiDamageState {
 // ===========================================================================
 struct DigiRefuelState {
     enum class Phase : int {
-        None       = 0,  // not refueling
-        Approach   = 1,  // flying to the boom position
-        Contact    = 2,  // holding at the boom, taking fuel
-        Disconnect = 3,  // departing after refueling
+        None       = 0,
+        Inbound    = 1,
+        Approach   = 1,  // Backward compatibility alias
+        Precontact = 2,
+        Contact    = 3,
+        Disconnect = 4,
     };
 
     Phase  phase{Phase::None};
