@@ -7,6 +7,8 @@
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/digi.h"
+#include "f4flight/digi/behavior_tree/node.h"
+#include "f4flight/digi/behavior_tree/blackboard.h"
 #include "scenario_framework.h"
 
 #include <cmath>
@@ -37,6 +39,176 @@ enum class RefuelStage : int {
     PostPrecontact = 3,
     DescendHold = 4,
     Depart = 5
+};
+
+struct AARBlackboard : public Blackboard {
+    SimulatedAircraft* receiver {nullptr};
+    SimulatedAircraft* tanker {nullptr};
+    DigiEntity* tankerEntity {nullptr};
+    RefuelStage* currentStage {nullptr};
+    bool inject {true};
+};
+
+class AARApproachNode : public BehaviorNode {
+public:
+    AARApproachNode() : BehaviorNode("AARApproach") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::Approach;
+        abb.receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+        abb.inject = true;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+
+        const double tanker_x = abb.tanker->fm.state().kin.x;
+        const double tanker_y = abb.tanker->fm.state().kin.y;
+        const double tanker_z = abb.tanker->fm.state().kin.z;
+        const double tanker_yaw = abb.tanker->fm.state().kin.psi;
+
+        constexpr double kBoomOffsetBackFt = 50.0;
+        constexpr double kBoomOffsetDownFt = 20.0;
+        const double boomX = tanker_x - kBoomOffsetBackFt * std::cos(tanker_yaw);
+        const double boomY = tanker_y - kBoomOffsetBackFt * std::sin(tanker_yaw);
+        const double boomZ = tanker_z + kBoomOffsetDownFt;
+
+        const double dx = boomX - abb.receiver->fm.state().kin.x;
+        const double dy = boomY - abb.receiver->fm.state().kin.y;
+        const double dz = boomZ - abb.receiver->fm.state().kin.z;
+        const double d_boom = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (d_boom < 400.0) {
+            return NodeStatus::Success;
+        }
+        return NodeStatus::Running;
+    }
+};
+
+class AARPrecontactStabilizeNode : public BehaviorNode {
+public:
+    AARPrecontactStabilizeNode() : BehaviorNode("AARPrecontactStabilize") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::PrecontactStabilize;
+        abb.receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+        abb.inject = true;
+        timer_ = 0.0;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        timer_ += abb.dt;
+        if (timer_ >= 10.0) {
+            return NodeStatus::Success;
+        }
+        return NodeStatus::Running;
+    }
+private:
+    double timer_ {0.0};
+};
+
+class AARContactNode : public BehaviorNode {
+public:
+    AARContactNode() : BehaviorNode("AARContact") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::Contact;
+        abb.receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Contact;
+        abb.inject = true;
+        timer_ = 0.0;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        timer_ += abb.dt;
+
+        const double tanker_x = abb.tanker->fm.state().kin.x;
+        const double tanker_y = abb.tanker->fm.state().kin.y;
+        const double tanker_z = abb.tanker->fm.state().kin.z;
+        const double tanker_yaw = abb.tanker->fm.state().kin.psi;
+
+        const double shiftForward = 40.0;
+        const double shiftUp = 10.0;
+        abb.tankerEntity->x = tanker_x + shiftForward * std::cos(tanker_yaw);
+        abb.tankerEntity->y = tanker_y + shiftForward * std::sin(tanker_yaw);
+        abb.tankerEntity->z = tanker_z - shiftUp;
+
+        if (timer_ >= 30.0) {
+            return NodeStatus::Success;
+        }
+        return NodeStatus::Running;
+    }
+private:
+    double timer_ {0.0};
+};
+
+class AARPostPrecontactNode : public BehaviorNode {
+public:
+    AARPostPrecontactNode() : BehaviorNode("AARPostPrecontact") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::PostPrecontact;
+        abb.receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
+        abb.inject = true;
+        timer_ = 0.0;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        timer_ += abb.dt;
+        if (timer_ >= 10.0) {
+            return NodeStatus::Success;
+        }
+        return NodeStatus::Running;
+    }
+private:
+    double timer_ {0.0};
+};
+
+class AARDescendHoldNode : public BehaviorNode {
+public:
+    AARDescendHoldNode() : BehaviorNode("AARDescendHold") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::DescendHold;
+        abb.inject = false;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+
+        const double tanker_z = abb.tanker->fm.state().kin.z;
+        abb.receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+        abb.receiver->sc.setAltitude(-tanker_z - 1000.0);
+        abb.receiver->sc.setHeading(PI / 2.0);
+
+        const double currentAlt = -abb.receiver->fm.state().kin.z;
+        const double targetAlt = -tanker_z - 1000.0;
+        if (std::abs(currentAlt - targetAlt) < 150.0) {
+            return NodeStatus::Success;
+        }
+        return NodeStatus::Running;
+    }
+};
+
+class AARDepartNode : public BehaviorNode {
+public:
+    AARDepartNode() : BehaviorNode("AARDepart") {}
+protected:
+    void onEnter(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        *(abb.currentStage) = RefuelStage::Depart;
+        abb.inject = false;
+    }
+    NodeStatus onTick(Blackboard& bb) override {
+        auto& abb = static_cast<AARBlackboard&>(bb);
+        const double tanker_z = abb.tanker->fm.state().kin.z;
+        abb.receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+        abb.receiver->sc.setAltitude(-tanker_z - 1000.0);
+        abb.receiver->sc.setHeading(PI);
+        return NodeStatus::Running;
+    }
 };
 
 // ===========================================================================
@@ -95,7 +267,6 @@ public:
         const double refuelCas = 238.0;
 
         currentStage_ = RefuelStage::Approach;
-        stageTimer_ = 0.0;
 
         // 1. Create receiver aircraft
         auto receiver = CreateAircraft("Receiver", ctx.cfg);
@@ -137,10 +308,24 @@ public:
         tanker->sc.setMaxBank(25.0);
         tanker->sc.setCornerSpeed(refuelCas);
 
+        // Initialize the Behavior Tree
+        aarTree_ = std::make_shared<SequenceNode>("AARSequence");
+        aarTree_->addChild(std::make_shared<AARApproachNode>());
+        aarTree_->addChild(std::make_shared<AARPrecontactStabilizeNode>());
+        aarTree_->addChild(std::make_shared<AARContactNode>());
+        aarTree_->addChild(std::make_shared<AARPostPrecontactNode>());
+        aarTree_->addChild(std::make_shared<AARDescendHoldNode>());
+        aarTree_->addChild(std::make_shared<AARDepartNode>());
+
+        // Initialize the Blackboard
+        aarBlackboard_ = AARBlackboard();
+        aarBlackboard_.receiver = receiver.get();
+        aarBlackboard_.tanker = tanker.get();
+        aarBlackboard_.tankerEntity = &tankerEntity_;
+        aarBlackboard_.currentStage = &currentStage_;
+
         // 3. Define Telemetries
         auto telInjectTanker = CreateTelemetry("inject_tanker", [this, receiver, tanker]() {
-            stageTimer_ += 1.0 / 60.0;
-
             const double tanker_x = tanker->fm.state().kin.x;
             const double tanker_y = tanker->fm.state().kin.y;
             const double tanker_z = tanker->fm.state().kin.z;
@@ -160,93 +345,13 @@ public:
             tankerEntity_.isDead = false;
             tankerEntity_.dcm = tanker->fm.state().kin.dcm;
 
-            // Distance to actual boom (50 ft behind, 20 ft below)
-            constexpr double kBoomOffsetBackFt = 50.0;
-            constexpr double kBoomOffsetDownFt = 20.0;
-            const double boomX = tanker_x - kBoomOffsetBackFt * std::cos(tanker_yaw);
-            const double boomY = tanker_y - kBoomOffsetBackFt * std::sin(tanker_yaw);
-            const double boomZ = tanker_z + kBoomOffsetDownFt;
-
-            const double dx = boomX - receiver->fm.state().kin.x;
-            const double dy = boomY - receiver->fm.state().kin.y;
-            const double dz = boomZ - receiver->fm.state().kin.z;
-            const double d_boom = std::sqrt(dx * dx + dy * dy + dz * dz);
-
             FrameInputs fi;
-            bool inject = true;
 
-            switch (currentStage_) {
-                case RefuelStage::Approach:
-                    // Close from trail and below to pre-contact position (50 ft behind/below)
-                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
-                    if (d_boom < 400.0) {
-                        currentStage_ = RefuelStage::PrecontactStabilize;
-                        stageTimer_ = 0.0;
-                    }
-                    break;
+            // Tick the Behavior Tree!
+            aarBlackboard_.dt = 1.0 / 60.0;
+            aarTree_->tick(aarBlackboard_);
 
-                case RefuelStage::PrecontactStabilize:
-                    // Stabilize at pre-contact for 10 seconds
-                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
-                    if (stageTimer_ >= 10.0) {
-                        currentStage_ = RefuelStage::Contact;
-                        stageTimer_ = 0.0;
-                    }
-                    break;
-
-                case RefuelStage::Contact:
-                    // Close to contact (10 ft behind and below)
-                    // We achieve this by shifting the injected tanker 40 ft forward and 10 ft up
-                    {
-                        const double shiftForward = 40.0;
-                        const double shiftUp = 10.0;
-                        tankerEntity_.x = tanker_x + shiftForward * std::cos(tanker_yaw);
-                        tankerEntity_.y = tanker_y + shiftForward * std::sin(tanker_yaw);
-                        tankerEntity_.z = tanker_z - shiftUp; // shift up (negative z)
-                    }
-                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Contact;
-                    if (stageTimer_ >= 30.0) {
-                        currentStage_ = RefuelStage::PostPrecontact;
-                        stageTimer_ = 0.0;
-                    }
-                    break;
-
-                case RefuelStage::PostPrecontact:
-                    // Return to pre-contact (50 ft behind/below) and stabilize for 10 seconds
-                    receiver->sc.brain().stateMutable().refuel.phase = DigiRefuelState::Phase::Approach;
-                    if (stageTimer_ >= 10.0) {
-                        currentStage_ = RefuelStage::DescendHold;
-                        stageTimer_ = 0.0;
-                    }
-                    break;
-
-                case RefuelStage::DescendHold:
-                    // Descend to 1000 ft below tanker
-                    receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
-                    receiver->sc.setAltitude(-tanker_z - 1000.0);
-                    receiver->sc.setHeading(PI / 2.0);
-                    inject = false; // fallback to standard autopilot
-
-                    {
-                        const double currentAlt = -receiver->fm.state().kin.z;
-                        const double targetAlt = -tanker_z - 1000.0;
-                        if (std::abs(currentAlt - targetAlt) < 150.0) {
-                            currentStage_ = RefuelStage::Depart;
-                            stageTimer_ = 0.0;
-                        }
-                    }
-                    break;
-
-                case RefuelStage::Depart:
-                    // Turn away and depart
-                    receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
-                    receiver->sc.setAltitude(-tanker_z - 1000.0);
-                    receiver->sc.setHeading(PI); // turn away (opposite heading)
-                    inject = false;
-                    break;
-            }
-
-            if (inject) {
+            if (aarBlackboard_.inject) {
                 fi.injectedTanker = &tankerEntity_;
                 receiver->sc.brain().setFrameInputs(fi);
             } else {
@@ -360,7 +465,10 @@ public:
 private:
     DigiEntity tankerEntity_;
     RefuelStage currentStage_{RefuelStage::Approach};
-    double stageTimer_{0.0};
+
+    // Behavior tree variables
+    std::shared_ptr<SequenceNode> aarTree_;
+    AARBlackboard aarBlackboard_;
 };
 
 static RegisterScenario g_registerDigiAAR("digi_aar", []() {
