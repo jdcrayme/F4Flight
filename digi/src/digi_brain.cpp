@@ -1352,146 +1352,199 @@ void DigiBrain::runRTB(const AircraftState& as, double dt,
 
 void DigiBrain::runRefueling(const AircraftState& as, double dt,
                                const FlightControlSystem& fcs, FcsState& fcsState) {
-    // Simplified air-to-air refueling (AAR) implementation.
-    //
-    // Port of FreeFalcon's AiRefuel (refuel.cpp:33-200), vastly simplified.
-    // FreeFalcon's version is 1030 lines covering tanker brain interaction,
-    // radio calls, boom/drogue geometry, multi-ship queueing, and fuel
-    // transfer. This implementation covers the core receiver behavior:
-    //   1. Approach: fly to the boom position (behind and below the tanker)
-    //   2. Contact: hold position at the boom for a set duration
-    //   3. Disconnect: descend and decelerate away from the tanker
-    //
-    // The host injects the tanker via FrameInputs.injectedTanker. The tanker
-    // must be a friendly aircraft flying straight and level.
+    std::printf("DEBUG runRefueling: 1, brain_ptr=%p\n", (void*)this);
     const DigiEntity* tanker = frameInputs_.injectedTanker;
     if (!tanker || tanker->isDead) {
-        // No tanker — fall back to waypoint navigation.
+        std::printf("DEBUG runRefueling: 2\n");
         runWaypoint(as, dt, fcs, fcsState);
         return;
     }
+    std::printf("DEBUG runRefueling: 3\n");
 
-    // Compute the boom position: behind and below the tanker.
-    // The boom is ~50 ft behind and ~20 ft below the tanker's center.
-    // In F4Flight's convention (x=east, y=north, z=down), "behind" = -velocity
-    // direction, "below" = +z.
-    constexpr double kBoomOffsetBackFt = 50.0;   // behind the tanker
-    constexpr double kBoomOffsetDownFt = 20.0;   // below the tanker
+    // kBoomOffsetBack and kBoomOffsetDown: boom's root offset from tanker center
+    constexpr double kBoomOffsetBack = 50.0;
+    constexpr double kBoomOffsetDown = 20.0;
     const double tankerSigma = tanker->yaw;
-    // Behind = opposite of heading direction.
-    // In F4Flight: heading direction = (cos(sigma), sin(sigma)).
-    // Behind = (-cos(sigma), -sin(sigma)).
-    state_.refuel.boomX = tanker->x - kBoomOffsetBackFt * std::cos(tankerSigma);
-    state_.refuel.boomY = tanker->y - kBoomOffsetBackFt * std::sin(tankerSigma);
-    state_.refuel.boomZ = tanker->z + kBoomOffsetDownFt;  // +z = below (NED)
 
-    // Compute distance to the boom position.
-    const double dx = state_.refuel.boomX - as.kin.x;
-    const double dy = state_.refuel.boomY - as.kin.y;
-    const double dz = state_.refuel.boomZ - as.kin.z;
-    const double dist3D = std::sqrt(dx * dx + dy * dy + dz * dz);
+    // Boom position: behind and below the tanker center
+    state_.refuel.boomX = tanker->x - kBoomOffsetBack * std::cos(tankerSigma);
+    state_.refuel.boomY = tanker->y - kBoomOffsetBack * std::sin(tankerSigma);
+    state_.refuel.boomZ = tanker->z + kBoomOffsetDown;
+    std::printf("DEBUG runRefueling: 4\n");
 
-    // State machine for the refueling profile.
+    // Line 30 degrees below/behind the boom:
+    // Direction vector pointing downwards and backwards from the boom
+    const double cos30 = std::cos(30.0 * DTR);
+    const double sin30 = std::sin(30.0 * DTR);
+    const double v_line_x = -cos30 * std::cos(tankerSigma);
+    const double v_line_y = -cos30 * std::sin(tankerSigma);
+    const double v_line_z = sin30; // NED Z-down is positive below
+
+    // Vector from boom to receiver
+    const double rx = as.kin.x - state_.refuel.boomX;
+    const double ry = as.kin.y - state_.refuel.boomY;
+    const double rz = as.kin.z - state_.refuel.boomZ;
+    const double dist_from_boom = std::sqrt(rx * rx + ry * ry + rz * rz);
+    std::printf("DEBUG runRefueling: 5\n");
+
+    // Compute deviation angle from the 30-degree line
+    double theta_deg = 0.0;
+    if (dist_from_boom > 1e-3) {
+        const double dot = rx * v_line_x + ry * v_line_y + rz * v_line_z;
+        const double cos_theta = std::max(-1.0, std::min(1.0, dot / dist_from_boom));
+        theta_deg = std::acos(cos_theta) * RTD;
+    }
+    std::printf("DEBUG runRefueling: 6\n");
+
+    const double tanker_speed_kts = tanker->speed / KNOTS_TO_FTPSEC;
+
+    // State machine transitions:
+    if (state_.refuel.phase == DigiRefuelState::Phase::None) {
+        state_.refuel.phase = DigiRefuelState::Phase::Inbound;
+    }
+    std::printf("DEBUG runRefueling: 7, phase=%d\n", static_cast<int>(state_.refuel.phase));
+
     switch (state_.refuel.phase) {
         case DigiRefuelState::Phase::None:
-            // Start with approach.
-            state_.refuel.phase = DigiRefuelState::Phase::Approach;
-            [[fallthrough]];
+            break;
 
-        case DigiRefuelState::Phase::Approach: {
-            // Fly to the boom position. Use HeadingAndAltitudeHold to steer
-            // toward the boom, and fly FASTER than the tanker to close the gap.
-            const double desHeading = std::atan2(dy, dx);
-            const double desAlt = -state_.refuel.boomZ;  // NED: z negative up
-            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+        case DigiRefuelState::Phase::Inbound: {
+            std::printf("DEBUG runRefueling: Inbound 1, z=%.3f, zdot=%.3f\n", as.kin.z, as.kin.zdot);
+            // Step 1: Descend to 1000 ft below tanker, close to 1 NM
+            // If already within 1 NM and at least 100 ft below, clear to Precontact immediately
+            const double targetAlt = -tanker->z - 1000.0;
+            const double dx_t = tanker->x - as.kin.x;
+            const double dy_t = tanker->y - as.kin.y;
+            const double dist_to_tanker = std::sqrt(dx_t * dx_t + dy_t * dy_t);
+            const double desHeading = std::atan2(dy_t, dx_t);
+
+            std::printf("DEBUG runRefueling: Inbound 2\n");
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, targetAlt,
                 state_, as, fcs, fcsState, state_.config.maxGs);
 
-            // Target speed: tanker's speed + closure correction.
-            // The closure correction is proportional to the distance (faster
-            // when far, tanker speed when close). This is the same PD approach
-            // used in formation following.
-            const double tankerTasKts = tanker->speed / KNOTS_TO_FTPSEC;
-            const double closureCorrection = std::max(0.0, std::min(100.0,
-                dist3D * 0.02));  // 2 kt per 100 ft, max +100 kts
-            const double targetTasKts = tankerTasKts + closureCorrection;
-            const CasKnots desCas = casFromTas(tas_kts(targetTasKts), as);
-            ManeuverPrimitives::machHoldCas(desCas, false,
-                state_, as, 150.0, 800.0, dt, 100.0);
+            std::printf("DEBUG runRefueling: Inbound 3\n");
+            // Closure speed: fly slightly faster to close the gap
+            const double closureKts = std::max(0.0, std::min(50.0, (dist_to_tanker - 6000.0) * 0.01));
+            const CasKnots desCas = casFromTas(tas_kts(tanker_speed_kts + closureKts), as);
+            ManeuverPrimitives::machHoldCas(desCas, false, state_, as, 150.0, 800.0, dt, 100.0);
 
-            // Transition to Contact when close to the boom.
-            if (dist3D < 500.0) {
-                state_.refuel.phase = DigiRefuelState::Phase::Contact;
+            std::printf("DEBUG runRefueling: Inbound 4\n");
+            // If established below (at least 10 ft) and within 1 NM, transition immediately
+            if (as.kin.z > tanker->z + 10.0 && dist_to_tanker < 6076.0) {
+                state_.refuel.phase = DigiRefuelState::Phase::Precontact;
                 state_.refuel.contactTimer = 0.0;
-                // Radio call: "Contact" (once-only)
-                {
-                    const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Contact);
-                    if (!(state_.comm.callsMade & bit)) {
-                        if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Contact,
-                                           simTime_, state_.comm.selfId)) {
-                            state_.comm.callsMade |= bit;
-                        }
-                    }
+                // Radio call: Cleared to Precontact (InPosition)
+                makeRadioCall(state_.comm.radioCalls, RadioCallType::InPosition, simTime_, state_.comm.selfId);
+            }
+            break;
+        }
+
+        case DigiRefuelState::Phase::Precontact: {
+            std::printf("DEBUG runRefueling: Precontact 1\n");
+            // Step 2: Navigate to precontact position on the 30-degree line (100 - 150 ft, target 120 ft)
+            const double d_target = 120.0;
+            const double target_x = state_.refuel.boomX + d_target * v_line_x;
+            const double target_y = state_.refuel.boomY + d_target * v_line_y;
+            const double target_z = state_.refuel.boomZ + d_target * v_line_z;
+
+            const double dx_p = target_x - as.kin.x;
+            const double dy_p = target_y - as.kin.y;
+            const double desHeading = std::atan2(dy_p, dx_p);
+
+            std::printf("DEBUG runRefueling: Precontact 2\n");
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, -target_z,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+
+            std::printf("DEBUG runRefueling: Precontact 3\n");
+            // Closure speed to precontact target
+            const double closureKts = std::max(-20.0, std::min(40.0, (dist_from_boom - 120.0) * 0.15));
+            const CasKnots desCas = casFromTas(tas_kts(tanker_speed_kts + closureKts), as);
+            ManeuverPrimitives::machHoldCas(desCas, false, state_, as, 150.0, 800.0, dt, 100.0);
+
+            std::printf("DEBUG runRefueling: Precontact 4\n");
+            // Stabilize check: if within 15 ft of 120 ft and aligned within 5 degrees
+            if (std::abs(dist_from_boom - 120.0) < 15.0 && theta_deg < 5.0) {
+                state_.refuel.contactTimer += dt;
+                if (state_.refuel.contactTimer >= 3.0) {
+                    state_.refuel.phase = DigiRefuelState::Phase::Contact;
+                    state_.refuel.contactTimer = 0.0;
+                    // Radio call: Cleared to Contact
+                    makeRadioCall(state_.comm.radioCalls, RadioCallType::Contact, simTime_, state_.comm.selfId);
                 }
+            } else {
+                state_.refuel.contactTimer = 0.0; // reset if drifted
             }
             break;
         }
 
         case DigiRefuelState::Phase::Contact: {
-            // Hold position at the boom. Use a tight position controller:
-            // steer toward the boom (correcting any drift) and match speed.
-            const double desHeading = std::atan2(dy, dx);
-            const double desAlt = -state_.refuel.boomZ;
-            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
+            std::printf("DEBUG runRefueling: Contact 1\n");
+            // Step 3: Navigate up the 30-degree line to contact position (20 ft)
+            // Deviating more than 10 degrees or closing within 10 ft causes backing out to Precontact
+            if (theta_deg > 10.0 || dist_from_boom < 10.0) {
+                state_.refuel.phase = DigiRefuelState::Phase::Precontact;
+                state_.refuel.contactTimer = 0.0;
+                break;
+            }
+
+            const double d_target = 20.0;
+            const double target_x = state_.refuel.boomX + d_target * v_line_x;
+            const double target_y = state_.refuel.boomY + d_target * v_line_y;
+            const double target_z = state_.refuel.boomZ + d_target * v_line_z;
+
+            const double dx_c = target_x - as.kin.x;
+            const double dy_c = target_y - as.kin.y;
+            const double desHeading = std::atan2(dy_c, dx_c);
+
+            std::printf("DEBUG runRefueling: Contact 2\n");
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, -target_z,
                 state_, as, fcs, fcsState, state_.config.maxGs);
 
-            // Match the tanker's speed exactly.
-            const CasKnots desCas = casFromTasFps(tas_fps(tanker->speed), as);
-            ManeuverPrimitives::machHoldCas(desCas, false,
-                state_, as, 150.0, 800.0, dt, 100.0);
+            std::printf("DEBUG runRefueling: Contact 3\n");
+            // Maintain exact tanker speed + gentle closure
+            const double closureKts = std::max(-15.0, std::min(20.0, (dist_from_boom - 20.0) * 0.2));
+            const CasKnots desCas = casFromTas(tas_kts(tanker_speed_kts + closureKts), as);
+            ManeuverPrimitives::machHoldCas(desCas, false, state_, as, 150.0, 800.0, dt, 100.0);
 
-            // Count time in contact.
-            state_.refuel.contactTimer += dt;
-
-            // Transition to Disconnect after the contact duration.
-            if (state_.refuel.contactTimer >= state_.refuel.contactDuration) {
-                state_.refuel.phase = DigiRefuelState::Phase::Disconnect;
-                // Radio call: "Disconnect" (once-only)
-                {
-                    const uint32_t bit = 1u << static_cast<uint32_t>(RadioCallType::Disconnect);
-                    if (!(state_.comm.callsMade & bit)) {
-                        if (makeRadioCall(state_.comm.radioCalls, RadioCallType::Disconnect,
-                                           simTime_, state_.comm.selfId)) {
-                            state_.comm.callsMade |= bit;
-                        }
-                    }
+            std::printf("DEBUG runRefueling: Contact 4\n");
+            // Stabilize and transfer fuel
+            if (std::abs(dist_from_boom - 20.0) < 5.0 && theta_deg < 5.0) {
+                state_.refuel.contactTimer += dt;
+                if (state_.refuel.contactTimer >= state_.refuel.contactDuration) {
+                    state_.refuel.phase = DigiRefuelState::Phase::Disconnect;
+                    // Radio call: Disconnect
+                    makeRadioCall(state_.comm.radioCalls, RadioCallType::Disconnect, simTime_, state_.comm.selfId);
                 }
             }
             break;
         }
 
         case DigiRefuelState::Phase::Disconnect: {
-            // Depart the tanker: descend and decelerate. Fly away from the
-            // tanker (opposite direction) and descend 500 ft below.
-            const double awayHeading = tankerSigma + M_PI;  // opposite of tanker
-            const double desAlt = -tanker->z - 500.0;  // 500 ft below tanker
-            ManeuverPrimitives::HeadingAndAltitudeHold(awayHeading, desAlt,
+            std::printf("DEBUG runRefueling: Disconnect 1\n");
+            // Step 4: Back down the 30-degree line until 1000 ft below tanker
+            const double targetAlt = -tanker->z - 1000.0;
+            const double awayHeading = tankerSigma + M_PI;
+
+            std::printf("DEBUG runRefueling: Disconnect 2\n");
+            ManeuverPrimitives::HeadingAndAltitudeHold(awayHeading, targetAlt,
                 state_, as, fcs, fcsState, state_.config.maxGs);
 
-            // Decelerate to approach speed.
-            const double approachSpeed = 250.0;  // kts CAS
+            std::printf("DEBUG runRefueling: Disconnect 3\n");
+            const double approachSpeed = 250.0;
             ManeuverPrimitives::machHoldCas(cas_kts(approachSpeed), true,
                 state_, as, 150.0, 800.0, dt, 100.0);
 
-            // Clear the tanker after disconnect (the host can re-inject
-            // for another refueling session).
-            // We don't clear injectedTanker here (the host owns it), but
-            // we reset the phase so a new approach can start if the tanker
-            // is still injected.
-            // For now, fall back to waypoint nav after disconnect.
-            runWaypoint(as, dt, fcs, fcsState);
+            std::printf("DEBUG runRefueling: Disconnect 4\n");
+            if (std::abs(-as.kin.z - targetAlt) < 150.0) {
+                // Done! Fall back to waypoint nav
+                state_.refuel.phase = DigiRefuelState::Phase::None;
+                curWp_++;
+                runWaypoint(as, dt, fcs, fcsState);
+            }
             break;
         }
     }
+    std::printf("DEBUG runRefueling: end\n");
 }
 
 void DigiBrain::runGroundAttack(const AircraftState& as, double dt,
