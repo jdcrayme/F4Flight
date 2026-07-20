@@ -20,12 +20,16 @@ namespace {
 // Path to the test formdat.fil (relative to the build directory, which is
 // the source root when tests run from there).
 const char* kTestFormdatFile = "tests/fixtures/formations/test_formdat.fil";
-const char* kTestFormdatFileFallback = "../../tests/fixtures/formations/test_formdat.fil";
+const char* kTestFormdatFileFallback1 = "../tests/fixtures/formations/test_formdat.fil";
+const char* kTestFormdatFileFallback2 = "../../tests/fixtures/formations/test_formdat.fil";
 
 inline int loadTestFormations(FormationTable& table) {
     int loaded = table.loadFromFile(kTestFormdatFile);
     if (loaded < 0) {
-        loaded = table.loadFromFile(kTestFormdatFileFallback);
+        loaded = table.loadFromFile(kTestFormdatFileFallback1);
+    }
+    if (loaded < 0) {
+        loaded = table.loadFromFile(kTestFormdatFileFallback2);
     }
     return loaded;
 }
