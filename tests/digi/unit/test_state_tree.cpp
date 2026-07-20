@@ -203,3 +203,115 @@ TEST(StateTreeTest, FlightPlanEmergencyPreemption) {
     fp.advanceTask();
     EXPECT_TRUE(fp.isComplete());
 }
+
+#include "f4flight/digi/behavior_tree/flight_plan_nodes.h"
+
+TEST(StateTreeTest, WaypointCaptureCheckAndNavigateTask) {
+    Blackboard bb;
+    bb.flightPlan = std::make_shared<FlightPlan>();
+
+    AircraftState as;
+    as.kin.costhe = 1.0;
+    as.kin.cosphi = 1.0;
+    as.kin.gmma = 0.0;
+    as.kin.sigma = 0.0;
+    as.kin.singam = 0.0;
+    as.kin.x = 0.0;
+    as.kin.y = 0.0;
+    as.kin.z = -10000.0;
+    as.kin.zdot = 0.0;
+    as.vcas = 350.0;
+    as.kin.vt = 350.0 * KNOTS_TO_FTPSEC;
+    bb.as = &as;
+
+    FlightControlSystem fcs;
+    FcsState fcsState;
+    DigiState state;
+    state.config.maxGs = 9.0;
+    state.config.maxRoll = 45.0;
+    state.config.maxGammaDeg = 15.0;
+    bb.fcs = &fcs;
+    bb.fcsState = &fcsState;
+    bb.state = &state;
+    bb.dt = 1.0 / 60.0;
+
+    MissionTask task1{TaskType::Navigate, {0.0, 10000.0, -10000.0}, 300, 10000, kInvalidEntityId, 0.0};
+    bb.flightPlan->pushTask(task1);
+
+    auto captureCheck = std::make_shared<WaypointCaptureCheckNode>(5000.0);
+    auto navigateTask = std::make_shared<NavigateTaskNode>();
+
+    // Initially at (0, 0), task at (0, 10000). Distance = 10000 > 5000 (captureRadius).
+    // WaypointCaptureCheckNode should tick successfully and NOT advance the task.
+    NodeStatus checkStatus = captureCheck->tick(bb);
+    EXPECT_EQ(checkStatus, NodeStatus::Success);
+    EXPECT_FALSE(bb.flightPlan->isComplete());
+    EXPECT_EQ(bb.flightPlan->currentTask().type, TaskType::Navigate);
+
+    // NavigateTaskNode should run successfully and command heading and altitude.
+    NodeStatus navStatus = navigateTask->tick(bb);
+    EXPECT_EQ(navStatus, NodeStatus::Running);
+    EXPECT_GT(state.commands.throttle, 0.0);
+
+    // Move aircraft within capture radius (e.g. to (0, 8000)).
+    as.kin.x = 0.0;
+    as.kin.y = 8000.0;
+    NodeStatus checkStatus2 = captureCheck->tick(bb);
+    EXPECT_EQ(checkStatus2, NodeStatus::Success);
+    // Task should be advanced (now complete)
+    EXPECT_TRUE(bb.flightPlan->isComplete());
+}
+
+TEST(StateTreeTest, LoiterTaskAndActiveSelector) {
+    Blackboard bb;
+    bb.flightPlan = std::make_shared<FlightPlan>();
+
+    AircraftState as;
+    as.kin.costhe = 1.0;
+    as.kin.cosphi = 1.0;
+    as.kin.gmma = 0.0;
+    as.kin.sigma = 0.0;
+    as.kin.singam = 0.0;
+    as.kin.x = 0.0;
+    as.kin.y = 0.0;
+    as.kin.z = -10000.0;
+    as.kin.zdot = 0.0;
+    as.vcas = 350.0;
+    as.kin.vt = 350.0 * KNOTS_TO_FTPSEC;
+    bb.as = &as;
+
+    FlightControlSystem fcs;
+    FcsState fcsState;
+    DigiState state;
+    state.config.maxGs = 9.0;
+    state.config.maxRoll = 45.0;
+    state.config.maxGammaDeg = 15.0;
+    bb.fcs = &fcs;
+    bb.fcsState = &fcsState;
+    bb.state = &state;
+    bb.dt = 1.0 / 60.0;
+
+    MissionTask task1{TaskType::CAP, {0.0, 0.0, -10000.0}, 300, 10000, kInvalidEntityId, 10.0}; // 10s CAP loiter
+    bb.flightPlan->pushTask(task1);
+
+    auto activeSelector = std::make_shared<ActiveTaskSelectorNode>();
+    auto loiterNode = std::make_shared<LoiterTaskNode>();
+    auto navigateNode = std::make_shared<NavigateTaskNode>();
+
+    activeSelector->addTaskNode(TaskType::CAP, loiterNode);
+    activeSelector->addTaskNode(TaskType::Navigate, navigateNode);
+
+    // First tick of selector should dispatch to LoiterTaskNode and return Running
+    NodeStatus status1 = activeSelector->tick(bb);
+    EXPECT_EQ(status1, NodeStatus::Running);
+
+    // Loop until loiter duration completes and returns Success
+    NodeStatus finalStatus = NodeStatus::Running;
+    int tickCount = 0;
+    while (finalStatus == NodeStatus::Running && tickCount < 1000) {
+        finalStatus = activeSelector->tick(bb);
+        tickCount++;
+    }
+    EXPECT_EQ(finalStatus, NodeStatus::Success);
+    EXPECT_EQ(tickCount, 599); // exactly 10.0s (600 total ticks) at 60Hz
+}

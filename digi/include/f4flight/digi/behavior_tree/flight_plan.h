@@ -29,6 +29,14 @@ struct MissionTask {
 
 class FlightPlan {
 public:
+    static std::shared_ptr<FlightPlan> fromWaypoints(const std::vector<Vec3>& wps, double speedKts) {
+        auto fp = std::make_shared<FlightPlan>();
+        for (const auto& wp : wps) {
+            fp->pushTask(MissionTask{TaskType::Navigate, wp, speedKts, -wp.z, kInvalidEntityId, 0.0});
+        }
+        return fp;
+    }
+
     void pushTask(MissionTask task) {
         tasks_.push_back(std::move(task));
     }

@@ -3,6 +3,7 @@
 #include "f4flight/digi/digi_state.h"
 #include "f4flight/flight/aircraft_state.h"
 #include "f4flight/digi/digi_entity.h"
+#include "f4flight/flight/fcs.h"
 #include <memory>
 
 namespace f4flight {
@@ -16,6 +17,9 @@ public:
     const AircraftState* as {nullptr};
     double dt {0.0};
     double groundZ {0.0};
+    const FlightControlSystem* fcs {nullptr};
+    FcsState* fcsState {nullptr};
+    double simTime {0.0};
 
     // Core inputs and persistence state
     DigiState* state {nullptr};
