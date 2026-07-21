@@ -492,6 +492,8 @@ public:
     void resetPhaseState() noexcept {
         if (flightPlan_) flightPlan_->clear();
         if (rootNode_) rootNode_->reset();
+        wps_.clear();
+        curWp_ = 0;
         state_.nav.gammaHoldIError = 0.0;
         state_.nav.autoThrottle = 0.0;
         state_.commands.pStick = 0.0;
