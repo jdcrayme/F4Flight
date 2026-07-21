@@ -62,7 +62,7 @@ exercises it.
 | `WingyMode`     | `digi_formation` (low-level) | ✅ Covered | AI wingman follows lead in Wedge formation, exercises Wingy mode |
 | `BugoutMode`    | `digi_separate`              | ✅ Covered | Bugout path tested as part of the damage-abort scenario |
 | `WaypointMode`  | `ai_flightplan`              | ✅ Covered | 4-waypoint square circuit, HeadingAltitude hold |
-| `GroundMnvrMode` | `low_taxi`, `low_takeoff`, `low_landing`, `low_approach` | ✅ Covered | Each ground-ops sub-behavior tested in isolation |
+| `GroundMnvrMode` | `low_taxi`, `low_takeoff`, `low_landing`, `low_approach`, `low_sead_harm` | ✅ Covered | Each ground-ops and SEAD/HARM sub-behavior tested |
 
 **Coverage: 22/25 DigiMode entries have a dedicated test.** The 3 gaps
 (`AccelMode`, `FollowOrdersMode`, `GroundAvoidMode`) are documented above

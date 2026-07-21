@@ -776,6 +776,70 @@ void DigiBrain::resolveMode(const AircraftState& /*as*/, double /*groundZ*/,
         addMode(DigiMode::FollowOrders);
     }
 
+    // --- SEAD Target of Opportunity (TOO) and Self Protect (SP) target resolution ---
+    if (state_.ag.agProfile == AgAttackProfile::SeadHarm && sensorFusionActive && selfEntity) {
+        if (state_.ag.htsMode == HtsMode::SelfProtect) {
+            // SP Mode: target the source of any active spike
+            if (pic.spiked) {
+                const SensorContact* threatContact = nullptr;
+                double closestThreatDist = std::numeric_limits<double>::infinity();
+                for (const auto& c : pic.contacts) {
+                    if (c.detectedBy(SensorType::RWR) && c.isThreat) {
+                        const RelativeGeometry rg = computeRelativeGeometry(*selfEntity,
+                            DigiEntity{c.x, c.y, c.z, c.vx, c.vy, c.vz, c.yaw, c.pitch, c.roll, c.speed});
+                        if (rg.range < closestThreatDist) {
+                            closestThreatDist = rg.range;
+                            threatContact = &c;
+                        }
+                    }
+                }
+                // Fallback to highest threat if we are spiked but didn't find specific RWR threat
+                if (!threatContact && pic.highestThreat) {
+                    threatContact = pic.highestThreat;
+                }
+                if (threatContact) {
+                    // Update/set ground target dynamically from the threat contact
+                    groundTargetAuto_ = toDigiEntity(*threatContact);
+                    state_.ag.groundTarget = &*groundTargetAuto_;
+                    state_.ag.groundTargetId = threatContact->entityId;
+                }
+            } else {
+                // If not spiked, clear the auto-detected threat target
+                if (state_.ag.groundTarget == &*groundTargetAuto_) {
+                    state_.ag.groundTarget = nullptr;
+                    state_.ag.groundTargetId = kInvalidEntityId;
+                    groundTargetAuto_.reset();
+                }
+            }
+        } else if (state_.ag.htsMode == HtsMode::TargetOfOpportunity) {
+            // TOO Mode: target any active SAM site or emitting radar contact
+            const SensorContact* samContact = nullptr;
+            double closestSamDist = std::numeric_limits<double>::infinity();
+            for (const auto& c : pic.contacts) {
+                if (c.type == ContactType::SAM || c.isRadarEmitting) {
+                    const RelativeGeometry rg = computeRelativeGeometry(*selfEntity,
+                        DigiEntity{c.x, c.y, c.z, c.vx, c.vy, c.vz, c.yaw, c.pitch, c.roll, c.speed});
+                    if (rg.range < closestSamDist) {
+                        closestSamDist = rg.range;
+                        samContact = &c;
+                    }
+                }
+            }
+            if (samContact) {
+                groundTargetAuto_ = toDigiEntity(*samContact);
+                state_.ag.groundTarget = &*groundTargetAuto_;
+                state_.ag.groundTargetId = samContact->entityId;
+            } else {
+                // If emitter went silent / disappeared, clear
+                if (state_.ag.groundTarget == &*groundTargetAuto_) {
+                    state_.ag.groundTarget = nullptr;
+                    state_.ag.groundTargetId = kInvalidEntityId;
+                    groundTargetAuto_.reset();
+                }
+            }
+        }
+    }
+
     // --- Wingman formation following (Wingy mode) ---
     // If this aircraft is a wingman with an assigned lead and an injected
     // lead entity, queue Wingy mode. Wingy (20) is lower priority than
@@ -1424,6 +1488,9 @@ void DigiBrain::runGroundAttack(const AircraftState& as, double dt,
         case AgAttackProfile::TossBomb:
             runTossBombAttack(target, as, dt, fcs, fcsState);
             break;
+        case AgAttackProfile::SeadHarm:
+            runSeadHarmAttack(target, as, dt, fcs, fcsState);
+            break;
     }
 }
 
@@ -1559,6 +1626,145 @@ void DigiBrain::runDiveBombAttack(const DigiEntity* target,
                 state_.ag.groundTargetId = kInvalidEntityId;
                 phase = 0;  // reset for next attack
                 // Fall back to waypoint navigation.
+                runWaypoint(as, dt, fcs, fcsState);
+            }
+            break;
+        }
+
+        default:
+            phase = 0;
+            break;
+    }
+}
+
+// ===========================================================================
+// runSeadHarmAttack — phase 2 HARM / SEAD profile.
+// 4-phase state machine (state_.ag.agApproach):
+//   0 = approach/search, 1 = lock/loft, 2 = release, 3 = egress/beam.
+// ===========================================================================
+void DigiBrain::runSeadHarmAttack(const DigiEntity* target,
+                                  const AircraftState& as, double dt,
+                                  const FlightControlSystem& fcs, FcsState& fcsState) {
+    // Suppression of Enemy Air Defenses (SEAD) using AGM-88 HARM.
+    // Supports Pre-Briefed (PB), Target-Of-Opportunity (TOO), and Self-Protect (SP) modes.
+
+    // Geometry relative to target
+    const double dx = target->x - as.kin.x;
+    const double dy = target->y - as.kin.y;
+    const double horizDist = std::sqrt(dx * dx + dy * dy);
+    const double desHeading = std::atan2(dy, dx);
+
+    // SEAD / HARM parameters
+    constexpr double kApproachAltFt      = 20000.0;  // 20k ft approach
+    constexpr double kApproachSpeedKts   = 400.0;    // 400 kts cruise
+    constexpr double kLoftRangeFt        = 25.0 * 6076.0; // 25 NM PB loft range
+    constexpr double kTooRangeFt         = 35.0 * 6076.0; // 35 NM TOO lock range
+    constexpr double kLoftGammaDeg       = 20.0;     // command 20° loft climb
+    constexpr double kLoftGs             = 3.0;      // 3G pull-up for loft
+    constexpr double kEgressAltFt        = 25000.0;  // egress at 25k ft
+    constexpr double kEgressRangeFt      = 35.0 * 6076.0; // 35 NM egress complete
+    constexpr double kEgressSpeedKts     = 420.0;    // fast egress speed
+
+    int& phase = state_.ag.agApproach;
+
+    switch (phase) {
+        case 0: {
+            // --- Phase 0: Approach/Search ---
+            // Fly toward the threat area at approach altitude and speed.
+            ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, kApproachAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kApproachSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Check transition to Phase 1 (Lock/Loft) based on HTS mode:
+            if (state_.ag.htsMode == HtsMode::SelfProtect) {
+                // SP Mode: lock on and launch immediately (emergency)
+                phase = 1;
+            } else if (state_.ag.htsMode == HtsMode::TargetOfOpportunity) {
+                // TOO Mode: lock on when within range
+                if (horizDist < kTooRangeFt) {
+                    phase = 1;
+                }
+            } else {
+                // PB Mode: loft when within range
+                if (horizDist < kLoftRangeFt) {
+                    phase = 1;
+                }
+            }
+            break;
+        }
+
+        case 1: {
+            // --- Phase 1: Lock/Loft ---
+            // Direct flight or loft toward the target heading.
+            const double headingErr = headingError(desHeading, as.kin.sigma);
+            state_.commands.rStick = std::max(-1.0, std::min(1.0, headingErr * RTD * 2.0 * DTR));
+
+            if (state_.ag.htsMode == HtsMode::SelfProtect) {
+                // SP Mode: no loft, launch level immediately
+                ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, as.kin.z * -1.0,
+                    state_, as, fcs, fcsState, state_.config.maxGs);
+                phase = 2; // immediate release
+            } else {
+                // TOO and PB Modes: loft climb (+20° gamma)
+                ManeuverPrimitives::GammaHold(kLoftGammaDeg, state_, as, kLoftGs);
+                ManeuverPrimitives::PhugoidDamper(state_, as);
+                state_.commands.throttle = 1.5; // full military/afterburner power for loft
+
+                // Transition to release once loft angle is established
+                const double pitchDeg = as.kin.theta * RTD;
+                if (pitchDeg >= 15.0) {
+                    phase = 2;
+                }
+            }
+            break;
+        }
+
+        case 2: {
+            // --- Phase 2: Release ---
+            // Trigger HARM release (mslFireFlag = true)
+            state_.weapon.mslFireFlag = true;
+
+            // Maintain attitude during release frame
+            if (state_.ag.htsMode == HtsMode::SelfProtect) {
+                ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, as.kin.z * -1.0,
+                    state_, as, fcs, fcsState, state_.config.maxGs);
+            } else {
+                ManeuverPrimitives::GammaHold(kLoftGammaDeg, state_, as, kLoftGs);
+                ManeuverPrimitives::PhugoidDamper(state_, as);
+                state_.commands.throttle = 1.5;
+            }
+
+            // Move to egress on next frame
+            phase = 3;
+            break;
+        }
+
+        case 3: {
+            // --- Phase 3: Defensive Beam / Egress ---
+            state_.weapon.mslFireFlag = false; // clear launch consent
+
+            double targetHeading = desHeading + PI; // PB defaults to 180° turn away
+            if (state_.ag.htsMode == HtsMode::SelfProtect || state_.ag.htsMode == HtsMode::TargetOfOpportunity) {
+                // Perform a 90° beam turn relative to threat to break track/reduce range rate
+                double beamHeading = desHeading + PI / 2.0;
+                if (std::fabs(headingError(beamHeading, as.kin.sigma)) > std::fabs(headingError(desHeading - PI / 2.0, as.kin.sigma))) {
+                    beamHeading = desHeading - PI / 2.0;
+                }
+                targetHeading = beamHeading;
+            }
+
+            // Head back to safe altitude and egress speed
+            ManeuverPrimitives::HeadingAndAltitudeHold(targetHeading, kEgressAltFt,
+                state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::machHoldCas(cas_kts(kEgressSpeedKts), true,
+                state_, as, 200.0, 800.0, dt, 700.0);
+
+            // Egress complete once range is far enough
+            if (horizDist > kEgressRangeFt) {
+                state_.ag.groundTarget = nullptr;
+                state_.ag.groundTargetId = kInvalidEntityId;
+                phase = 0;
                 runWaypoint(as, dt, fcs, fcsState);
             }
             break;

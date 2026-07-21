@@ -339,6 +339,9 @@ struct DigiGroundState {
     // Task 11 dive-bomb behavior (backward compat).
     AgAttackProfile agProfile{AgAttackProfile::DiveBomb};
 
+    // SEAD HARM Targeting System Mode
+    HtsMode htsMode{HtsMode::PreBriefed};
+
     void reset() noexcept {
         groundTarget = nullptr;
         groundTargetId = kInvalidEntityId;
@@ -348,6 +351,7 @@ struct DigiGroundState {
         groundOps.reset();
         agAttackPhase = AgAttackPhase::NotThereYet;
         agProfile = AgAttackProfile::DiveBomb;
+        htsMode = HtsMode::PreBriefed;
     }
 };
 

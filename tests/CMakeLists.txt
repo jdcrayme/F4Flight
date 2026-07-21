@@ -205,6 +205,7 @@ set(F4FLIGHT_DIGI_SCENARIOS_LOW_LEVEL
     low_ground_attack_dive
     low_ground_attack_toss
     low_ground_attack_high
+    low_sead_harm
     # Sensors
     digi_sensors
 )
@@ -313,6 +314,7 @@ set(F4FLIGHT_DIGI_SCENARIOS_STRIKE_AC
     low_ground_attack_dive
     low_ground_attack_toss
     low_ground_attack_high
+    low_sead_harm
     low_aar_vector
     low_aar_pre_contact
     low_aar_contact
