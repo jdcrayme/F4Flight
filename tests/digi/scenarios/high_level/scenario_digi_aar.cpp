@@ -95,7 +95,11 @@ public:
         receiver->fm.state().kin.y = -154.0;
         receiver->fm.state().kin.z = -(alt - 80.0);
 
-        receiver->sc.setMode(SteeringController::Mode::HeadingAltitude);
+        // Set up the FlightPlan on the receiver with a Refuel task!
+        auto fp = std::make_shared<FlightPlan>();
+        fp->pushTask(MissionTask{TaskType::Refuel, {0.0, 0.0, -alt}, refuelCas, alt, kInvalidEntityId, 30.0});
+        receiver->sc.brain().setFlightPlan(fp);
+
         receiver->sc.setCornerSpeed(refuelCas); // Match target refueling speed exactly!
         receiver->sc.setMaxGs(ctx.cfg.geometry.maxGs);
         receiver->sc.setMaxBank(30.0);
@@ -116,10 +120,10 @@ public:
         tanker->fm.state().kin.y = 0.0;
         tanker->fm.state().kin.z = -alt;
 
-        tanker->sc.setWaypoints(g_tankerWaypoints);
-        tanker->sc.setMode(SteeringController::Mode::Waypoint);
-        tanker->sc.setAltitude(alt);
-        tanker->sc.setHeading(PI / 2.0);
+        // Set up the FlightPlan on the tanker with a Navigate task straight north!
+        auto tanker_fp = std::make_shared<FlightPlan>();
+        tanker_fp->pushTask(MissionTask{TaskType::Navigate, {0.0, 1000000.0, -alt}, refuelCas, alt, kInvalidEntityId, 0.0});
+        tanker->sc.brain().setFlightPlan(tanker_fp);
 
         // Limit tanker turns to 20 degrees bank as per flight safety when receiver is present
         tanker->sc.setMaxBank(20.0);
@@ -132,6 +136,10 @@ public:
             const double tanker_y = tanker->fm.state().kin.y;
             const double tanker_z = tanker->fm.state().kin.z;
             const double tanker_yaw = tanker->fm.state().kin.psi;
+
+            std::printf("DEBUG POSITIONS: tanker = {%.1f, %.1f, %.1f}, receiver = {%.1f, %.1f, %.1f}\n",
+                tanker_x, tanker_y, tanker_z,
+                receiver->fm.state().kin.x, receiver->fm.state().kin.y, receiver->fm.state().kin.z);
 
             // Common default tanker state population
             tankerEntity_.x = tanker_x;

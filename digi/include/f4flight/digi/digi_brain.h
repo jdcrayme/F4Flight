@@ -66,8 +66,13 @@
 #include "f4flight/flight/fcs.h"
 #include "f4flight/flight/core/types.h"
 
+#include "f4flight/digi/behavior_tree/node.h"
+#include "f4flight/digi/behavior_tree/blackboard.h"
+#include "f4flight/digi/behavior_tree/flight_plan.h"
+
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace f4flight {
 namespace digi {
@@ -222,6 +227,12 @@ public:
     void setWaypoints(std::vector<Vec3> wps) {
         wps_ = std::move(wps);
         curWp_ = 0;
+        if (flightPlan_) {
+            flightPlan_->clear();
+            for (const auto& wp : wps_) {
+                flightPlan_->pushTask(MissionTask{TaskType::Navigate, wp, state_.config.cornerSpeed, -wp.z, kInvalidEntityId, 0.0});
+            }
+        }
     }
     void setCaptureRadius(double r_ft) { captureRadius_ = r_ft; }
 
@@ -423,6 +434,8 @@ public:
     /// Clears frame inputs, auto-tracked entities, and threat pointers.
     void reset() noexcept {
         state_.reset();
+        if (rootNode_) rootNode_->reset();
+        if (flightPlan_) flightPlan_->clear();
         // DigiState::reset() intentionally doesn't clear threat pointers
         // (host-managed), but the brain's frameInputs_ injection path means
         // we need to clear them here so a stale injected threat doesn't
@@ -477,6 +490,8 @@ public:
     /// still set up whatever it needs, but it no longer has to manually
     /// clear the previous phase's integrators.
     void resetPhaseState() noexcept {
+        if (flightPlan_) flightPlan_->clear();
+        if (rootNode_) rootNode_->reset();
         state_.nav.gammaHoldIError = 0.0;
         state_.nav.autoThrottle = 0.0;
         state_.commands.pStick = 0.0;
@@ -584,12 +599,70 @@ public:
     [[deprecated("Use state() (const) or stateMutable() (testing)")]]
     DigiState& state() { return state_; }
 
+    // =======================================================================
+    // 10. Behavior Tree and FlightPlan getters/setters
+    // =======================================================================
+    std::shared_ptr<FlightPlan> flightPlan() const { return flightPlan_; }
+    void setFlightPlan(std::shared_ptr<FlightPlan> fp) { flightPlan_ = fp; }
+
+    const Blackboard& blackboard() const { return blackboard_; }
+    Blackboard& blackboardMutable() { return blackboard_; }
+
+    const BehaviorNodePtr& rootNode() const { return rootNode_; }
+
+    const std::optional<DigiEntity>& targetEntityAuto() const { return targetEntityAuto_; }
+    void setTargetEntityAuto(const DigiEntity& e) { targetEntityAuto_ = e; }
+    void clearTargetEntityAuto() { targetEntityAuto_.reset(); }
+
+    const std::optional<DigiEntity>& missileEntityAuto() const { return missileEntityAuto_; }
+    void setMissileEntityAuto(const DigiEntity& e) { missileEntityAuto_ = e; }
+    void clearMissileEntityAuto() { missileEntityAuto_.reset(); }
+
+    const std::optional<DigiEntity>& gunsEntityAuto() const { return gunsEntityAuto_; }
+    void setGunsEntityAuto(const DigiEntity& e) { gunsEntityAuto_ = e; }
+    void clearGunsEntityAuto() { gunsEntityAuto_.reset(); }
+
+    MessageBus* bus() { return bus_; }
+
+    const DigiEntity* wvrTarget() const { return wvrTarget_; }
+    void setWvrTarget(const DigiEntity* tgt) { wvrTarget_ = tgt; }
+
+    void setCurMode(DigiMode m) { curMode_ = m; }
+
+    DigiMode forcedMode() const { return forcedMode_; }
+
+    void runLegacyMode(const AircraftState& as, double dt,
+                        const FlightControlSystem& fcs, FcsState& fcsState,
+                        double groundZ, const DigiEntity* selfEntity);
+
+    void buildBehaviorTree();
+
+    friend class ForcedModeNode;
+    friend class GroundAvoidNode;
+    friend class CollisionAvoidNode;
+    friend class MissileDefeatNode;
+    friend class GunsJinkNode;
+    friend class TakeoffNode;
+    friend class LandingNode;
+    friend class FollowOrdersNode;
+    friend class RTBNode;
+    friend class CombatNode;
+    friend class WingyNode;
+    friend class RefuelNode;
+    friend class GroundMnvrNode;
+    friend class WaypointFollowNode;
+    friend class DefaultFallbackNode;
+
 private:
     // --- Internal state ---
     DigiState state_;
     std::vector<Vec3> wps_;
     std::size_t curWp_{0};
     double captureRadius_{5000.0};  // ft
+
+    Blackboard blackboard_;
+    BehaviorNodePtr rootNode_;
+    std::shared_ptr<FlightPlan> flightPlan_ {std::make_shared<FlightPlan>()};
 
     // Per-frame inputs (set via setFrameInputs, or via deprecated shims)
     FrameInputs frameInputs_;

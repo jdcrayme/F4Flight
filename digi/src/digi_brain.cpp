@@ -19,6 +19,7 @@
 
 #include "f4flight/digi/digi_brain.h"
 #include "f4flight/digi/steering.h"  // for headingError
+#include "f4flight/digi/behavior_tree/brain_bt_nodes.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/ground/ground_avoid.h"
 #include "f4flight/digi/ground/ground_ops.h"
@@ -56,6 +57,7 @@ namespace digi {
 DigiBrain::DigiBrain() {
     state_.reset();
     state_.config.skill = makeSkillParams(SkillLevel::Veteran);
+    buildBehaviorTree();
 }
 
 // ===========================================================================
@@ -264,185 +266,24 @@ PilotInput DigiBrain::compute(const AircraftState& as, double dt, double groundZ
             HandleThreat(state_, *selfEntity, as, fcs, fcsState, dt);
 
         if (!threatHandled) {
-            // --- Set the flight phase for gain scheduling ---
-            //
-            // The flight phase determines which PID gains GammaHold/MachHold/
-            // HeadingAndAltitudeHold use. This is F4Flight's equivalent of
-            // FreeFalcon's landingGains flag, but more granular: instead of
-            // just "gear down = landing gains", we have 6 phases with
-            // distinct gain sets.
-            //
-            // The phase is set BEFORE the mode dispatch so the mode's
-            // maneuver primitives can read it. Individual modes can override
-            // the phase (e.g. Landing mode sets Approach/Flare based on the
-            // ground-ops sub-phase).
-            switch (curMode_) {
-                case DigiMode::Waypoint:
-                case DigiMode::Loiter:
-                case DigiMode::RTB:
-                case DigiMode::Bugout:
-                case DigiMode::Separate:
-                    state_.nav.flightPhase = FlightPhase::Cruise;
-                    break;
-                case DigiMode::MissileEngage:
-                case DigiMode::GunsEngage:
-                case DigiMode::Merge:
-                case DigiMode::Accel:
-                case DigiMode::BVREngage:
-                case DigiMode::WVREngage:
-                case DigiMode::MissileDefeat:
-                case DigiMode::GunsJink:
-                case DigiMode::CollisionAvoid:
-                    state_.nav.flightPhase = FlightPhase::Combat;
-                    break;
-                case DigiMode::Wingy:
-                case DigiMode::FollowOrders:
-                case DigiMode::Refueling:
-                    state_.nav.flightPhase = FlightPhase::Formation;
-                    break;
-                case DigiMode::Landing:
-                    // Landing phase is set by runLanding (Approach vs Flare
-                    // based on the ground-ops sub-phase). Default to Approach.
-                    state_.nav.flightPhase = FlightPhase::Approach;
-                    break;
-                case DigiMode::Takeoff:
-                    state_.nav.flightPhase = FlightPhase::GroundOps;
-                    break;
-                case DigiMode::GroundMnvr:
-                    state_.nav.flightPhase = FlightPhase::Combat;  // A/G attack
-                    break;
-                default:
-                    state_.nav.flightPhase = FlightPhase::Cruise;
-                    break;
-            }
+            // Populate the Blackboard
+            blackboard_.as = &as;
+            blackboard_.dt = dt;
+            blackboard_.groundZ = groundZ;
+            blackboard_.fcs = &fcs;
+            blackboard_.fcsState = &fcsState;
+            blackboard_.simTime = simTime_;
+            blackboard_.state = &state_;
+            blackboard_.self = selfEntity;
+            blackboard_.target = wvrTarget_;
+            blackboard_.flightPlan = flightPlan_;
+            blackboard_.brain = this;
 
-            switch (curMode_) {
-            case DigiMode::Waypoint:
+            // Execute the Behavior Tree root!
+            if (rootNode_) {
+                rootNode_->tick(blackboard_);
+            } else {
                 runWaypoint(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::MissileDefeat:
-                runMissileDefeat(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::GunsJink:
-                runGunsJink(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::CollisionAvoid:
-                runCollisionAvoid(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::WVREngage:
-                runWVREngage(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::Takeoff:
-                runTakeoff(as, dt, fcsState, groundZ);
-                break;
-            case DigiMode::Landing:
-                runLanding(as, dt, fcsState, groundZ);
-                break;
-            case DigiMode::GroundAvoid:
-                // Documented no-op: ground avoidance runs as a concurrent
-                // overlay in compute() (RunGroundAvoid → pullingUp), not as
-                // a dispatched mode. This case is reachable only via
-                // forceMode(GroundAvoid) when there is no terrain danger.
-                break;
-            case DigiMode::MissileEngage:
-                runMissileEngage(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::GunsEngage:
-                runGunsEngage(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::Merge:
-                runMerge(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::Accel:
-                runAccel(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::BVREngage:
-                runBVREngage(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::NoMode:
-                runWaypoint(as, dt, fcs, fcsState);
-                break;
-
-            // -----------------------------------------------------------------
-            // Round-2 structural additions (Rec 6): dispatch stubs for the 9
-            // new DigiMode values. Each falls through to Waypoint navigation
-            // until its behavior is ported. This means the brain can RESOLVE
-            // to these modes (so future porting work can incrementally wire
-            // them up) without producing dead code or surprise behavior.
-            //
-            // The 4 modes with primitive targets (Roop, OverB, Loiter, Bugout)
-            // DO call their primitive — so the primitive is exercised even
-            // before the full mode logic lands.
-            // -----------------------------------------------------------------
-            case DigiMode::Roop: {
-                // selfEntity is already resolved at the top of compute()
-                // (frameInputs_.selfEntity or &selfEntityAuto_). Reuse it.
-                if (selfEntity && wvrTarget_) {
-                    const bool stillActive = ManeuverPrimitives::RollOutOfPlane(
-                        state_, *selfEntity, as, fcs, fcsState, dt,
-                        /*firstFrame=*/false);
-                    if (!stillActive) {
-                        // Maneuver timer expired — fall back to waypoint nav
-                        runWaypoint(as, dt, fcs, fcsState);
-                    }
-                } else {
-                    runWaypoint(as, dt, fcs, fcsState);
-                }
-                break;
-            }
-            case DigiMode::OverB: {
-                if (selfEntity && wvrTarget_) {
-                    ManeuverPrimitives::OverBank(state_, *selfEntity, *wvrTarget_,
-                                                  fcs, fcsState,
-                                                  30.0 * DTR, /*firstFrame=*/false);
-                } else {
-                    runWaypoint(as, dt, fcs, fcsState);
-                }
-                break;
-            }
-            case DigiMode::Loiter:
-                // Loiter already exists as a ManeuverPrimitives method — use it.
-                ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.config.maxGs);
-                // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
-                ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
-                                                 state_, as, 200.0, 800.0, dt, 700.0);
-                break;
-            case DigiMode::Bugout:
-            case DigiMode::Separate:
-                // Both modes disengage — use WvrBugOut (hold heading + alt,
-                // accelerate to 2x corner speed). The full separate.cpp port
-                // will add RangeAtTailChase geometry + bugoutTimer.
-                ManeuverPrimitives::WvrBugOut(state_, as, fcs, fcsState, dt);
-                break;
-            case DigiMode::Refueling:
-                // AAR (air-to-air refueling). Ported from FreeFalcon's
-                // AiRefuel (refuel.cpp), vastly simplified.
-                runRefueling(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::FollowOrders:
-                // PORTED (basic): execute the wingman's current tactical
-                // maneuver (BreakLeft/Right, ClearSix, Posthole, Chainsaw)
-                // via AiPerformManeuver. If no maneuver is active, falls
-                // back to Wingy (formation following).
-                runFollowOrders(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::RTB:
-                // PORTED (basic): navigate to the divert airbase via
-                // HeadingAndAltitudeHold + MachHold. Falls back to waypoint
-                // nav if the host hasn't set a divert airbase. Full RTB
-                // (AirbaseCheck + landing clearance request) lands with the
-                // landme.cpp pattern-work port.
-                runRTB(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::Wingy:
-                // Wingman formation following — delegates to AiFollowLead.
-                runWingy(as, dt, fcs, fcsState);
-                break;
-            case DigiMode::GroundMnvr:
-                // A/G attack (dive-bomb profile). Ported from FreeFalcon's
-                // GroundAttackMode (gndattck.cpp), vastly simplified.
-                runGroundAttack(as, dt, fcs, fcsState);
-                break;
             }
         }  // end if (!threatHandled)
     }
@@ -1444,12 +1285,11 @@ void DigiBrain::runRefueling(const AircraftState& as, double dt,
             // Step 2: Navigate to precontact position on the 30-degree line (100 - 150 ft, target 120 ft)
             const double d_target = 120.0;
             const double target_x = state_.refuel.boomX + d_target * v_line_x;
-            const double target_y = state_.refuel.boomY + d_target * v_line_y;
             const double target_z = state_.refuel.boomZ + d_target * v_line_z;
 
-            const double dx_p = target_x - as.kin.x;
-            const double dy_p = target_y - as.kin.y;
-            const double desHeading = std::atan2(dy_p, dx_p);
+            const double x_error_p = target_x - as.kin.x;
+            const double heading_corr_p = std::max(-0.26, std::min(0.26, x_error_p * 0.005));
+            const double desHeading = tankerSigma + heading_corr_p;
 
             std::printf("DEBUG runRefueling: Precontact 2\n");
             ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, -target_z,
@@ -1489,20 +1329,19 @@ void DigiBrain::runRefueling(const AircraftState& as, double dt,
 
             const double d_target = 20.0;
             const double target_x = state_.refuel.boomX + d_target * v_line_x;
-            const double target_y = state_.refuel.boomY + d_target * v_line_y;
             const double target_z = state_.refuel.boomZ + d_target * v_line_z;
 
-            const double dx_c = target_x - as.kin.x;
-            const double dy_c = target_y - as.kin.y;
-            const double desHeading = std::atan2(dy_c, dx_c);
+            const double x_error_c = target_x - as.kin.x;
+            const double heading_corr_c = std::max(-0.26, std::min(0.26, x_error_c * 0.005));
+            const double desHeading = tankerSigma + heading_corr_c;
 
             std::printf("DEBUG runRefueling: Contact 2\n");
             ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, -target_z,
                 state_, as, fcs, fcsState, state_.config.maxGs);
 
             std::printf("DEBUG runRefueling: Contact 3\n");
-            // Maintain exact tanker speed + gentle closure
-            const double closureKts = std::max(-15.0, std::min(20.0, (dist_from_boom - 20.0) * 0.2));
+            // Maintain exact tanker speed + gentle closure (max 5 kts to prevent overshoot/oscillation)
+            const double closureKts = std::max(-10.0, std::min(5.0, (dist_from_boom - 20.0) * 0.1));
             const CasKnots desCas = casFromTas(tas_kts(tanker_speed_kts + closureKts), as);
             ManeuverPrimitives::machHoldCas(desCas, false, state_, as, 150.0, 800.0, dt, 100.0);
 
@@ -2045,6 +1884,417 @@ void DigiBrain::runFollowOrders(const AircraftState& as, double dt,
         // mode next frame.
         runWingy(as, dt, fcs, fcsState);
     }
+}
+
+// ===========================================================================
+// Behavior Tree and Nodes Implementation
+// ===========================================================================
+
+void DigiBrain::buildBehaviorTree() {
+    auto root = std::make_shared<SelectorNode>("Root");
+    root->addChild(std::make_shared<ForcedModeNode>());
+    root->addChild(std::make_shared<GroundAvoidNode>());
+    root->addChild(std::make_shared<CollisionAvoidNode>());
+    root->addChild(std::make_shared<MissileDefeatNode>());
+    root->addChild(std::make_shared<GunsJinkNode>());
+    root->addChild(std::make_shared<TakeoffNode>());
+    root->addChild(std::make_shared<LandingNode>());
+    root->addChild(std::make_shared<FollowOrdersNode>());
+    root->addChild(std::make_shared<RTBNode>());
+    root->addChild(std::make_shared<CombatNode>());
+    root->addChild(std::make_shared<WingyNode>());
+    root->addChild(std::make_shared<RefuelNode>());
+    root->addChild(std::make_shared<GroundMnvrNode>());
+    root->addChild(std::make_shared<WaypointFollowNode>());
+    root->addChild(std::make_shared<DefaultFallbackNode>());
+    rootNode_ = root;
+}
+
+void DigiBrain::runLegacyMode(const AircraftState& as, double dt,
+                              const FlightControlSystem& fcs, FcsState& fcsState,
+                              double groundZ, const DigiEntity* selfEntity) {
+    switch (curMode_) {
+    case DigiMode::Waypoint:
+        runWaypoint(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::MissileDefeat:
+        runMissileDefeat(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::GunsJink:
+        runGunsJink(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::CollisionAvoid:
+        runCollisionAvoid(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::WVREngage:
+        runWVREngage(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::Takeoff:
+        runTakeoff(as, dt, fcsState, groundZ);
+        break;
+    case DigiMode::Landing:
+        runLanding(as, dt, fcsState, groundZ);
+        break;
+    case DigiMode::GroundAvoid:
+        break;
+    case DigiMode::MissileEngage:
+        runMissileEngage(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::GunsEngage:
+        runGunsEngage(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::Merge:
+        runMerge(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::Accel:
+        runAccel(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::BVREngage:
+        runBVREngage(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::NoMode:
+        runWaypoint(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::Roop: {
+        if (selfEntity && wvrTarget_) {
+            const bool stillActive = ManeuverPrimitives::RollOutOfPlane(
+                state_, *selfEntity, as, fcs, fcsState, dt,
+                /*firstFrame=*/false);
+            if (!stillActive) {
+                runWaypoint(as, dt, fcs, fcsState);
+            }
+        } else {
+            runWaypoint(as, dt, fcs, fcsState);
+        }
+        break;
+    }
+    case DigiMode::OverB: {
+        if (selfEntity && wvrTarget_) {
+            ManeuverPrimitives::OverBank(state_, *selfEntity, *wvrTarget_,
+                                          fcs, fcsState,
+                                          30.0 * DTR, /*firstFrame=*/false);
+        } else {
+            runWaypoint(as, dt, fcs, fcsState);
+        }
+        break;
+    }
+    case DigiMode::Loiter:
+        ManeuverPrimitives::Loiter(state_, as, fcs, fcsState, state_.config.maxGs);
+        ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
+                                         state_, as, 200.0, 800.0, dt, 700.0);
+        break;
+    case DigiMode::Bugout:
+    case DigiMode::Separate:
+        ManeuverPrimitives::WvrBugOut(state_, as, fcs, fcsState, dt);
+        break;
+    case DigiMode::Refueling:
+        runRefueling(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::FollowOrders:
+        runFollowOrders(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::RTB:
+        runRTB(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::Wingy:
+        runWingy(as, dt, fcs, fcsState);
+        break;
+    case DigiMode::GroundMnvr:
+        runGroundAttack(as, dt, fcs, fcsState);
+        break;
+    }
+}
+
+NodeStatus ForcedModeNode::onTick(Blackboard& bb) {
+    DigiMode forced = bb.brain->forcedMode();
+    if (forced != DigiMode::NoMode) {
+        bb.brain->setCurMode(forced);
+        bb.brain->runLegacyMode(*bb.as, bb.dt, *bb.fcs, *bb.fcsState, bb.groundZ, bb.self);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus GroundAvoidNode::onTick(Blackboard& bb) {
+    if (bb.state->groundAvoid.groundAvoidNeeded) {
+        bb.brain->setCurMode(DigiMode::GroundAvoid);
+        bb.state->nav.flightPhase = FlightPhase::Combat;
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus CollisionAvoidNode::onTick(Blackboard& bb) {
+    const DigiEntity* collTarget = bb.brain->frameInputs().injectedTarget;
+    if (!collTarget) collTarget = bb.brain->wvrTarget();
+    if (bb.self && collTarget && !collTarget->isDead) {
+        if (CollisionCheck(*bb.state, *bb.self, *collTarget)) {
+            bb.brain->setCurMode(DigiMode::CollisionAvoid);
+            bb.state->nav.flightPhase = FlightPhase::Combat;
+            bb.brain->runCollisionAvoid(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus MissileDefeatNode::onTick(Blackboard& bb) {
+    if (bb.self && bb.state->missileDefeat.incomingMissile) {
+        if (MissileDefeatCheck(*bb.state, *bb.self, bb.dt)) {
+            bb.brain->setCurMode(DigiMode::MissileDefeat);
+            bb.state->nav.flightPhase = FlightPhase::Combat;
+            bb.brain->runMissileDefeat(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus GunsJinkNode::onTick(Blackboard& bb) {
+    if (bb.self && bb.state->gunsJink.gunsThreat) {
+        if (GunsJinkCheck(*bb.state, *bb.self)) {
+            bb.brain->setCurMode(DigiMode::GunsJink);
+            bb.state->nav.flightPhase = FlightPhase::Combat;
+            bb.brain->runGunsJink(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus TakeoffNode::onTick(Blackboard& bb) {
+    const auto gp = bb.state->ag.groundOps.phase;
+    const bool isTakeoff = (gp == GroundOpsPhase::TakeoffRoll || gp == GroundOpsPhase::Rotation ||
+                            gp == GroundOpsPhase::AfterTakeoff || gp == GroundOpsPhase::LiningUp ||
+                            gp == GroundOpsPhase::TaxiToRunway || gp == GroundOpsPhase::HoldingShort ||
+                            gp == GroundOpsPhase::Parking || gp == GroundOpsPhase::RequestTaxi);
+    if (isTakeoff) {
+        bb.brain->setCurMode(DigiMode::Takeoff);
+        bb.state->nav.flightPhase = FlightPhase::GroundOps;
+        bb.brain->runTakeoff(*bb.as, bb.dt, *bb.fcsState, bb.groundZ);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus LandingNode::onTick(Blackboard& bb) {
+    const auto gp = bb.state->ag.groundOps.phase;
+    const bool isLanding = (gp == GroundOpsPhase::Approach || gp == GroundOpsPhase::Flare ||
+                            gp == GroundOpsPhase::Touchdown || gp == GroundOpsPhase::Rollout ||
+                            gp == GroundOpsPhase::VacatingRunway);
+    if (isLanding) {
+        bb.brain->setCurMode(DigiMode::Landing);
+        bb.state->nav.flightPhase = FlightPhase::Approach;
+        bb.brain->runLanding(*bb.as, bb.dt, *bb.fcsState, bb.groundZ);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus FollowOrdersNode::onTick(Blackboard& bb) {
+    const bool followOrdersActive =
+        bb.state->formation.isWing &&
+        bb.state->formation.wingman.currentManeuver != WingmanManeuver::None;
+    if (followOrdersActive) {
+        if (bb.state->nav.mnverTime <= 0.0) {
+            bb.state->nav.mnverTime = kDefaultManeuverTimeSec;
+        }
+        bb.brain->setCurMode(DigiMode::FollowOrders);
+        bb.state->nav.flightPhase = FlightPhase::Formation;
+        bb.brain->runFollowOrders(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus RTBNode::onTick(Blackboard& bb) {
+    const bool fuelCritical =
+        (bb.state->fuel.phase == DigiFuelState::Phase::Bingo ||
+         bb.state->fuel.phase == DigiFuelState::Phase::Fumes ||
+         bb.state->fuel.phase == DigiFuelState::Phase::Flameout);
+    const bool winchesterRTB =
+        bb.state->fuel.winchester &&
+        !bb.state->missileDefeat.incomingMissile &&
+        !bb.state->gunsJink.gunsThreat;
+    const bool isRtbTask = (bb.flightPlan && !bb.flightPlan->isComplete() && bb.flightPlan->currentTask().type == TaskType::RTB);
+
+    if (fuelCritical || winchesterRTB || isRtbTask) {
+        if (bb.self) {
+            const AirbaseAction abAction = AirbaseCheck(*bb.state, *bb.self, bb.brain->frameInputs(), bb.simTime);
+            if (abAction == AirbaseAction::Landing) {
+                bb.brain->setCurMode(DigiMode::Landing);
+                bb.state->nav.flightPhase = FlightPhase::Approach;
+                bb.brain->runLanding(*bb.as, bb.dt, *bb.fcsState, bb.groundZ);
+                return NodeStatus::Running;
+            } else if (abAction == AirbaseAction::RTB || fuelCritical || winchesterRTB || isRtbTask) {
+                bb.brain->setCurMode(DigiMode::RTB);
+                bb.state->nav.flightPhase = FlightPhase::Cruise;
+                bb.brain->runRTB(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+                return NodeStatus::Running;
+            }
+        } else {
+            bb.brain->setCurMode(DigiMode::RTB);
+            bb.state->nav.flightPhase = FlightPhase::Cruise;
+            bb.brain->runRTB(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus CombatNode::onTick(Blackboard& bb) {
+    const DigiEntity* tgt = bb.brain->frameInputs().injectedTarget;
+    if (tgt && tgt->isDead) tgt = nullptr;
+
+    const SensorPicture& pic = bb.brain->sensorFusion().picture();
+    const bool sensorFusionActive = (bb.brain->frameInputs().truth != nullptr);
+
+    if (sensorFusionActive && bb.brain->targetEntityAuto().has_value() &&
+        tgt == &(*bb.brain->targetEntityAuto()) && !pic.bestTarget) {
+        tgt = nullptr;
+        bb.brain->clearTargetEntityAuto();
+    }
+
+    if (!tgt && pic.bestTarget) {
+        bb.brain->setTargetEntityAuto(toDigiEntity(*pic.bestTarget));
+        tgt = &(*bb.brain->targetEntityAuto());
+    }
+
+    if (!tgt && sensorFusionActive && bb.self) {
+        const DigiEntity* autoTarget = DoTargeting(*bb.state, pic, *bb.self);
+        if (autoTarget) {
+            tgt = autoTarget;
+        }
+    }
+
+    if (!tgt && bb.self) {
+        if (sensorFusionActive) {
+            const DigiEntity* autoTarget = DoTargeting(*bb.state, pic, *bb.self);
+            if (autoTarget) {
+                tgt = autoTarget;
+            }
+        }
+    }
+
+    if (bb.self && tgt && !tgt->isDead) {
+        const double dx = tgt->x - bb.self->x;
+        const double dy = tgt->y - bb.self->y;
+        const double dz = tgt->z - bb.self->z;
+        const double range = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        const double maxAAWpnRangeFt = bb.state->weapon.maxAAWpnRange > 0
+            ? bb.state->weapon.maxAAWpnRange
+            : 35.0 * 6076.0;
+
+        bb.brain->setWvrTarget(tgt);
+
+        if (BvrEngageCheck(*bb.state, *bb.self, *tgt, maxAAWpnRangeFt)) {
+            bb.brain->setCurMode(DigiMode::BVREngage);
+            bb.state->nav.flightPhase = FlightPhase::Combat;
+            bb.brain->runBVREngage(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+        else if (range < maxAAWpnRangeFt) {
+            if (bb.brain->sms() && bb.brain->sms()->hasWeaponClass(WeaponClass::AimWpn)) {
+                if (MissileEngageCheck(*bb.state, *bb.self, *tgt, *bb.brain->sms(), true) && range > 3500.0) {
+                    bb.brain->setCurMode(DigiMode::MissileEngage);
+                    bb.state->nav.flightPhase = FlightPhase::Combat;
+                    bb.brain->runMissileEngage(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+                    return NodeStatus::Running;
+                }
+            }
+
+            if (MergeCheck(*bb.state, *bb.self, *tgt)) {
+                bb.brain->setCurMode(DigiMode::Merge);
+                bb.state->nav.flightPhase = FlightPhase::Combat;
+                bb.brain->runMerge(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+                return NodeStatus::Running;
+            }
+
+            WeaponSpec gun = gunSpec();
+            if (GunsEngageCheck(*bb.state, *bb.self, *tgt, gun, true)) {
+                bb.brain->setCurMode(DigiMode::GunsEngage);
+                bb.state->nav.flightPhase = FlightPhase::Combat;
+                bb.brain->runGunsEngage(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+                return NodeStatus::Running;
+            }
+
+            bb.brain->setCurMode(DigiMode::WVREngage);
+            bb.state->nav.flightPhase = FlightPhase::Combat;
+            bb.brain->runWVREngage(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+            return NodeStatus::Running;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus WingyNode::onTick(Blackboard& bb) {
+    const bool wingyActive =
+        bb.state->formation.isWing &&
+        bb.state->formation.flightLeadId != kInvalidEntityId &&
+        bb.brain->frameInputs().injectedLead != nullptr;
+    if (wingyActive) {
+        bb.brain->setCurMode(DigiMode::Wingy);
+        bb.state->nav.flightPhase = FlightPhase::Formation;
+        bb.brain->runWingy(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus RefuelNode::onTick(Blackboard& bb) {
+    const bool isRefuelTask = (bb.flightPlan && !bb.flightPlan->isComplete() && bb.flightPlan->currentTask().type == TaskType::Refuel);
+    if (isRefuelTask || bb.brain->frameInputs().injectedTanker) {
+        bb.brain->setCurMode(DigiMode::Refueling);
+        bb.state->nav.flightPhase = FlightPhase::Formation;
+        bb.brain->runRefueling(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus GroundMnvrNode::onTick(Blackboard& bb) {
+    const bool isStrikeTask = (bb.flightPlan && !bb.flightPlan->isComplete() && bb.flightPlan->currentTask().type == TaskType::Strike);
+    if (isStrikeTask || bb.state->ag.groundTarget) {
+        bb.brain->setCurMode(DigiMode::GroundMnvr);
+        bb.state->nav.flightPhase = FlightPhase::Combat;
+        bb.brain->runGroundAttack(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+        return NodeStatus::Running;
+    }
+    return NodeStatus::Failure;
+}
+
+WaypointFollowNode::WaypointFollowNode() : BehaviorNode("WaypointFollow") {
+    captureCheckNode_ = std::make_shared<WaypointCaptureCheckNode>(5000.0);
+    activeTaskSelectorNode_ = std::make_shared<ActiveTaskSelectorNode>();
+    activeTaskSelectorNode_->addTaskNode(TaskType::Navigate, std::make_shared<NavigateTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::CAP, std::make_shared<LoiterTaskNode>());
+}
+
+void WaypointFollowNode::reset() {
+    BehaviorNode::reset();
+    if (captureCheckNode_) captureCheckNode_->reset();
+    if (activeTaskSelectorNode_) activeTaskSelectorNode_->reset();
+}
+
+NodeStatus WaypointFollowNode::onTick(Blackboard& bb) {
+    if (bb.flightPlan && !bb.flightPlan->isComplete()) {
+        bb.brain->setCurMode(DigiMode::Waypoint);
+        bb.state->nav.flightPhase = FlightPhase::Cruise;
+        captureCheckNode_->tick(bb);
+        NodeStatus status = activeTaskSelectorNode_->tick(bb);
+        if (status == NodeStatus::Running || status == NodeStatus::Success) {
+            return status;
+        }
+    }
+    return NodeStatus::Failure;
+}
+
+NodeStatus DefaultFallbackNode::onTick(Blackboard& bb) {
+    bb.brain->setCurMode(DigiMode::Waypoint);
+    bb.state->nav.flightPhase = FlightPhase::Cruise;
+    bb.brain->runWaypoint(*bb.as, bb.dt, *bb.fcs, *bb.fcsState);
+    return NodeStatus::Running;
 }
 
 } // namespace digi

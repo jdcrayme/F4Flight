@@ -21,6 +21,7 @@
 #include <string>
 
 using namespace f4flight;
+using namespace f4flight::digi;
 
 namespace f4flight_test {
 
@@ -110,9 +111,11 @@ public:
         : ManeuverTest(name, duration), targetAlt_(alt), targetSpd_(speed) {}
 
     void Init(SteeringController& sc, FlightModel& fm) override {
-        sc.setMode(SteeringController::Mode::HeadingAltitude);
-        sc.setAltitude(targetAlt_);
-        sc.setHeading(0.0);
+        // Initialize flight plan with a Navigate task ahead (east)
+        auto fp = std::make_shared<FlightPlan>();
+        fp->pushTask(MissionTask{TaskType::Navigate, {607600.0, 0.0, -targetAlt_}, targetSpd_, targetAlt_, kInvalidEntityId, 0.0});
+        sc.brain().setFlightPlan(fp);
+
         // Use the aircraft's corner speed as the MachHold target, matching
         // what FreeFalcon's AI does (af->CornerVcas()).
         sc.setCornerSpeed(targetSpd_);

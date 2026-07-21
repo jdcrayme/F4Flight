@@ -49,9 +49,12 @@ public:
 
     void Init(SteeringController& sc, FlightModel& fm) override {
         fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, 0.0, true);
-        sc.setMode(SteeringController::Mode::HeadingAltitude);
-        sc.setAltitude(alt_);
-        sc.setHeading(0.0);  // east
+
+        // Set up the FlightPlan with a Navigate task ahead (east)
+        auto fp = std::make_shared<FlightPlan>();
+        fp->pushTask(MissionTask{TaskType::Navigate, {607600.0, 0.0, -alt_}, speed_, alt_, kInvalidEntityId, 0.0});
+        sc.brain().setFlightPlan(fp);
+
         sc.setCornerSpeed(speed_);
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(60.0);

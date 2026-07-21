@@ -176,7 +176,8 @@ struct PhaseGainSet {
                 return PhaseGainSet{0.05, 60.0, 0.0025, 0.0, 0.5, 0.02};
             case FlightPhase::Formation:
                 // Precise, damped. Higher Phugoid damping for stable formation.
-                return PhaseGainSet{0.015, 15.0, 0.0, 0.4, 0.15, 0.02};
+                // Stiffer gains for precise altitude tracking during refueling.
+                return PhaseGainSet{0.04, 15.0, 0.004, 0.4, 0.15, 0.02};
             case FlightPhase::Approach:
                 // Gentle, Phugoid-damped. Lower gain to prevent oscillation
                 // on the glideslope. Pure P (no integral) to prevent windup.

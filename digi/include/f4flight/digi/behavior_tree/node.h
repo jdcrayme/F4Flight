@@ -39,6 +39,10 @@ public:
     const std::string& name() const { return name_; }
     bool hasEntered() const { return hasEntered_; }
 
+    virtual void reset() {
+        hasEntered_ = false;
+    }
+
 protected:
     virtual void onEnter(Blackboard& /*bb*/) {}
     virtual NodeStatus onTick(Blackboard& bb) = 0;
@@ -60,6 +64,14 @@ public:
     }
 
     const std::vector<BehaviorNodePtr>& children() const { return children_; }
+
+    void reset() override {
+        BehaviorNode::reset();
+        currentChildIndex_ = 0;
+        for (auto& child : children_) {
+            if (child) child->reset();
+        }
+    }
 
 protected:
     void onEnter(Blackboard&) override {
@@ -91,6 +103,14 @@ public:
     }
 
     const std::vector<BehaviorNodePtr>& children() const { return children_; }
+
+    void reset() override {
+        BehaviorNode::reset();
+        currentChildIndex_ = 0;
+        for (auto& child : children_) {
+            if (child) child->reset();
+        }
+    }
 
 protected:
     void onEnter(Blackboard&) override {

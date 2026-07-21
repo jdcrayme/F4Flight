@@ -32,7 +32,6 @@ public:
 
     void Init(SteeringController& sc, FlightModel& fm) override {
         fm.init(fm.config(), alt_, speed_ * KNOTS_TO_FTPSEC, 90*DTR, true);
-        sc.setMode(SteeringController::Mode::Waypoint);
         sc.setWaypoints(wps_);
         sc.setCaptureRadius(captureRadius_);
         sc.setAltitude(alt_);
