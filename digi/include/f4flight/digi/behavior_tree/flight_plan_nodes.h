@@ -137,6 +137,13 @@ public:
         taskNodes_[type] = std::move(node);
     }
 
+    void reset() override {
+        BehaviorNode::reset();
+        for (auto& kv : taskNodes_) {
+            if (kv.second) kv.second->reset();
+        }
+    }
+
 protected:
     NodeStatus onTick(Blackboard& bb) override {
         if (!bb.flightPlan || bb.flightPlan->isComplete()) {

@@ -10,9 +10,12 @@ namespace f4flight {
 namespace digi {
 
 class FlightPlan;
+class DigiBrain;
 
 class Blackboard {
 public:
+    DigiBrain* brain {nullptr};
+
     // References to the active, live simulation parameters
     const AircraftState* as {nullptr};
     double dt {0.0};

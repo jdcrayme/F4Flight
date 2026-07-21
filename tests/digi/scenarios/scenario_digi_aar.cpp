@@ -112,7 +112,11 @@ public:
         fm.state().kin.y = -2.0 * 6076.0;
         fm.state().kin.z = -(alt_ - 500.0);  // 500 ft below tanker
 
-        sc.setMode(SteeringController::Mode::HeadingAltitude);
+        // Set up the FlightPlan with a Refuel task!
+        auto fp = std::make_shared<FlightPlan>();
+        fp->pushTask(MissionTask{TaskType::Refuel, {0.0, 0.0, -alt_}, speed_, alt_, kInvalidEntityId, 5.0});
+        sc.brain().setFlightPlan(fp);
+
         sc.setCornerSpeed(fm.config().geometry.cornerVcas_kts);
         sc.setMaxGs(fm.config().geometry.maxGs);
         sc.setMaxBank(30.0);
