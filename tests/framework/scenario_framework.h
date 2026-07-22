@@ -356,6 +356,16 @@ public:
         ac->sc.setHeading(0.0);
         ac->sc.setMaxGamma(15.0);
 
+        // Configure autopilot limits via DigiBrain config
+        digi::DigiConfig digiCfg;
+        digiCfg.cornerSpeedKts = 300;
+        digiCfg.maxGs = ac->fm.config().geometry.maxGs;
+        digiCfg.maxBankDeg = 45.0;
+        digiCfg.maxGammaDeg = 15.0;
+        digiCfg.turnLoadFactor = 2.0;
+
+        ac->sc.brain().configure(digiCfg);
+
         aircraftList_.push_back(ac);
         return ac;
     }

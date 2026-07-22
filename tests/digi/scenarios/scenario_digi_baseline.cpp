@@ -57,19 +57,40 @@ namespace f4flight_test {
             auto ac = CreateAircraft("F16", defaultAircraftPath);
             if (!ac) return;
 
-            // Configure autopilot limits via DigiBrain config
-            digi::DigiConfig cfg;
-            cfg.cornerSpeedKts = targetSpd;
-            cfg.maxGs = ac->fm.config().geometry.maxGs;
-            cfg.maxBankDeg = 45.0;
-            cfg.maxGammaDeg = 15.0;
-            cfg.turnLoadFactor = 2.0;
-            ac->sc.brain().configure(cfg);
+
 
             // Define a 10 NM leg square flight path (x = East, y = North) using FlightPlan
             auto flightPlan = digi::FlightPlan::fromWaypoints({ wp1,wp2,wp3,wp4 }, targetSpd);
             ac->sc.brain().setFlightPlan(flightPlan);
 
+            // Insert a refuel task at waypoint 2 (between leg,leg and 0,leg)
+            // The tanker will orbit at the midpoint between these two waypoints
+            Vec3 refuelLocation{ leg * 0.5, leg, -targetAlt };
+            digi::MissionTask refuelTask{ digi::TaskType::Refuel, refuelLocation, targetSpd, targetAlt };
+            flightPlan->insertEmergencyTask(refuelTask);
+
+            ac->sc.brain().setFlightPlan(flightPlan);
+
+            // 2. Spawn a tanker aircraft for aerial refueling
+            auto tanker = CreateAircraft("KC135", defaultAircraftPath);
+            if (!tanker) return;
+
+            // Position tanker at the refuel location (midpoint between waypoints 2 and 3)
+            tanker->fm.state().kin.x = refuelLocation.x;
+            tanker->fm.state().kin.y = refuelLocation.y;
+            tanker->fm.state().kin.z = refuelLocation.z;
+            tanker->fm.state().vcas = targetSpd;
+            tanker->fm.state().kin.psi = 90.0 * PI/180.0;  // Flying east
+
+            // Tanker flight plan: orbit/loiter at the refuel location
+            auto tankerFlightPlan = std::make_shared<digi::FlightPlan>();
+            // Loiter task at the refuel location for extended duration
+            digi::MissionTask loiterTask{ digi::TaskType::Refuel, refuelLocation, targetSpd, targetAlt, 300.0 };  // 5 minute loiter
+            tankerFlightPlan->pushTask(loiterTask);
+            tanker->sc.brain().setFlightPlan(tankerFlightPlan);
+
+            // 3. Setup declarative telemetries
+            // 
             // 2. Setup declarative telemetries
             auto t_alt = CreateTelemetry("Altitude", [ac]() { return -ac->fm.state().kin.z; });
             auto t_spd = CreateTelemetry("Speed", [ac]() { return ac->fm.state().vcas; });
