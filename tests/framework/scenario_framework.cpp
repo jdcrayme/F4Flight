@@ -305,6 +305,11 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         }
 
         conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
+
+        if (rec) {
+            std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): " + (cond->hasPassed() ? "PASSED" : "FAILED");
+            rec->addEvent(simT, "condition", condMsg, cond->hasPassed() ? "info" : "warn");
+        }
     }
 
     if (rec) {
