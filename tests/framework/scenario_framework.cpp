@@ -1,34 +1,16 @@
-// f4flight - Maneuver test runner.
+// f4flight - Simplified Scenario test runner.
 //
 // Usage:
-//   f4flight_scenario_test <aircraft.json> [options]
+//   f4flight_digi_scenarios <aircraft.json> [options]
 //
 // Options:
 //   --list                List available scenarios and exit.
-//   --scenario NAME       Run only the named scenario. May be repeated to
-//                         run several scenarios back-to-back.
-//   --all                 Run every registered scenario (default).
-//   --trace-dir DIR       Write one trace JSON per scenario to DIR (created
-//                         if it does not exist). Traces are never written
-//                         unless this flag or --html is given.
-//   --html FILE           After running, emit a self-contained interactive
-//                         HTML flight-path report to FILE (embeds all traces
-//                         from this run inline — no external files needed).
-//   --open                Open the HTML report in the default browser after
-//                         writing it. Implies --html if no --html path given
-//                         (writes to ./f4flight_report.html).
-//   --max-time SEC        Per-phase hard cap (default: taken from each phase).
+//   --scenario NAME       Run only the named scenario.
+//   --trace-dir DIR       Write trace JSON per scenario to DIR.
+//   --html FILE           Emit self-contained interactive HTML flight-path report.
+//   --open                Open the HTML report in default browser.
+//   --summary FILE        Write structured, machine-parseable JSON summary of results.
 //   -h, --help            Show usage.
-//
-// Scenarios self-register at startup (see src/scenarios/*.cpp), so adding a
-// new scenario is a matter of dropping a new .cpp file in src/scenarios/ and
-// re-building. The runner never needs editing.
-//
-// Examples:
-//   f4flight_scenario_test f16bk50.json                       # run all scenarios
-//   f4flight_scenario_test f16bk50.json --scenario basic     # just the basic sequence
-//   f4flight_scenario_test f16bk50.json --list               # show what's available
-//   f4flight_scenario_test f16bk50.json --html report.html --open   # run + view
 
 #include "f4flight/flight/f4flight.h"
 #include "f4flight/digi/digi_mode.h"
@@ -48,88 +30,15 @@
 using namespace f4flight;
 using namespace f4flight_test;
 
-// ===========================================================================
-// Cascade mapping tables
-//
-// These tables define the relationship between the three test tiers:
-//
-//   g_e2eToHigh : E2E scenario name  -> list of HighLevel scenario names
-//   g_highToLow : HighLevel scenario name -> list of LowLevel scenario names
-//
-// When an E2E test fails, the cascade runner uses g_e2eToHigh to look up the
-// HighLevel chains that compose it, and runs each of those. When a HighLevel
-// chain fails, g_highToLow is used to look up the individual LowLevel
-// behaviors that compose the chain, and runs each of those. The result is a
-// drill-down from "mission broken" to "specific behavior broken".
-//
-// Keep these tables in sync with the actual scenario registrations. The
-// coverage matrix in COVERAGE.md is generated from this table.
-// ===========================================================================
-static const std::map<std::string, std::vector<std::string>> g_e2eToHigh = {
-    // Core fighter missions (AMIS_BARCAP, AMIS_TARCAP, AMIS_SWEEP,
-    // AMIS_INTERCEPT, AMIS_ESCORT).
-    {"e2e_barcap",     {"high_departure", "high_loiter_station", "high_air_to_air_engage", "high_recovery"}},
-    {"e2e_tarcap",     {"high_departure", "high_loiter_station", "high_air_to_air_engage", "high_recovery"}},
-    {"e2e_sweep",      {"high_departure", "high_air_to_air_engage", "high_recovery"}},
-    {"e2e_intercept",  {"high_departure", "high_air_to_air_engage", "high_recovery"}},
-    {"e2e_escort",     {"high_departure", "high_formation_joinup", "high_air_to_air_engage", "high_recovery"}},
-    // Legacy generic E2E (kept for backward compat with the old test matrix).
-    {"digi_e2e_mission",       {"high_departure", "high_air_to_air_engage", "high_recovery"}},
-    {"digi_e2e_formation",     {"high_departure", "high_formation_joinup", "high_recovery"}},
-    {"digi_e2e_aar",           {"high_departure", "high_aar", "high_recovery"}},
-    {"digi_e2e_ground_attack", {"high_departure", "high_air_to_ground", "high_recovery"}},
-};
-
-static const std::map<std::string, std::vector<std::string>> g_highToLow = {
-    {"high_departure",          {"low_taxi", "low_takeoff", "low_climb", "low_level_hold"}},
-    {"high_loiter_station",     {"low_loiter_orbit", "low_level_hold", "low_waypoint_follow"}},
-    {"high_aar",                {"low_aar_vector", "low_aar_pre_contact", "low_aar_contact", "low_aar_disconnect"}},
-    {"high_formation_joinup",   {"low_formation_position", "low_formation_types", "low_formation_turn"}},
-    {"high_air_to_air_engage",  {"low_bvr_engage", "low_merge", "low_wvr_engage", "low_missile_engage",
-                                 "low_guns_engage", "low_separate", "low_roop", "low_overb"}},
-    {"high_air_to_ground",      {"low_ground_attack_low", "low_ground_attack_dive",
-                                 "low_ground_attack_toss", "low_ground_attack_high"}},
-    {"high_recovery",           {"low_rtb", "low_divert", "low_approach", "low_landing", "low_taxi"}},
-    {"high_defensive_chain",    {"low_missile_defeat", "low_guns_jink", "low_collision_avoid"}},
-};
-
-// Public accessors that return an empty vector if the key is not found.
-// Defined inside namespace f4flight_test to match the header declaration.
-namespace f4flight_test {
-const std::vector<std::string>& highScenariosFor(const std::string& e2eName) {
-    static const std::vector<std::string> kEmpty;
-    auto it = g_e2eToHigh.find(e2eName);
-    return (it != g_e2eToHigh.end()) ? it->second : kEmpty;
-}
-const std::vector<std::string>& lowScenariosFor(const std::string& highName) {
-    static const std::vector<std::string> kEmpty;
-    auto it = g_highToLow.find(highName);
-    return (it != g_highToLow.end()) ? it->second : kEmpty;
-}
-} // namespace f4flight_test
-
-// ---------------------------------------------------------------------------
-// Argument parsing
-// ---------------------------------------------------------------------------
 struct CliOptions {
     std::string aircraftPath;
-    std::vector<std::string> scenarios;  // empty => run all (in the selected tier(s))
-    std::string traceDir;               // --trace-dir: write per-scenario JSON here
-    std::string htmlPath;               // --html: write aggregated HTML report here
-    bool doOpen{false};                 // --open: launch browser on the HTML
+    std::vector<std::string> scenarios;
+    std::string traceDir;
+    std::string htmlPath;
+    std::string summaryPath;
+    bool doOpen{false};
     bool list{false};
     bool help{false};
-
-    // New 3-tier flags.
-    //   --level {low,high,e2e,all}  Run only scenarios in the given tier.
-    //                               Default "all". Mutually exclusive with
-    //                               explicit --scenario lists.
-    //   --cascade                   Run all E2E scenarios first; for each
-    //                               failure, run the linked HighLevel
-    //                               scenarios; for each HighLevel failure,
-    //                               run the linked LowLevel scenarios.
-    std::string levelArg{"all"};
-    bool cascade{false};
 };
 
 static void printHelp() {
@@ -137,30 +46,15 @@ static void printHelp() {
         "Usage: f4flight_digi_scenarios <aircraft.json> [options]\n"
         "\n"
         "Scenario selection:\n"
-        "  --list              List available scenarios (grouped by tier) and exit.\n"
+        "  --list              List available scenarios and exit.\n"
         "  --scenario NAME     Run only the named scenario. May be repeated.\n"
-        "  --all               Run every registered scenario (default).\n"
-        "  --level TIER        Run all scenarios in TIER. TIER is one of:\n"
-        "                        low   - Low Level (one behavior per scenario)\n"
-        "                        high  - High Level (chains of behaviors)\n"
-        "                        e2e   - End-to-End (full AMIS_* missions)\n"
-        "                        all   - All tiers (default)\n"
-        "  --cascade           Run E2E, then HighLevel for any E2E failures, then\n"
-        "                      LowLevel for any HighLevel failures. Produces a\n"
-        "                      drill-down report. Implies running only E2E first.\n"
         "\n"
         "Output:\n"
         "  --trace-dir DIR     Write one trace JSON per scenario to DIR.\n"
         "  --html FILE         Write an interactive HTML flight-path report to FILE.\n"
+        "  --summary FILE      Write a structured, machine-parseable JSON summary to FILE.\n"
         "  --open              Open the HTML report in the default browser.\n"
-        "  -h, --help          Show this help.\n"
-        "\n"
-        "Examples:\n"
-        "  f4flight_digi_scenarios f16bk50.json                            # run all\n"
-        "  f4flight_digi_scenarios f16bk50.json --level low                # just low-level\n"
-        "  f4flight_digi_scenarios f16bk50.json --level e2e --html r.html  # E2E + report\n"
-        "  f4flight_digi_scenarios f16bk50.json --cascade --html r.html    # drill-down\n"
-        "  f4flight_digi_scenarios f16bk50.json --scenario low_takeoff     # one scenario\n");
+        "  -h, --help          Show this help.\n");
 }
 
 static CliOptions parseArgs(int argc, char** argv) {
@@ -171,9 +65,6 @@ static CliOptions parseArgs(int argc, char** argv) {
             opt.help = true;
         } else if (a == "--list") {
             opt.list = true;
-        } else if (a == "--all") {
-            opt.scenarios.clear();
-            opt.levelArg = "all";
         } else if (a == "--scenario") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "Error: --scenario requires a name argument\n");
@@ -181,15 +72,6 @@ static CliOptions parseArgs(int argc, char** argv) {
                 return opt;
             }
             opt.scenarios.push_back(argv[++i]);
-        } else if (a == "--level") {
-            if (i + 1 >= argc) {
-                std::fprintf(stderr, "Error: --level requires an argument\n");
-                opt.help = true;
-                return opt;
-            }
-            opt.levelArg = argv[++i];
-        } else if (a == "--cascade") {
-            opt.cascade = true;
         } else if (a == "--trace-dir") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "Error: --trace-dir requires a path\n");
@@ -204,6 +86,13 @@ static CliOptions parseArgs(int argc, char** argv) {
                 return opt;
             }
             opt.htmlPath = argv[++i];
+        } else if (a == "--summary") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "Error: --summary requires a path\n");
+                opt.help = true;
+                return opt;
+            }
+            opt.summaryPath = argv[++i];
         } else if (a == "--open") {
             opt.doOpen = true;
         } else if (a.size() > 0 && a[0] == '-') {
@@ -216,21 +105,30 @@ static CliOptions parseArgs(int argc, char** argv) {
             opt.help = true;
         }
     }
-    // --open implies --html (default path if none given).
     if (opt.doOpen && opt.htmlPath.empty()) {
         opt.htmlPath = "f4flight_report.html";
     }
     return opt;
 }
 
-// ---------------------------------------------------------------------------
-// Run one scenario end-to-end. Returns the number of phases that passed
-// (out of total). If `rec` is non-null, records every frame and phase
-// boundary into it for visualization.
-// ---------------------------------------------------------------------------
+struct PhaseResult {
+    std::string name;
+    bool passed{false};
+    std::string criteria;
+    std::string failureReason;
+    std::vector<TestCondition> conditions;
+};
+
+struct ScenarioRunResult {
+    std::string name;
+    bool passed{false};
+    std::vector<PhaseResult> phases;
+};
+
 struct ScenarioResult {
     int passed{0};
     int total{0};
+    std::vector<PhaseResult> phaseDetails;
 };
 
 static ScenarioResult runScenario(ManeuverScenario& scenario,
@@ -244,68 +142,23 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     res.total = static_cast<int>(tests.size());
 
     const double dt = 1.0 / 60.0;
-
-    // FULL BRAIN RESET between scenarios.
-    //
-    // The SteeringController (and its DigiBrain) is initialized once in
-    // main() and shared across ALL scenarios. Without a reset, state from a
-    // previous scenario leaks into the next:
-    //
-    //   - digi_groundops leaves the brain in Landing mode with
-    //     groundOps.phase == Rollout. The addMode() interlock rule
-    //     "LandingMode can't be bumped by WVR-family engagements" then
-    //     prevents every subsequent offensive scenario (digi_guns,
-    //     digi_wvr, digi_sensors target phase, digi_tactics break) from
-    //     ever entering their intended mode — they all sit in Landing and
-    //     descend until they fail.
-    //   - digi_rtb leaves fuel.phase == Bingo and a divert airbase set.
-    //   - Waypoints from ai_flightplan leak into other scenarios.
-    //   - Threat/target pointers from injected entities dangle.
-    //
-    // sc.reset() calls DigiBrain::reset(), which:
-    //   - clears curMode_ → Waypoint, forcedMode_ → NoMode
-    //   - clears all threat/target pointers and auto-tracked entities
-    //   - clears frameInputs_ (truth, injected*, fuel, airbases)
-    //   - clears groundOps.phase → Parking (the "none" state)
-    //   - PRESERVES config (cornerSpeed, maxGs, maxRoll, maxGamma) so the
-    //     base tuning set in main() survives.
-    //
-    // Each phase's Init() re-configures what it needs (setMode, setCornerSpeed,
-    // setMaxGs, etc.), so a full reset here is safe.
     sc.reset();
 
     if (rec) {
         rec->start(aircraftName, scenario.name());
         rec->setTestMetadata(scenario.GetTestGroup(), scenario.GetTestLevel());
-        // Capture generalized geometry overlays.
         rec->setGeometry(scenario.traceGeometry());
     }
 
-    // Global simulation clock (continuous across phases) for the trace.
     double simT = 0.0;
     int frameCount = 0;
     bool printedHeader = false;
 
     for (auto& test : tests) {
-        // Detect whether this phase re-initializes the flight model (calls
-        // fm.init()). We use two independent signals:
-        //
-        //  1. Position jump: save x/y/z before Init and compare afterward.
-        //     fm.init() repositions the aircraft to a new spot; if the
-        //     position moved more than a small threshold, a repositioning
-        //     happened. This is the most reliable signal and catches reinits
-        //     even from a near-stationary state (e.g. on the ground).
-        //
-        //  2. Body-rate reset: fm.init() zeros body rates (p,q,r). If the
-        //     aircraft was maneuvering (rates > 0.01) and they dropped to
-        //     ~0 after Init, a reinit happened even if the position didn't
-        //     change much (e.g. attitude/velocity reset in place).
+        // Track position/rate jump to detect re-initializations
         const double preX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
         const double preY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
         const double preZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
-        const double preP = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.p : fm.state().kin.p;
-        const double preQ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.q : fm.state().kin.q;
-        const double preR = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.r : fm.state().kin.r;
 
         if (!scenario.aircraftList().empty()) {
             auto& primaryAc = scenario.aircraftList()[0];
@@ -321,26 +174,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         const double currX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
         const double currY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
         const double currZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
-        const double currP = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.p : fm.state().kin.p;
-        const double currQ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.q : fm.state().kin.q;
-        const double currR = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.r : fm.state().kin.r;
+        const double jumpFt = std::sqrt((currX - preX) * (currX - preX) + (currY - preY) * (currY - preY) + (currZ - preZ) * (currZ - preZ));
 
-        const double dx = currX - preX;
-        const double dy = currY - preY;
-        const double dz = currZ - preZ;
-        const double jumpFt = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-        const bool posJumped = jumpFt > 50.0;
-        const bool ratesDropped =
-            (std::fabs(preP) > 0.01 || std::fabs(preQ) > 0.01 || std::fabs(preR) > 0.01) &&
-            (std::fabs(currP) < 0.001 &&
-             std::fabs(currQ) < 0.001 &&
-             std::fabs(currR) < 0.001);
-        const bool reinitializes = posJumped || ratesDropped;
-
-        // After Init, capture waypoints from the brain (set by Waypoint mode).
-        // Done once per phase — if a later phase changes waypoints, the trace
-        // picks up the latest set.
         if (rec) {
             const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
             const auto& wps = brain.waypoints();
@@ -372,16 +207,14 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             }
         }
 
-        const double phaseStartT = simT;
-        std::string lastModeName;  // for mode-change event detection
-        double lastFireEventT = -1.0;  // for gun-fire event throttling (per-phase)
+        std::string lastModeName;
+        double lastFireEventT = -1.0;
 
         while (!test->IsFinished()) {
             PilotInput input;
             std::string modeName;
 
             if (!scenario.aircraftList().empty()) {
-                // Multi-aircraft update path
                 for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
                     auto& ac = scenario.aircraftList()[idx];
                     PilotInput acInput;
@@ -411,7 +244,6 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
                 test->Evaluate(primaryAc->fm.state(), input, dt);
             } else {
-                // Fallback single aircraft path (compatible with existing scenarios)
                 if (test->inputOverride(input, fm.state())) {
                     modeName = "Manual";
                 } else {
@@ -427,21 +259,18 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 test->Evaluate(fm.state(), input, dt);
             }
 
-            // Update Telemetry
             if (!scenario.telemetries().empty()) {
                 for (auto& tel : scenario.telemetries()) {
                     tel->sample();
                 }
             }
 
-            // Evaluate Conditionals
             if (!scenario.conditionals().empty()) {
                 for (auto& cond : scenario.conditionals()) {
                     cond->Evaluate(dt);
                 }
             }
 
-            // Print Telemetry columns every 10 frames
             if (!scenario.telemetries().empty()) {
                 if (!printedHeader) {
                     std::printf("%-10s", "Frame");
@@ -465,65 +294,11 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
                 const auto& ds = brain.state();
 
-                if (ds.missileDefeat.incomingMissile) {
-                    threats.push_back({"missile",
-                        ds.missileDefeat.incomingMissile->x, ds.missileDefeat.incomingMissile->y,
-                        ds.missileDefeat.incomingMissile->z, ds.missileDefeat.incomingMissile->speed});
-                }
-                if (ds.gunsJink.gunsThreat) {
-                    threats.push_back({"guns",
-                        ds.gunsJink.gunsThreat->x, ds.gunsJink.gunsThreat->y,
-                        ds.gunsJink.gunsThreat->z, ds.gunsJink.gunsThreat->speed});
-                }
-                if (ds.ag.groundTarget) {
-                    threats.push_back({"target",
-                        ds.ag.groundTarget->x, ds.ag.groundTarget->y,
-                        ds.ag.groundTarget->z, ds.ag.groundTarget->speed});
-                }
-                if (brain.resolvedTarget()) {
-                    const auto* tgt = brain.resolvedTarget();
-                    bool alreadyHave = false;
-                    for (const auto& th : threats) {
-                        if (th.type == "target" &&
-                            std::fabs(th.x - tgt->x) < 1.0 &&
-                            std::fabs(th.y - tgt->y) < 1.0) {
-                            alreadyHave = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyHave) {
-                        threats.push_back({"target",
-                            tgt->x, tgt->y, tgt->z, tgt->speed});
-                    }
-                }
                 if (brain.frameInputs().injectedLead) {
                     const auto* lead = brain.frameInputs().injectedLead;
                     threats.push_back({"lead",
                         lead->x, lead->y, lead->z, lead->speed});
                 }
-
-                // Automatically include other simulated aircraft as moving entities
-                if (!scenario.aircraftList().empty()) {
-                    for (size_t idx = 1; idx < scenario.aircraftList().size(); ++idx) {
-                        auto& ac = scenario.aircraftList()[idx];
-                        ThreatEntity t;
-                        if (ac->name == "Tanker") {
-                            t.type = "lead";
-                        } else {
-                            t.type = "wingman";
-                        }
-                        t.name = ac->name;
-                        t.x = ac->fm.state().kin.x;
-                        t.y = ac->fm.state().kin.y;
-                        t.z = ac->fm.state().kin.z;
-                        t.speed = ac->fm.state().kin.vt;
-                        t.psi = ac->fm.state().kin.psi;
-                        threats.push_back(t);
-                    }
-                }
-
-                auto custom = test->traceEntities();
-                threats.insert(threats.end(), custom.begin(), custom.end());
 
                 if (!scenario.aircraftList().empty()) {
                     auto& primaryAc = scenario.aircraftList()[0];
@@ -536,7 +311,6 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                     rec->addSample(s.key, s.value, s.unit);
                 }
 
-                // Automatically include scenario telemetry variables as trace samples
                 for (const auto& tel : scenario.telemetries()) {
                     rec->addSample(tel->name(), tel->lastValue(), "");
                 }
@@ -546,13 +320,6 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                         "Mode: " + lastModeName + " -> " + modeName, "info");
                 }
                 lastModeName = modeName;
-
-                if (input.fireGun) {
-                    if (simT - lastFireEventT > 0.5) {
-                        rec->addEvent(simT, "weapon", "Gun fired", "info");
-                        lastFireEventT = simT;
-                    }
-                }
             }
             simT += dt;
             frameCount++;
@@ -563,17 +330,18 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             std::string msg = "Phase [" + std::string(test->name()) + "] Finished: " +
                               (test->IsPassed() ? "PASSED" : "FAILED (" + test->failureReason() + ")");
             rec->addEvent(phaseEndT, "phase", msg, test->IsPassed() ? "info" : "fail");
-            for (const auto& cond : test->conditions()) {
-                std::string condMsg = "Condition [" + cond.name + "] (" + cond.description + "): " + (cond.passed ? "PASSED" : "FAILED");
-                rec->addEvent(phaseEndT, "condition", condMsg, cond.passed ? "info" : "warn");
-            }
-            for (const auto& res : test->additionalResults()) {
-                rec->addEvent(phaseEndT, "result", "Metric: " + res.text, res.color == "danger" ? "fail" : (res.color == "warning" ? "warn" : "info"));
-            }
         }
 
         test->Finish();
         std::printf("\n");
+
+        PhaseResult pr;
+        pr.name = test->name();
+        pr.passed = test->IsPassed();
+        pr.criteria = test->criteria();
+        pr.failureReason = test->failureReason();
+        pr.conditions = test->conditions();
+        res.phaseDetails.push_back(pr);
 
         if (test->IsPassed()) res.passed++;
     }
@@ -582,237 +350,87 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     return res;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: print the scenario list grouped by tier
-// ---------------------------------------------------------------------------
-static void printScenariosByTier(const ScenarioRegistry& registry) {
-    auto printTier = [&](TestTier t, const char* label) {
-        const auto names = registry.listByTier(t);
-        std::printf("\n=== %s (%zu) ===\n", label, names.size());
-        for (const auto& name : names) {
-            auto s = registry.create(name);
-            std::printf("  %-30s %s\n", name.c_str(),
-                        s ? s->GetDescription().c_str() : "(no description)");
-        }
-    };
-    printTier(TestTier::LowLevel,  "Low Level  — one behavior per scenario");
-    printTier(TestTier::HighLevel, "High Level — chains of related behaviors");
-    printTier(TestTier::EndToEnd,  "End-to-End — full AMIS_* mission types");
-
-    // Also print the cascade mapping so users can see the drill-down graph.
-    std::printf("\n=== Cascade mapping (E2E -> High -> Low) ===\n");
-    for (const auto& name : registry.listByTier(TestTier::EndToEnd)) {
-        const auto& highs = highScenariosFor(name);
-        if (highs.empty()) continue;
-        std::printf("  %s\n", name.c_str());
-        for (const auto& h : highs) {
-            const auto& lows = lowScenariosFor(h);
-            std::printf("    -> %s", h.c_str());
-            if (!lows.empty()) {
-                std::printf("  [");
-                for (size_t i = 0; i < lows.size(); ++i) {
-                    if (i) std::printf(", ");
-                    std::printf("%s", lows[i].c_str());
-                }
-                std::printf("]");
-            }
-            std::printf("\n");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: run a single scenario by name. Returns the ScenarioResult and
-// appends a trace to `traces` if `recordTraces` is true. Used by both the
-// flat run-all loop and the cascade runner.
-// ---------------------------------------------------------------------------
-struct RunContext {
-    FlightModel& fm;
-    SteeringController& sc;
-    const ScenarioContext& sctx;
-    const std::string& aircraftName;
-    const std::string& traceDir;
-    bool recordTraces;
-    std::vector<Trace>& traces;
-    int totalPassed{0};
-    int totalTests{0};
-    std::vector<std::string> failedScenarios;  // populated for cascade
-};
-
-static ScenarioResult runOneScenario(const ScenarioRegistry& registry,
-                                     const std::string& name,
-                                     RunContext& rc,
-                                     const char* banner = nullptr) {
-    auto scenario = registry.create(name);
-    if (!scenario) {
-        std::fprintf(stderr, "Error: failed to create scenario '%s'\n", name.c_str());
-        return ScenarioResult{0, 0};
-    }
-
-    if (banner) std::printf("\n%s\n", banner);
-    std::printf("=== Scenario: %s  [%s] ===\n",
-                scenario->name().c_str(),
-                testTierName(scenario->GetTestTier()));
-    std::printf("%s\n\n", scenario->GetDescription().c_str());
-
-    TraceRecorder rec;
-    ScenarioResult r = runScenario(*scenario, rc.fm, rc.sc, rc.sctx,
-                                   rc.aircraftName,
-                                   rc.recordTraces ? &rec : nullptr);
-
-    std::printf("  Scenario '%s' result: %d/%d\n\n",
-                scenario->name().c_str(), r.passed, r.total);
-
-    if (rc.recordTraces) {
-        if (!rc.traceDir.empty()) {
-            std::string fname = rc.aircraftName + "_" + name + ".json";
-            std::string path = (std::filesystem::path(rc.traceDir) / fname).string();
-            if (rec.write(path)) {
-                std::printf("  trace written: %s\n", path.c_str());
-            } else {
-                std::fprintf(stderr, "  warning: could not write trace %s\n", path.c_str());
-            }
-        }
-        rc.traces.push_back(rec.trace());
-    }
-
-    rc.totalPassed += r.passed;
-    rc.totalTests  += r.total;
-    if (r.passed != r.total) {
-        rc.failedScenarios.push_back(name);
-    }
-    return r;
-}
-
-// ---------------------------------------------------------------------------
-// Cascade runner: runs all E2E scenarios; for each failure runs the linked
-// HighLevel scenarios; for each HighLevel failure runs the linked LowLevel
-// scenarios. Each scenario is run at most once per cascade (deduplicated).
-// ---------------------------------------------------------------------------
-static void runCascade(const ScenarioRegistry& registry, RunContext& rc) {
-    std::set<std::string> alreadyRan;
-
-    auto runIfNew = [&](const std::string& name, const char* banner) -> bool {
-        if (alreadyRan.count(name)) return true;  // already passed (or already ran)
-        if (!registry.has(name)) {
-            std::fprintf(stderr, "  (cascade: scenario '%s' not registered, skipping)\n",
-                         name.c_str());
-            return true;
-        }
-        alreadyRan.insert(name);
-        runOneScenario(registry, name, rc, banner);
-        // Return true if the scenario PASSED.
-        auto s = registry.create(name);
-        if (!s) return true;
-        // Re-run the scenario to get the result? No — we just stored it in
-        // rc.failedScenarios. Check there.
-        for (const auto& failed : rc.failedScenarios) {
-            if (failed == name) return false;
-        }
-        return true;
-    };
-
-    // Tier 1: run all E2E scenarios.
-    const auto e2eNames = registry.listByTier(TestTier::EndToEnd);
-    std::printf("\n"
-                "#############################################\n"
-                "# CASCADE TIER 1: End-to-End scenarios     #\n"
-                "#############################################\n");
-    std::vector<std::string> e2eFailures;
-    for (const auto& name : e2eNames) {
-        alreadyRan.insert(name);
-        runOneScenario(registry, name, rc,
-                       "--- E2E baseline run ---");
-        // Did it fail? Check rc.failedScenarios.
-        bool failed = false;
-        for (const auto& f : rc.failedScenarios) {
-            if (f == name) { failed = true; break; }
-        }
-        if (failed) e2eFailures.push_back(name);
-    }
-
-    if (e2eFailures.empty()) {
-        std::printf("\nAll E2E scenarios passed — cascade complete.\n");
+// Write the machine-parseable JSON summary report for debugging.
+static void writeSummaryJson(const std::string& filepath,
+                             const std::string& aircraft,
+                             const std::vector<ScenarioRunResult>& results) {
+    std::ofstream sf(filepath);
+    if (!sf) {
+        std::fprintf(stderr, "Error: cannot write JSON summary to %s\n", filepath.c_str());
         return;
     }
 
-    // Tier 2: run the linked HighLevel scenarios for each E2E failure.
-    std::printf("\n"
-                "#############################################\n"
-                "# CASCADE TIER 2: High Level drill-down    #\n"
-                "# (%zu E2E scenarios failed)                #\n"
-                "#############################################\n",
-                e2eFailures.size());
-    std::vector<std::string> highFailures;
-    for (const auto& e2eName : e2eFailures) {
-        const auto& highs = highScenariosFor(e2eName);
-        if (highs.empty()) {
-            std::printf("\n(E2E '%s' has no HighLevel mapping — skipping drill-down)\n",
-                        e2eName.c_str());
-            continue;
-        }
-        std::printf("\n--- Drill-down for E2E failure '%s' ---\n", e2eName.c_str());
-        for (const auto& h : highs) {
-            if (alreadyRan.count(h)) {
-                std::printf("\n(skipping '%s' — already ran in this cascade)\n", h.c_str());
-                continue;
-            }
-            alreadyRan.insert(h);
-            runOneScenario(registry, h, rc,
-                           "--- High Level chain (linked from E2E failure) ---");
-            bool failed = false;
-            for (const auto& f : rc.failedScenarios) {
-                if (f == h) { failed = true; break; }
-            }
-            if (failed) highFailures.push_back(h);
-        }
+    int totalScenarios = static_cast<int>(results.size());
+    int passedScenarios = 0;
+    for (const auto& r : results) {
+        if (r.passed) passedScenarios++;
     }
 
-    if (highFailures.empty()) {
-        std::printf("\nAll HighLevel chains passed — cascade complete.\n");
-        return;
+    sf << "{\n";
+    sf << "  \"aircraft\": \"" << aircraft << "\",\n";
+    sf << "  \"summary\": {\n";
+    sf << "    \"total_scenarios\": " << totalScenarios << ",\n";
+    sf << "    \"passed_scenarios\": " << passedScenarios << ",\n";
+    sf << "    \"failed_scenarios\": " << (totalScenarios - passedScenarios) << "\n";
+    sf << "  },\n";
+    sf << "  \"scenarios\": [\n";
+
+    for (size_t i = 0; i < results.size(); ++i) {
+        const auto& sr = results[i];
+        sf << "    {\n";
+        sf << "      \"name\": \"" << sr.name << "\",\n";
+        sf << "      \"passed\": " << (sr.passed ? "true" : "false") << ",\n";
+        sf << "      \"phases\": [\n";
+
+        for (size_t j = 0; j < sr.phases.size(); ++j) {
+            const auto& pr = sr.phases[j];
+            sf << "        {\n";
+            sf << "          \"name\": \"" << pr.name << "\",\n";
+            sf << "          \"passed\": " << (pr.passed ? "true" : "false") << ",\n";
+            sf << "          \"criteria\": \"" << pr.criteria << "\",\n";
+            // Escape double quotes in failureReason
+            std::string escapedReason = pr.failureReason;
+            size_t pos = 0;
+            while ((pos = escapedReason.find('"', pos)) != std::string::npos) {
+                escapedReason.replace(pos, 1, "\\\"");
+                pos += 2;
+            }
+            sf << "          \"failure_reason\": \"" << escapedReason << "\",\n";
+            sf << "          \"conditions\": [\n";
+
+            for (size_t k = 0; j < sr.phases.size() && k < pr.conditions.size(); ++k) {
+                const auto& cond = pr.conditions[k];
+                sf << "            {\n";
+                sf << "              \"name\": \"" << cond.name << "\",\n";
+                sf << "              \"description\": \"" << cond.description << "\",\n";
+                sf << "              \"passed\": " << (cond.passed ? "true" : "false") << "\n";
+                sf << "            }" << (k + 1 < pr.conditions.size() ? "," : "") << "\n";
+            }
+            sf << "          ]\n";
+            sf << "        }" << (j + 1 < sr.phases.size() ? "," : "") << "\n";
+        }
+        sf << "      ]\n";
+        sf << "    }" << (i + 1 < results.size() ? "," : "") << "\n";
     }
 
-    // Tier 3: run the linked LowLevel scenarios for each HighLevel failure.
-    std::printf("\n"
-                "#############################################\n"
-                "# CASCADE TIER 3: Low Level drill-down     #\n"
-                "# (%zu High Level chains failed)            #\n"
-                "#############################################\n",
-                highFailures.size());
-    for (const auto& hName : highFailures) {
-        const auto& lows = lowScenariosFor(hName);
-        if (lows.empty()) {
-            std::printf("\n(HighLevel '%s' has no LowLevel mapping — skipping drill-down)\n",
-                        hName.c_str());
-            continue;
-        }
-        std::printf("\n--- Drill-down for HighLevel failure '%s' ---\n", hName.c_str());
-        for (const auto& l : lows) {
-            if (alreadyRan.count(l)) {
-                std::printf("\n(skipping '%s' — already ran in this cascade)\n", l.c_str());
-                continue;
-            }
-            alreadyRan.insert(l);
-            runOneScenario(registry, l, rc,
-                           "--- Low Level behavior (linked from HighLevel failure) ---");
-        }
-    }
-    std::printf("\nCascade complete.\n");
+    sf << "  ]\n";
+    sf << "}\n";
+    sf.close();
+    std::printf("Machine-parseable JSON summary written: %s\n", filepath.c_str());
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
-
     CliOptions opt = parseArgs(argc, argv);
     if (opt.help) { printHelp(); return 0; }
 
     auto& registry = ScenarioRegistry::instance();
     if (opt.list) {
-        std::printf("Available scenarios (grouped by tier):\n");
-        printScenariosByTier(registry);
+        std::printf("Available scenarios:\n");
+        for (const auto& name : registry.list()) {
+            auto s = registry.create(name);
+            std::printf("  %-30s %s\n", name.c_str(),
+                        s ? s->GetDescription().c_str() : "(no description)");
+        }
         return 0;
     }
 
@@ -822,94 +440,40 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Validate --level argument.
-    TestTier tierFilter;
-    bool hasTierFilter = false;
-    if (opt.levelArg != "all") {
-        if (!parseTestTier(opt.levelArg, tierFilter)) {
-            std::fprintf(stderr, "Error: invalid --level '%s'. Must be low|high|e2e|all.\n",
-                        opt.levelArg.c_str());
-            return 1;
-        }
-        hasTierFilter = true;
-    }
-    if (hasTierFilter && !opt.scenarios.empty()) {
-        std::fprintf(stderr,
-            "Error: --level and --scenario are mutually exclusive. Pick one.\n");
-        return 1;
-    }
-    if (opt.cascade && (hasTierFilter || !opt.scenarios.empty())) {
-        std::fprintf(stderr,
-            "Error: --cascade cannot be combined with --level or --scenario.\n");
-        return 1;
-    }
-
-    // Load the aircraft
-    AircraftConfig cfg;
-    auto result = json::readFile(opt.aircraftPath, cfg);
-    if (!result.ok) {
-        std::fprintf(stderr, "Failed to load %s\n", opt.aircraftPath.c_str());
-        for (auto const& e : result.errors) std::fprintf(stderr, "  %s\n", e.c_str());
-        return 1;
-    }
-    // Sanity-check the config (uses the new validate() facility from v3.2).
-    auto vreport = cfg.validate();
-    if (!vreport.ok()) {
-        std::fprintf(stderr, "Warning: aircraft config has validation errors:\n");
-        std::fprintf(stderr, "%s", vreport.format().c_str());
-        std::fprintf(stderr, "(attempting to run anyway)\n\n");
-    }
-
-    // Build the list of scenarios to run.
-    //   --scenario X Y    -> run X and Y
-    //   --level T         -> run all scenarios in tier T
-    //   --cascade         -> run E2E first, then drill down (handled below)
-    //   (none of the above) -> run all scenarios
     std::vector<std::string> scenarioNames = opt.scenarios;
-    if (scenarioNames.empty() && !opt.cascade) {
-        if (hasTierFilter) {
-            scenarioNames = registry.listByTier(tierFilter);
-        } else {
-            scenarioNames = registry.list();
-        }
-    } else if (!scenarioNames.empty()) {
-        // Validate requested scenarios
+    if (scenarioNames.empty()) {
+        scenarioNames = registry.list();
+    } else {
         for (const auto& name : scenarioNames) {
             if (!registry.has(name)) {
                 std::fprintf(stderr, "Error: unknown scenario '%s'.\n", name.c_str());
-                std::fprintf(stderr, "Available scenarios:\n");
-                for (const auto& n : registry.list()) std::fprintf(stderr, "  %s\n", n.c_str());
                 return 1;
             }
         }
     }
 
-    // --- Visualization setup ---
-    // Derive a short aircraft name from the file path (e.g. "f16bk50").
+    AircraftConfig cfg;
+    auto result = json::readFile(opt.aircraftPath, cfg);
+    if (!result.ok) {
+        std::fprintf(stderr, "Failed to load %s\n", opt.aircraftPath.c_str());
+        return 1;
+    }
+
     std::string aircraftName = "aircraft";
     {
         std::error_code ec;
         auto p = std::filesystem::path(opt.aircraftPath).stem();
         if (!p.empty()) aircraftName = p.string();
     }
-    // Record traces if either --trace-dir or --html is set.
+
     const bool recordTraces = !opt.traceDir.empty() || !opt.htmlPath.empty();
     if (recordTraces && !opt.traceDir.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(opt.traceDir, ec);
-        if (ec) {
-            std::fprintf(stderr, "Warning: could not create trace dir '%s': %s\n",
-                        opt.traceDir.c_str(), ec.message().c_str());
-        }
     }
-    std::vector<Trace> traces;  // collected for the HTML report
 
-    // Initialize flight model + steering controller ONCE.
+    std::vector<Trace> traces;
     FlightModel fm;
-    // Use the aircraft's corner speed for the initial condition, not a
-    // hardcoded 300 kts. Each scenario's StartScenario() re-inits the
-    // flight model at its own condition, but this default should still be
-    // sensible for the aircraft.
     const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
     fm.init(cfg, 10000, initCs * KNOTS_TO_FTPSEC, 0.0, true);
 
@@ -919,91 +483,63 @@ int main(int argc, char** argv) {
     sc.setMaxBank(45.0);
     sc.setAltitude(10000.0);
     sc.setHeading(0.0);
-    // Use a conservative gamma clamp for AI navigation. FreeFalcon hardcodes
-    // 60° (the F-16 autopilot attitude-hold envelope), but at AI navigation
-    // speeds a 60° pitch command saturates the gamma loop and the aircraft
-    // zooms, bleeds airspeed, and stalls. 15° matches a sustained climb.
     sc.setMaxGamma(15.0);
 
     ScenarioContext sctx{cfg};
+    std::vector<ScenarioRunResult> results;
+    int grandTotalPassed = 0;
+    int grandTotalPhases = 0;
 
-    RunContext rc{fm, sc, sctx, aircraftName, opt.traceDir, recordTraces, traces};
+    for (const auto& name : scenarioNames) {
+        auto scenario = registry.create(name);
+        if (!scenario) continue;
 
-    if (opt.cascade) {
-        runCascade(registry, rc);
-    } else {
-        for (const auto& name : scenarioNames) {
-            runOneScenario(registry, name, rc);
+        std::printf("\n=== Scenario: %s ===\n", scenario->name().c_str());
+        std::printf("%s\n\n", scenario->GetDescription().c_str());
+
+        TraceRecorder rec;
+        ScenarioResult r = runScenario(*scenario, fm, sc, sctx, aircraftName, recordTraces ? &rec : nullptr);
+
+        std::printf("  Scenario '%s' result: %d/%d\n\n", scenario->name().c_str(), r.passed, r.total);
+
+        ScenarioRunResult srr;
+        srr.name = name;
+        srr.passed = (r.passed == r.total);
+        srr.phases = r.phaseDetails;
+        results.push_back(srr);
+
+        grandTotalPassed += r.passed;
+        grandTotalPhases += r.total;
+
+        if (recordTraces) {
+            if (!opt.traceDir.empty()) {
+                std::string fname = aircraftName + "_" + name + ".json";
+                std::string path = (std::filesystem::path(opt.traceDir) / fname).string();
+                rec.write(path);
+            }
+            traces.push_back(rec.trace());
         }
     }
 
-    int totalPassed = rc.totalPassed;
-    int totalTests  = rc.totalTests;
-
-    // Final summary
     std::printf("=== Overall ===\n");
-    if (opt.cascade) {
-        std::printf("Cascade run (E2E + High + Low drill-down).\n");
-        std::printf("Failed scenarios: %zu\n", rc.failedScenarios.size());
-        for (const auto& f : rc.failedScenarios) {
-            std::printf("  - %s\n", f.c_str());
-        }
-    } else {
-        std::printf("Scenarios run: %zu\n", scenarioNames.size());
-    }
-    std::printf("Phases: %d/%d passed\n", totalPassed, totalTests);
+    std::printf("Scenarios run: %zu\n", scenarioNames.size());
+    std::printf("Phases: %d/%d passed\n", grandTotalPassed, grandTotalPhases);
 
-    // --- Generate the HTML report if requested ---
+    if (!opt.summaryPath.empty()) {
+        writeSummaryJson(opt.summaryPath, aircraftName, results);
+    }
+
     if (recordTraces && !opt.htmlPath.empty()) {
         std::printf("\nGenerating HTML report...\n");
         std::ofstream hf(opt.htmlPath);
-        if (!hf) {
-            std::fprintf(stderr, "Error: cannot write HTML report to %s\n", opt.htmlPath.c_str());
-        } else {
+        if (hf) {
             HtmlReportOptions hopts;
             hopts.title = "F4Flight — " + aircraftName;
             generateHtmlReport(traces, hf, hopts);
             hf.close();
-            // Report file size.
-            std::ifstream sz(opt.htmlPath, std::ios::ate | std::ios::binary);
-            const long bytes = sz ? static_cast<long>(sz.tellg()) : 0;
-            std::printf("HTML report written: %s (%.1f KB, %zu trace%s)\n",
-                        opt.htmlPath.c_str(), static_cast<double>(bytes) / 1024.0,
-                        traces.size(), traces.size() == 1 ? "" : "s");
-            if (opt.doOpen) {
-                // Build a file:// URL and launch the default browser.
-                std::string absPath = opt.htmlPath;
-                std::error_code ec;
-                auto abs = std::filesystem::absolute(opt.htmlPath, ec);
-                if (!ec) absPath = abs.string();
-                std::string url = "file://";
-                for (char c : absPath) {
-                    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                        (c >= '0' && c <= '9') || c == '/' || c == '-' ||
-                        c == '_' || c == '.' || c == '~') {
-                        url += c;
-                    } else {
-                        char hex[4];
-                        std::snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
-                        url += hex;
-                    }
-                }
-                std::printf("Opening: %s\n", url.c_str());
-#if defined(_WIN32) || defined(_WIN64)
-                std::string cmd = "start \"\" \"" + absPath + "\"";
-#elif defined(__APPLE__)
-                std::string cmd = "open \"" + url + "\"";
-#else
-                std::string cmd = "xdg-open \"" + url + "\" 2>/dev/null";
-#endif
-                std::system(cmd.c_str());
-            }
+            std::printf("HTML report written: %s\n", opt.htmlPath.c_str());
         }
     }
 
-    // Exit non-zero if any phase failed so ctest/CI sees the real result.
-    // Previously this returned 0 unconditionally, which meant ctest reported
-    // PASS for every maneuver_*_basic and maneuver_*_flightplan test even
-    // when 100% of phases failed.
-    return (totalPassed == totalTests && totalTests > 0) ? 0 : 1;
+    return (grandTotalPassed == grandTotalPhases && grandTotalPhases > 0) ? 0 : 1;
 }
