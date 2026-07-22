@@ -407,8 +407,18 @@ public:
 
     DigiMode activeMode() const { return curMode_; }
     const DigiState& state() const { return state_; }
-    std::size_t currentWaypoint() const { return curWp_; }
-    bool allWaypointsCaptured() const { return curWp_ >= wps_.size(); }
+    std::size_t currentWaypoint() const {
+        if (flightPlan_ && !flightPlan_->tasks().empty()) {
+            return flightPlan_->currentTaskIndex();
+        }
+        return curWp_;
+    }
+    bool allWaypointsCaptured() const {
+        if (flightPlan_ && !flightPlan_->tasks().empty()) {
+            return flightPlan_->isComplete();
+        }
+        return curWp_ >= wps_.size();
+    }
     const std::vector<Vec3>& waypoints() const { return wps_; }
 
     /// The resolved offensive target for THIS frame (injected or auto-tracked

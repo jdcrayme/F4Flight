@@ -248,12 +248,9 @@ header.app-header .sub{color:var(--muted);font-size:13px;margin-top:2px}
       <div class="group">
         <button class="btn play" id="play-btn">&#9654; Play</button>
       </div>
-      <div class="group">
-        <span>View</span>
-        <div class="seg" id="view-seg">
-          <button data-view="2d" class="active">2D top-down</button>
-          <button data-view="3d">3D orbit</button>
-        </div>
+      <div class="group" id="focus-group">
+        <span>Focus</span>
+        <select id="focus-select" class="btn" style="background:var(--panel); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:6px; cursor:pointer; font-size:13px;"></select>
       </div>
       <div class="group">
         <span>Speed</span>
@@ -308,7 +305,8 @@ const state = {
   t: 0,               // playhead time (seconds)
   playing: false,
   speed: 1,
-  viewMode: '2d',     // '2d' or '3d'
+  viewMode: '3d',     // '2d' or '3d'
+  focusedAircraftName: 'Primary',
   zoom: 1.0,          // mouse-wheel zoom factor (1.0 = fit)
   panX: 0, panY: 0,   // pan offset in screen px
   orbit: {yaw: 0.6, pitch: 0.4, dragging: false, lastX: 0, lastY: 0},
@@ -373,30 +371,26 @@ function initCharts(tr) {
     unit: ''
   });
 
-  specs.push({
-    type: 'metric',
-    key: 'altitude',
-    label: 'Altitude',
-    color: '#4ade80',
-    unit: 'ft',
-    getValue: f => -f.z
-  });
-  specs.push({
-    type: 'metric',
-    key: 'vcas',
-    label: 'Airspeed (VCAS)',
-    color: '#60a5fa',
-    unit: 'kts',
-    getValue: f => f.vcas
-  });
-  specs.push({
-    type: 'metric',
-    key: 'nzcgs',
-    label: 'G-load',
-    color: '#f59e0b',
-    unit: 'G',
-    getValue: f => f.nzcgs
-  });
+  const colors = ['#4ade80', '#60a5fa', '#f59e0b', '#ec4899', '#a855f7', '#14b8a6'];
+  let colIdx = 0;
+  for (const key of sampleKeys) {
+    const color = colors[colIdx % colors.length];
+    colIdx++;
+    specs.push({
+      type: 'metric',
+      key: key,
+      label: key,
+      color: color,
+      unit: sampleUnits[key] || '',
+      getValue: f => {
+        if (f.samples) {
+          const s = f.samples.find(x => x.key === key);
+          return s ? s.value : undefined;
+        }
+        return undefined;
+      }
+    });
+  }
 
   for (const sk of sampleKeys) {
     specs.push({
@@ -1269,23 +1263,17 @@ function renderPathView(tr){
   const tdHost=document.getElementById('topdown-host');
   const td3Host=document.getElementById('threed-host');
   const title=document.getElementById('path-panel-title');
-  if(state.viewMode==='3d'){
-    tdHost.classList.add('hidden');
-    td3Host.classList.remove('hidden');
-    title.textContent='3D Flight Path (drag to orbit)';
-    render3D(tr);
-  }else{
-    td3Host.classList.add('hidden');
-    tdHost.classList.remove('hidden');
-    title.textContent='Top-Down Flight Path';
-    renderTopDown(tr);
-  }
+  if (tdHost) tdHost.classList.add('hidden');
+  if (td3Host) td3Host.classList.remove('hidden');
+  title.textContent='3D Flight Path (drag to orbit)';
+  render3D(tr);
 }
 
 // ---------------------------------------------------------------------------
 // 3D orbit view using Three.js WebGL Renderer
 // ---------------------------------------------------------------------------
-function createAircraftMesh(span, colorHex) {
+function createAircraftMesh(wingspan, colorHex) {
+  const span = wingspan / 0.012;
   const jetGroup = new THREE.Group();
 
   const fuseLen = span * 0.015;
@@ -1413,7 +1401,7 @@ function initThreeJS(tr) {
   gridHelper.position.set(centerX, centerY, 0);
   scene.add(gridHelper);
 
-  const jetGroup = createAircraftMesh(span, 0x94a3b8);
+  const jetGroup = createAircraftMesh(32.8, 0x94a3b8);
   scene.add(jetGroup);
 
   // Render continuous 3D Ribbon Trail for the main aircraft
@@ -1431,7 +1419,7 @@ function initThreeJS(tr) {
     const psi = f.psi || 0;
     const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
     const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
-    const wing_half_width = span * 0.0035;
+    const wing_half_width = 16.4; // 16.4 ft half-wingspan (total 32.8 ft wingspan)
 
     const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
     const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
@@ -1494,7 +1482,7 @@ function initThreeJS(tr) {
         const psi = th.psi || 0;
         const euler = new THREE.Euler(theta, phi, -psi, 'ZXY');
         const wingDir = new THREE.Vector3(1, 0, 0).applyEuler(euler);
-        const wing_half_width = span * 0.0025;
+        const wing_half_width = 16.4; // 16.4 ft half-wingspan (total 32.8 ft wingspan)
 
         const v_left = p.clone().addScaledVector(wingDir, -wing_half_width);
         const v_right = p.clone().addScaledVector(wingDir, wing_half_width);
@@ -1632,6 +1620,18 @@ function initThreeJS(tr) {
   threeState.span = span;
 }
 
+function getAvailableAircraft(tr, frame) {
+  const list = [{ name: 'Primary', isPrimary: true }];
+  if (frame && frame.threats) {
+    for (const th of frame.threats) {
+      if ((th.type === 'wingman' || th.type === 'lead' || th.type === 'aircraft') && th.name) {
+        list.push({ name: th.name, isPrimary: false, entity: th });
+      }
+    }
+  }
+  return list;
+}
+
 function render3D(tr){
   if (!threeState.initialized || state.traceIdx < 0) {
     initThreeJS(tr);
@@ -1643,9 +1643,15 @@ function render3D(tr){
   const acFrame = tr.frames[acFi];
   if (!acFrame) return;
 
-  const cx = acFrame.y;
-  const cy = acFrame.x;
-  const cz = -acFrame.z;
+  const focusedName = state.focusedAircraftName || 'Primary';
+  let targetAc = null;
+  if (acFrame.threats) {
+    targetAc = acFrame.threats.find(th => (th.type === 'wingman' || th.type === 'lead' || th.type === 'aircraft') && th.name === focusedName);
+  }
+
+  const cx = targetAc ? targetAc.y : acFrame.y;
+  const cy = targetAc ? targetAc.x : acFrame.x;
+  const cz = targetAc ? -targetAc.z : -acFrame.z;
 
   threeState.aircraft.position.set(cx, cy, cz);
 
@@ -1696,7 +1702,7 @@ function render3D(tr){
       let mesh;
 
       if (th.type === 'lead' || th.type === 'wingman' || th.type === 'aircraft') {
-        mesh = createAircraftMesh(threeState.span, st.color);
+        mesh = createAircraftMesh(32.8, st.color);
         const isTanker = th.name && th.name.toLowerCase().includes('tanker');
         if (isTanker) {
           mesh.scale.set(1.8, 1.8, 1.8);
@@ -1950,16 +1956,16 @@ document.querySelectorAll('#speed-seg button').forEach(b=>{
     document.querySelectorAll('#speed-seg button').forEach(x=>x.classList.toggle('active',x===b));
   });
 });
-document.querySelectorAll('#view-seg button').forEach(b=>{
-  b.addEventListener('click',()=>{
-    state.viewMode=b.dataset.view;
-    document.querySelectorAll('#view-seg button').forEach(x=>x.classList.toggle('active',x===b));
+const selectEl = document.getElementById('focus-select');
+if (selectEl) {
+  selectEl.addEventListener('change', (e) => {
+    state.focusedAircraftName = e.target.value;
     if(state.traceIdx>=0){
       renderPathView(TRACES[state.traceIdx]);
       updatePlayhead();
     }
   });
-});
+}
 document.addEventListener('mousedown',e=>{
   if(state.traceIdx<0)return;
   const tdHost=document.getElementById('topdown-host');

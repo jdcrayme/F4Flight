@@ -1,0 +1,44 @@
+{
+  "aircraft": "f16bk50",
+  "summary": {
+    "total_scenarios": 1,
+    "passed_scenarios": 1,
+    "failed_scenarios": 0
+  },
+  "scenarios": [
+    {
+      "name": "digi_baseline",
+      "passed": true,
+      "phases": [
+        {
+          "name": "digi_baseline",
+          "passed": true,
+          "criteria": "Waypoint Capture (Capture all 4 route waypoints); Flight Stability (No NaNs or state divergence occurred during flight); Altitude Hold (Altitude remains within ±500 ft of target); Speed Hold (Airspeed remains within ±100 kts of target)",
+          "failure_reason": "",
+          "conditions": [
+            {
+              "name": "Waypoint Capture",
+              "description": "Capture all 4 route waypoints: Passed",
+              "passed": true
+            },
+            {
+              "name": "Flight Stability",
+              "description": "No NaNs or state divergence occurred during flight: Passed",
+              "passed": true
+            },
+            {
+              "name": "Altitude Hold",
+              "description": "Altitude remains within ±500 ft of target: Passed",
+              "passed": true
+            },
+            {
+              "name": "Speed Hold",
+              "description": "Airspeed remains within ±100 kts of target: Passed",
+              "passed": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
