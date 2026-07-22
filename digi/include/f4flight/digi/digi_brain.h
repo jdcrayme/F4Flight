@@ -137,6 +137,9 @@ struct FrameInputs {
     // Set this to LevelDelivery or TossBomb to exercise the new profiles.
     AgAttackProfile injectedAgProfile {AgAttackProfile::DiveBomb};
 
+    // --- SEAD HARM Targeting System Mode ---
+    HtsMode injectedHtsMode {HtsMode::PreBriefed};
+
     // --- Wingman formation following ---
     // The flight lead entity. When non-null AND formation.isWing is true,
     // the brain enters Wingy mode and calls AiFollowLead to fly to the
@@ -308,6 +311,8 @@ public:
         // into state_.ag.agProfile so runGroundAttack() can dispatch on it.
         // Defaults to DiveBomb when the host doesn't set it (backward compat).
         state_.ag.agProfile = inputs.injectedAgProfile;
+        // Commit HTS mode.
+        state_.ag.htsMode = inputs.injectedHtsMode;
         // Commit injected secondary threat. HandleThreat will read threatPtr
         // each frame and re-evaluate every 10 s.
         if (inputs.injectedThreat) {
@@ -691,6 +696,7 @@ private:
     std::optional<DigiEntity> missileEntityAuto_;
     std::optional<DigiEntity> gunsEntityAuto_;
     std::optional<DigiEntity> targetEntityAuto_;
+    std::optional<DigiEntity> groundTargetAuto_;
 
     // Last injected missile pointer — used to detect when the host injects a
     // NEW missile (different pointer) so per-missile state can be reset.
@@ -807,6 +813,13 @@ private:
     // apex (45° pitch attitude or 3000 ft AGL), continues climbing to
     // 10000 ft before leveling off.
     void runTossBombAttack(const DigiEntity* target,
+                            const AircraftState& as, double dt,
+                            const FlightControlSystem& fcs, FcsState& fcsState);
+
+    // SeadHarm profile: Suppression of Enemy Air Defenses using AGM-88 HARM.
+    // 4-phase (approach → lock/loft → release → defensive beam/egress).
+    // Supports Pre-Briefed (PB), Target-Of-Opportunity (TOO), and Self-Protect (SP) modes.
+    void runSeadHarmAttack(const DigiEntity* target,
                             const AircraftState& as, double dt,
                             const FlightControlSystem& fcs, FcsState& fcsState);
 
