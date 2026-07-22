@@ -2475,6 +2475,12 @@ WaypointFollowNode::WaypointFollowNode() : BehaviorNode("WaypointFollow") {
     activeTaskSelectorNode_ = std::make_shared<ActiveTaskSelectorNode>();
     activeTaskSelectorNode_->addTaskNode(TaskType::Navigate, std::make_shared<NavigateTaskNode>());
     activeTaskSelectorNode_->addTaskNode(TaskType::CAP, std::make_shared<LoiterTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Takeoff, std::make_shared<TakeoffTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Landing, std::make_shared<LandingTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::RTB, std::make_shared<RTBTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Refuel, std::make_shared<RefuelTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Strike, std::make_shared<StrikeTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Assemble, std::make_shared<AssembleTaskNode>());
 }
 
 void WaypointFollowNode::reset() {
