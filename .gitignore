@@ -8,6 +8,8 @@
 *.dll
 *.exe
 *.out
+Build
+f4flight_report.html
 
 # Dependencies
 node_modules/

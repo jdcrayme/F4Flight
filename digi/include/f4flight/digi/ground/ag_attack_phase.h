@@ -37,6 +37,7 @@ enum class AgAttackPhase : int {
     Final         = 5,  // weapon release phase (dive/level/toss)
     Final1        = 6,  // post-release tracking and escape
     Stabalizing   = 7,  // stabilize at altitude after pull-out
+	EgressComplete = 8,  // finished the attack run and egressed
 };
 
 inline const char* agAttackPhaseName(AgAttackPhase p) {
