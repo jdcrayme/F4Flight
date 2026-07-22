@@ -62,10 +62,12 @@ void RWRSensor::update(const DigiEntity& self, const TruthState& truth,
         // for simplicity (in a full impl, RWR only gives bearing)
         c.quality = ContactQuality::Detected;
 
-        // Identify missiles
+        // Identify missiles vs SAMs
         if (entity.seekerType == DigiEntity::SeekerType::Radar) {
             c.type = ContactType::Missile;
             c.isMissile = true;
+        } else if (entity.z >= -10.0) {
+            c.type = ContactType::SAM;
         }
 
         // Check for spike (fire-control radar pointing at us)

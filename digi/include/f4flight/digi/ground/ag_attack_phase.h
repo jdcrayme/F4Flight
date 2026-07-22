@@ -74,6 +74,7 @@ enum class AgAttackProfile : int {
     DiveBomb       = 0,
     LevelDelivery  = 1,
     TossBomb       = 2,
+    SeadHarm       = 3,
 };
 
 inline const char* agAttackProfileName(AgAttackProfile p) {
@@ -81,6 +82,22 @@ inline const char* agAttackProfileName(AgAttackProfile p) {
         case AgAttackProfile::DiveBomb:      return "DiveBomb";
         case AgAttackProfile::LevelDelivery: return "LevelDelivery";
         case AgAttackProfile::TossBomb:      return "TossBomb";
+        case AgAttackProfile::SeadHarm:      return "SeadHarm";
+    }
+    return "Unknown";
+}
+
+enum class HtsMode : int {
+    PreBriefed          = 0,
+    TargetOfOpportunity = 1,
+    SelfProtect         = 2,
+};
+
+inline const char* htsModeName(HtsMode m) {
+    switch (m) {
+        case HtsMode::PreBriefed:          return "PreBriefed";
+        case HtsMode::TargetOfOpportunity: return "TargetOfOpportunity";
+        case HtsMode::SelfProtect:         return "SelfProtect";
     }
     return "Unknown";
 }

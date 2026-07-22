@@ -92,7 +92,7 @@ To support complex, nested, and stateful behaviors (such as transitioning from d
 ---
 
 ### Phase 2: Comprehensive Air-to-Ground (A/G) Strike & SEAD Systems
-*Current State: Basic A/G supports Dive-bomb, Level-delivery, and Toss-bomb profiles. There is no targeting pod management, no SEAD radar tracking, and no forward-air-control logic.*
+*Current State: Basic A/G supports Dive-bomb, Level-delivery, and Toss-bomb profiles. SEAD and AGM-88 HARM are fully supported across Pre-Briefed, Target-Of-Opportunity, and Self-Protect modes with RWR integration. There is no targeting pod management and no forward-air-control logic.*
 
 To fly dynamic campaign A/G missions, the AI must handle advanced target acquisition, standoff weapons, anti-radiation targeting, and cooperative ground control.
 
@@ -103,7 +103,7 @@ To fly dynamic campaign A/G missions, the AI must handle advanced target acquisi
 2. **Standoff Weapon Delivery Profiles:**
    * **AGM-65 Maverick:** Implement stand-off acquisition, seeker lock-on range calculations, and lock-on times based on terrain cover.
    * **JDAM/JSOW (GPS/INS):** Implement high-altitude level-release profiles within the weapon's kinematic launch envelope (LAR - Launch Acceptability Region).
-3. **Suppression of Enemy Air Defenses (SEAD) Logic:**
+3. **Suppression of Enemy Air Defenses (SEAD) Logic (COMPLETE):**
    * Map radar-warning receiver (RWR) emitters to `SensorContact` entries.
    * **AGM-88 HARM:** Implement HARM Targeting System (HTS) profiles: Pre-Briefed (PB), Target-Of-Opportunity (TOO), and Self-Protect (SP).
    * Create reactive SEAD flight profiles where the aircraft orbits outside the SAM engagement ring, detects emission, lofts a HARM, and performs defensive beam-maneuvers.

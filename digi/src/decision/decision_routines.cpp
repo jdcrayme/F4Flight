@@ -395,6 +395,8 @@ const DigiEntity* DoTargeting(DigiState& digi, const SensorPicture& pic,
     for (const auto& contact : pic.contacts) {
         // Skip missiles (those are handled by MissileDefeat, not targeting).
         if (contact.isMissile) continue;
+        // Skip ground/surface threats (SAM, AAA) for air-to-air targeting.
+        if (contact.type == ContactType::SAM || contact.type == ContactType::AAA) continue;
         // Skip contacts that aren't at least Detected.
         if (contact.quality < ContactQuality::Detected) continue;
         // Skip dead contacts.
