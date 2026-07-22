@@ -353,6 +353,13 @@ function initCharts(tr) {
     if (f.samples) {
       for (const s of f.samples) {
         if (typeof s.value === 'number') {
+          const keyLower = s.key.toLowerCase();
+          if (keyLower.includes('nan') ||
+              keyLower.includes('captured') ||
+              keyLower.includes('waypoint') ||
+              keyLower.includes('check')) {
+              continue;
+          }
           sampleKeys.add(s.key);
           if (s.unit) sampleUnits[s.key] = s.unit;
         }
@@ -1534,7 +1541,7 @@ function initThreeJS(tr) {
       const widthVal = g.width || 10.0;
 
       if (g.type === 'waypoint') {
-        const wpGeom = new THREE.ConeGeometry(span * 0.004, span * 0.008, 4);
+        const wpGeom = new THREE.ConeGeometry(24.6, 49.2, 4);
         wpGeom.rotateX(Math.PI / 2);
         const wpMat = new THREE.MeshStandardMaterial({ color: colVal, roughness: 0.4 });
         const wx = g.coords[1], wy = g.coords[0], wz = -g.coords[2];
@@ -1621,7 +1628,8 @@ function initThreeJS(tr) {
 }
 
 function getAvailableAircraft(tr, frame) {
-  const list = [{ name: 'Primary', isPrimary: true }];
+  const primaryName = tr.aircraft || 'Primary';
+  const list = [{ name: primaryName, isPrimary: true }];
   if (frame && frame.threats) {
     for (const th of frame.threats) {
       if ((th.type === 'wingman' || th.type === 'lead' || th.type === 'aircraft') && th.name) {
@@ -1669,7 +1677,8 @@ function render3D(tr){
 
   threeState.shadow.position.set(cx, cy, 0.05);
 
-  const radius = threeState.span * 1.5 / state.zoom;
+  let radius = threeState.span * 1.5 / state.zoom;
+  radius = Math.max(80.0, radius);
   const cp = Math.max(0.01, Math.min(Math.PI / 2 - 0.01, state.orbit.pitch));
 
   const camX = cx + radius * Math.cos(cp) * Math.cos(state.orbit.yaw);
@@ -2008,7 +2017,7 @@ document.addEventListener('wheel',e=>{
   if(!tdHost.contains(e.target)&&!td3Host.contains(e.target))return;
   e.preventDefault();
   const factor=e.deltaY<0?1.15:1/1.15;
-  state.zoom=Math.max(0.2,Math.min(20,state.zoom*factor));
+  state.zoom=Math.max(0.2,Math.min(2000,state.zoom*factor));
   renderPathView(TRACES[state.traceIdx]);
   updatePlayhead();
 },{passive:false});
