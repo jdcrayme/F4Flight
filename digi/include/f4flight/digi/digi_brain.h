@@ -670,6 +670,13 @@ public:
     friend class WaypointFollowNode;
     friend class DefaultFallbackNode;
 
+    // Flight plan task nodes need access to run* methods
+    friend class TakeoffTaskNode;
+    friend class LandingTaskNode;
+    friend class RTBTaskNode;
+    friend class RefuelTaskNode;
+    friend class StrikeTaskNode;
+
 private:
     // --- Internal state ---
     DigiState state_;

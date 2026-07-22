@@ -144,11 +144,12 @@ protected:
 // ---------------------------------------------------------------------------
 class WaypointFollowNode : public BehaviorNode {
 public:
-    WaypointFollowNode();
+    explicit WaypointFollowNode(double captureRadius = 5000.0);
     void reset() override;
 protected:
     NodeStatus onTick(Blackboard& bb) override;
 private:
+    double captureRadius_;
     std::shared_ptr<WaypointCaptureCheckNode> captureCheckNode_;
     std::shared_ptr<ActiveTaskSelectorNode> activeTaskSelectorNode_;
 };

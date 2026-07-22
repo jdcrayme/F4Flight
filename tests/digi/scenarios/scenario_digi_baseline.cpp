@@ -37,15 +37,16 @@ public:
         auto ac = CreateAircraft("F16", defaultAircraftPath);
         if (!ac) return;
 
-        // Configure autopilot limits
-        ac->sc.setCornerSpeed(targetSpd);
-        ac->sc.setMaxGs(ac->fm.config().geometry.maxGs);
-        ac->sc.setMaxBank(45.0);
-        ac->sc.setMaxGamma(15.0);
-        ac->sc.setTurnG(2.0);
-        ac->sc.setAltitude(targetAlt);
+        // Configure autopilot limits via DigiBrain config
+        digi::DigiConfig cfg;
+        cfg.cornerSpeedKts = targetSpd;
+        cfg.maxGs = ac->fm.config().geometry.maxGs;
+        cfg.maxBankDeg = 45.0;
+        cfg.maxGammaDeg = 15.0;
+        cfg.turnLoadFactor = 2.0;
+        ac->sc.brain().configure(cfg);
 
-        // Define a 10 NM leg square flight path (x = East, y = North)
+        // Define a 10 NM leg square flight path (x = East, y = North) using FlightPlan
         double leg = 60000.0;
         std::vector<Vec3> wps = {
             Vec3{leg, 0.0, -targetAlt},
@@ -53,9 +54,8 @@ public:
             Vec3{0.0, leg, -targetAlt},
             Vec3{0.0, 0.0, -targetAlt}
         };
-        ac->sc.setWaypoints(wps);
-        ac->sc.setCaptureRadius(5000.0);
-        ac->sc.setMode(SteeringController::Mode::Waypoint);
+        auto flightPlan = digi::FlightPlan::fromWaypoints(wps, targetSpd);
+        ac->sc.brain().setFlightPlan(flightPlan);
 
         // 2. Setup declarative telemetries
         auto t_alt = CreateTelemetry("Altitude", [ac]() { return -ac->fm.state().kin.z; });

@@ -2470,8 +2470,9 @@ NodeStatus GroundMnvrNode::onTick(Blackboard& bb) {
     return NodeStatus::Failure;
 }
 
-WaypointFollowNode::WaypointFollowNode() : BehaviorNode("WaypointFollow") {
-    captureCheckNode_ = std::make_shared<WaypointCaptureCheckNode>(5000.0);
+WaypointFollowNode::WaypointFollowNode(double captureRadius) 
+    : BehaviorNode("WaypointFollow"), captureRadius_(captureRadius) {
+    captureCheckNode_ = std::make_shared<WaypointCaptureCheckNode>(captureRadius_);
     activeTaskSelectorNode_ = std::make_shared<ActiveTaskSelectorNode>();
     activeTaskSelectorNode_->addTaskNode(TaskType::Navigate, std::make_shared<NavigateTaskNode>());
     activeTaskSelectorNode_->addTaskNode(TaskType::CAP, std::make_shared<LoiterTaskNode>());

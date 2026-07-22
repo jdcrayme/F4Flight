@@ -1,20 +1,31 @@
 ```
 # Build artifacts
-build/
-dist/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.out
 
 # Dependencies
 node_modules/
-.venv/
 venv/
+.venv/
 __pycache__/
 *.egg-info/
+dist/
+build/
+target/
+.gradle/
 
-# IDE files
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
 # Logs
 *.log
@@ -29,22 +40,11 @@ coverage/
 htmlcov/
 .coverage
 
-# OS files
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# Compiled files
-*.pyc
-*.class
-*.o
-*.exe
-*.dll
-*.so
-*.a
-*.obj
-*.out
-
-# Compression
+# Compressed files
 *.zip
 *.gz
 *.tar
