@@ -1,7 +1,8 @@
 // f4flight - scenario_framework.h
 //
-// Maneuver test framework with a scenario registry.
-// Highly simplified and cleaned to support the single baseline scenario architecture.
+// Simplified, declarative, flat conditional-driven scenario framework.
+// Eliminates the ManeuverTest class. Scenarios define simulated aircraft,
+// telemetries, and assertions (conditionals) directly.
 
 #pragma once
 
@@ -22,7 +23,6 @@ using namespace f4flight;
 
 namespace f4flight_test {
 
-// TestTier — simplified classification for DIGI AI scenarios.
 enum class TestTier {
     LowLevel,
     HighLevel,
@@ -38,65 +38,9 @@ inline const char* testTierName(TestTier t) {
     return "Unknown";
 }
 
-// ---------------------------------------------------------------------------
-// Abstract base class for maneuver test phases.
-// ---------------------------------------------------------------------------
-class ManeuverTest {
-public:
-    ManeuverTest(const char* name, double maxTime)
-        : testName_(name), maxTime_(maxTime) {}
-
-    virtual ~ManeuverTest() = default;
-
-    const char* name() const { return testName_.c_str(); }
-
-    virtual void Init(SteeringController& sc, FlightModel& fm) = 0;
-    virtual void Evaluate(const AircraftState& as, const PilotInput& input, double dt);
-    virtual void Finish() const = 0;
-
-    virtual bool IsFinished() const = 0;
-    virtual bool IsPassed() const = 0;
-
-    virtual double bankOverride_rad() const { return -1.0; }
-    virtual bool inputOverride(PilotInput& out, const AircraftState& state) const {
-        (void)out; (void)state; return false;
-    }
-
-    virtual std::string criteria() const { return ""; }
-    virtual std::string failureReason() const { return ""; }
-
-    virtual std::vector<TestCondition> conditions() const { return {}; }
-    virtual std::vector<AdditionalResult> additionalResults() const { return {}; }
-
-    virtual std::vector<ThreatEntity> traceEntities() const { return {}; }
-    virtual std::vector<TraceSample> traceSamples() const { return {}; }
-
-protected:
-    std::string testName_;
-    double phaseTime_{0.0};
-    double maxTime_{60.0};
-};
-
-inline void ManeuverTest::Evaluate(const AircraftState& /*as*/, const PilotInput& /*input*/, double dt) {
-    phaseTime_ += dt;
-}
-
 // ===========================================================================
-// ManeuverScenario — a full test sequence
+// Multi-Aircraft, Telemetry and Conditionals Infrastructure
 // ===========================================================================
-struct ScenarioContext {
-    const AircraftConfig&    cfg;
-};
-
-enum class AircraftClass { Fighter, Heavy };
-
-inline AircraftClass aircraftClass(const AircraftConfig& cfg) {
-    return (cfg.geometry.maxGs <= 4.0) ? AircraftClass::Heavy : AircraftClass::Fighter;
-}
-
-inline bool isHeavy(const AircraftConfig& cfg) {
-    return aircraftClass(cfg) == AircraftClass::Heavy;
-}
 
 struct SimulatedAircraft {
     std::string name;
@@ -142,8 +86,8 @@ private:
 
 class Conditional {
 public:
-    Conditional(std::shared_ptr<Telemetry> tel, bool isRequired = true)
-        : tel_(std::move(tel)), isRequired_(isRequired) {}
+    Conditional(std::shared_ptr<Telemetry> tel, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : tel_(std::move(tel)), isRequired_(isRequired), name_(std::move(name)), criteria_(std::move(criteriaText)) {}
 
     virtual ~Conditional() = default;
 
@@ -169,6 +113,19 @@ public:
     bool hasFailed() const { return hasFailed_; }
     std::shared_ptr<Telemetry> tel() const { return tel_; }
 
+    const std::string& name() const { return name_; }
+    const std::string& criteria() const { return criteria_; }
+
+    virtual std::string failureReason() const {
+        if (hasFailed_) {
+            return "Condition failed: " + criteria_;
+        }
+        if (!hasPassed_ && isRequired_) {
+            return "Condition timed out: " + criteria_;
+        }
+        return "";
+    }
+
     virtual void Evaluate(double dt) = 0;
 
     std::function<void()> OnPassed;
@@ -182,12 +139,18 @@ protected:
     bool active_{false};
     bool hasPassed_{false};
     bool hasFailed_{false};
+    std::string name_;
+    std::string criteria_;
 };
 
 class ConditionalValueReachesRange : public Conditional {
 public:
-    ConditionalValueReachesRange(std::shared_ptr<Telemetry> tel, double target, double range, bool isRequired = true)
-        : Conditional(std::move(tel), isRequired), target_(target), range_(range) {}
+    ConditionalValueReachesRange(std::shared_ptr<Telemetry> tel, double target, double range, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : Conditional(std::move(tel), isRequired, std::move(name), std::move(criteriaText)), target_(target), range_(range) {
+        if (criteria_.empty()) {
+            criteria_ = "Reach target " + std::to_string(target_) + " within +/- " + std::to_string(range_);
+        }
+    }
 
     void Evaluate(double /*dt*/) override {
         if (!active_ || hasPassed_ || hasFailed_) return;
@@ -199,6 +162,15 @@ public:
             if (OnPassed) OnPassed();
         }
     }
+
+    std::string failureReason() const override {
+        if (hasFailed_) return "Value diverged from target " + std::to_string(target_);
+        if (!hasPassed_) {
+            double lastVal = tel_ ? tel_->lastValue() : 0.0;
+            return "Value " + std::to_string(lastVal) + " did not reach target " + std::to_string(target_) + " +/- " + std::to_string(range_);
+        }
+        return "";
+    }
 private:
     double target_;
     double range_;
@@ -206,8 +178,12 @@ private:
 
 class ConditionalValueRemainsInRange : public Conditional {
 public:
-    ConditionalValueRemainsInRange(std::shared_ptr<Telemetry> tel, double target, double range, bool isRequired = true)
-        : Conditional(std::move(tel), isRequired), target_(target), range_(range) {}
+    ConditionalValueRemainsInRange(std::shared_ptr<Telemetry> tel, double target, double range, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : Conditional(std::move(tel), isRequired, std::move(name), std::move(criteriaText)), target_(target), range_(range) {
+        if (criteria_.empty()) {
+            criteria_ = "Remain in range " + std::to_string(target_) + " +/- " + std::to_string(range_);
+        }
+    }
 
     void Evaluate(double /*dt*/) override {
         if (!active_ || hasPassed_ || hasFailed_) return;
@@ -219,6 +195,21 @@ public:
             if (OnFailed) OnFailed();
         }
     }
+
+    void Stop() override {
+        if (active_ && !hasFailed_) {
+            hasPassed_ = true;
+        }
+        Conditional::Stop();
+    }
+
+    std::string failureReason() const override {
+        if (hasFailed_) {
+            double lastVal = tel_ ? tel_->lastValue() : 0.0;
+            return "Value " + std::to_string(lastVal) + " exceeded limit of " + std::to_string(target_) + " +/- " + std::to_string(range_);
+        }
+        return "";
+    }
 private:
     double target_;
     double range_;
@@ -226,8 +217,12 @@ private:
 
 class ConditionalNumFrames : public Conditional {
 public:
-    ConditionalNumFrames(int targetFrames, bool isRequired = true)
-        : Conditional(nullptr, isRequired), targetFrames_(targetFrames) {}
+    ConditionalNumFrames(int targetFrames, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : Conditional(nullptr, isRequired, std::move(name), std::move(criteriaText)), targetFrames_(targetFrames) {
+        if (criteria_.empty()) {
+            criteria_ = "Hold for " + std::to_string(targetFrames_) + " frames";
+        }
+    }
 
     void Evaluate(double /*dt*/) override {
         if (!active_ || hasPassed_ || hasFailed_) return;
@@ -250,8 +245,12 @@ private:
 
 class ConditionalDuration : public Conditional {
 public:
-    ConditionalDuration(double targetDuration, bool isRequired = true)
-        : Conditional(nullptr, isRequired), targetDuration_(targetDuration) {}
+    ConditionalDuration(double targetDuration, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : Conditional(nullptr, isRequired, std::move(name), std::move(criteriaText)), targetDuration_(targetDuration) {
+        if (criteria_.empty()) {
+            criteria_ = "Survive / run for " + std::to_string(targetDuration_) + " seconds";
+        }
+    }
 
     void Evaluate(double dt) override {
         if (!active_ || hasPassed_ || hasFailed_) return;
@@ -274,8 +273,12 @@ private:
 
 class ConditionalValueGreaterThan : public Conditional {
 public:
-    ConditionalValueGreaterThan(std::shared_ptr<Telemetry> tel, double threshold, bool isRequired = true)
-        : Conditional(std::move(tel), isRequired), threshold_(threshold) {}
+    ConditionalValueGreaterThan(std::shared_ptr<Telemetry> tel, double threshold, bool isRequired = true, std::string name = "", std::string criteriaText = "")
+        : Conditional(std::move(tel), isRequired, std::move(name), std::move(criteriaText)), threshold_(threshold) {
+        if (criteria_.empty()) {
+            criteria_ = "Value must be greater than " + std::to_string(threshold_);
+        }
+    }
 
     void Evaluate(double /*dt*/) override {
         if (!active_ || hasPassed_ || hasFailed_) return;
@@ -287,10 +290,21 @@ public:
             if (OnPassed) OnPassed();
         }
     }
+
+    std::string failureReason() const override {
+        if (!hasPassed_) {
+            double lastVal = tel_ ? tel_->lastValue() : 0.0;
+            return "Value " + std::to_string(lastVal) + " was not greater than " + std::to_string(threshold_);
+        }
+        return "";
+    }
 private:
     double threshold_;
 };
 
+// ===========================================================================
+// ManeuverScenario — declarative, flat simulation
+// ===========================================================================
 class ManeuverScenario {
 public:
     explicit ManeuverScenario(std::string name) : scenarioName_(std::move(name)) {}
@@ -303,19 +317,45 @@ public:
     virtual TestTier GetTestTier() const { return TestTier::LowLevel; }
     virtual std::string GetTestLevel() const { return testTierName(GetTestTier()); }
 
-    virtual std::vector<std::unique_ptr<ManeuverTest>>
-        StartScenario(FlightModel& fm, const ScenarioContext& ctx) = 0;
+    double maxTime() const { return maxTime_; }
+    void setMaxTime(double t) { maxTime_ = t; }
+
+    void SetDefaultAircraftPath(std::string path) { defaultAircraftPath_ = std::move(path); }
+    const std::string& defaultAircraftPath() const { return defaultAircraftPath_; }
+
+    // StartScenario replaces Init / buildSequence.
+    virtual void StartScenario(const std::string& defaultAircraftPath) = 0;
 
     virtual std::vector<TraceGeometry> traceGeometry() const { return {}; }
 
-    std::shared_ptr<SimulatedAircraft> CreateAircraft(const std::string& name, const AircraftConfig& cfg) {
+    std::shared_ptr<SimulatedAircraft> CreateAircraft(const std::string& name, const std::string& configPath = "") {
         auto ac = std::make_shared<SimulatedAircraft>(name);
-        ac->sc.setCornerSpeed(cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0);
+
+        // Resolve JSON configuration file path. If empty, fallback to the defaultAircraftPath_.
+        std::string path = configPath;
+        if (path.empty()) {
+            path = defaultAircraftPath_;
+        }
+
+        AircraftConfig cfg;
+        auto result = json::readFile(path, cfg);
+        if (!result.ok) {
+            std::fprintf(stderr, "Error: CreateAircraft failed to load config from %s\n", path.c_str());
+            return nullptr;
+        }
+
+        // Initialize flight model with standard values.
+        const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
+        ac->fm.init(cfg, 10000.0, initCs * KNOTS_TO_FTPSEC, 0.0, true);
+
+        // Pre-initialize config to match standard expectations
+        ac->sc.setCornerSpeed(initCs);
         ac->sc.setMaxGs(cfg.geometry.maxGs);
         ac->sc.setMaxBank(45.0);
         ac->sc.setAltitude(10000.0);
         ac->sc.setHeading(0.0);
         ac->sc.setMaxGamma(15.0);
+
         aircraftList_.push_back(ac);
         return ac;
     }
@@ -351,77 +391,11 @@ public:
 
 protected:
     std::string scenarioName_;
+    double maxTime_{180.0};
+    std::string defaultAircraftPath_;
     std::vector<std::shared_ptr<SimulatedAircraft>> aircraftList_;
     std::vector<std::shared_ptr<Telemetry>> telemetryList_;
     std::vector<std::shared_ptr<Conditional>> conditionalList_;
-};
-
-class ConditionalManeuverTest : public ManeuverTest {
-public:
-    ConditionalManeuverTest(ManeuverScenario& scenario, const char* name, double maxTime)
-        : ManeuverTest(name, maxTime), scenario_(scenario) {}
-
-    void Init(SteeringController& /*sc*/, FlightModel& /*fm*/) override {}
-
-    void Evaluate(const AircraftState& as, const PilotInput& input, double dt) override {
-        ManeuverTest::Evaluate(as, input, dt);
-    }
-
-    void Finish() const override {
-        std::printf("  --- Chained Conditionals Summary ---\n");
-        for (const auto& cond : scenario_.conditionals()) {
-            std::string name = cond->tel() ? cond->tel()->name() : "Unnamed";
-            std::printf("  Conditional [%s]: active=%d, passed=%d, failed=%d\n",
-                        name.c_str(), cond->isActive(), cond->hasPassed(), cond->hasFailed());
-        }
-    }
-
-    bool IsFinished() const override {
-        if (phaseTime_ >= maxTime_) return true;
-
-        bool allRequiredFinished = true;
-        bool hasRequired = false;
-        for (const auto& cond : scenario_.conditionals()) {
-            if (cond->isRequired()) {
-                hasRequired = true;
-                if (!cond->hasPassed() && !cond->hasFailed()) {
-                    allRequiredFinished = false;
-                    break;
-                }
-            }
-        }
-        return hasRequired && allRequiredFinished;
-    }
-
-    bool IsPassed() const override {
-        bool hasRequired = false;
-        for (const auto& cond : scenario_.conditionals()) {
-            if (cond->isRequired()) {
-                hasRequired = true;
-                if (!cond->hasPassed() || cond->hasFailed()) return false;
-            }
-        }
-        return hasRequired;
-    }
-
-    std::vector<TestCondition> conditions() const override {
-        std::vector<TestCondition> conds;
-        for (const auto& cond : scenario_.conditionals()) {
-            if (cond->tel()) {
-                conds.push_back({cond->tel()->name().c_str(),
-                                 cond->hasPassed() ? "Passed" : (cond->hasFailed() ? "Failed" : "Pending"),
-                                 cond->hasPassed()});
-            } else {
-                conds.push_back({"Conditional",
-                                 cond->hasPassed() ? "Passed" : (cond->hasFailed() ? "Failed" : "Pending"),
-                                 cond->hasPassed()});
-            }
-        }
-        return conds;
-    }
-
-private:
-    ManeuverScenario& scenario_;
 };
 
 // ===========================================================================

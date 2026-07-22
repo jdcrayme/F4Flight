@@ -11,24 +11,29 @@
       "passed": true,
       "phases": [
         {
-          "name": "Baseline 4-Waypoint Route",
+          "name": "digi_baseline",
           "passed": true,
-          "criteria": "Capture all 4 route waypoints within 400 seconds with altitude held stable within ±500 ft.",
+          "criteria": "Waypoint Capture (Capture all 4 route waypoints); Flight Stability (No NaNs or state divergence occurred during flight); Altitude Hold (Altitude remains within ±500 ft of target); Speed Hold (Airspeed remains within ±100 kts of target)",
           "failure_reason": "",
           "conditions": [
             {
               "name": "Waypoint Capture",
-              "description": "Successfully captured all flight plan waypoints",
+              "description": "Capture all 4 route waypoints: Passed",
               "passed": true
             },
             {
               "name": "Flight Stability",
-              "description": "No NaNs or state divergence occurred during flight",
+              "description": "No NaNs or state divergence occurred during flight: Passed",
               "passed": true
             },
             {
               "name": "Altitude Hold",
-              "description": "Altitude remained within ±500 ft of target",
+              "description": "Altitude remains within ±500 ft of target: Passed",
+              "passed": true
+            },
+            {
+              "name": "Speed Hold",
+              "description": "Airspeed remains within ±100 kts of target: Passed",
               "passed": true
             }
           ]

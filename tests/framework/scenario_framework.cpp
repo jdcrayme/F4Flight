@@ -1,4 +1,4 @@
-// f4flight - Simplified Scenario test runner.
+// f4flight - Simplified flat conditional-driven Scenario test runner.
 //
 // Usage:
 //   f4flight_digi_scenarios <aircraft.json> [options]
@@ -132,17 +132,17 @@ struct ScenarioResult {
 };
 
 static ScenarioResult runScenario(ManeuverScenario& scenario,
-                                  FlightModel& fm,
-                                  SteeringController& sc,
-                                  const ScenarioContext& sctx,
+                                  const std::string& aircraftPath,
                                   const std::string& aircraftName,
                                   TraceRecorder* rec) {
     ScenarioResult res;
-    auto tests = scenario.StartScenario(fm, sctx);
-    res.total = static_cast<int>(tests.size());
+    res.total = 1; // The scenario acts as a single unified flat run
+
+    scenario.ClearScenarioObjects();
+    scenario.SetDefaultAircraftPath(aircraftPath);
+    scenario.StartScenario(aircraftPath);
 
     const double dt = 1.0 / 60.0;
-    sc.reset();
 
     if (rec) {
         rec->start(aircraftName, scenario.name());
@@ -154,203 +154,187 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     int frameCount = 0;
     bool printedHeader = false;
 
-    for (auto& test : tests) {
-        // Track position/rate jump to detect re-initializations
-        const double preX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
-        const double preY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
-        const double preZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
-
-        if (!scenario.aircraftList().empty()) {
-            auto& primaryAc = scenario.aircraftList()[0];
-            primaryAc->sc.brain().setFrameInputs({});
-            primaryAc->sc.brain().resetPhaseState();
-            test->Init(primaryAc->sc, primaryAc->fm);
-        } else {
-            sc.brain().setFrameInputs({});
-            sc.brain().resetPhaseState();
-            test->Init(sc, fm);
-        }
-
-        const double currX = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.x : fm.state().kin.x;
-        const double currY = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.y : fm.state().kin.y;
-        const double currZ = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->fm.state().kin.z : fm.state().kin.z;
-        const double jumpFt = std::sqrt((currX - preX) * (currX - preX) + (currY - preY) * (currY - preY) + (currZ - preZ) * (currZ - preZ));
-
-        if (rec) {
-            const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
-            const auto& wps = brain.waypoints();
-            if (!wps.empty()) {
-                std::vector<TraceGeometry> geom = rec->trace().geometry;
-                std::vector<double> pathCoords;
-                for (size_t i = 0; i < wps.size(); ++i) {
-                    TraceGeometry tg;
-                    tg.name = "WP" + std::to_string(i + 1);
-                    tg.type = "waypoint";
-                    tg.coords = {wps[i].x, wps[i].y, wps[i].z};
-                    tg.color = "#FFFFFF";
-                    geom.push_back(tg);
-
-                    pathCoords.push_back(wps[i].x);
-                    pathCoords.push_back(wps[i].y);
-                    pathCoords.push_back(wps[i].z);
-                }
-                if (pathCoords.size() >= 6) {
-                    TraceGeometry pathGeom;
-                    pathGeom.name = "Flight Plan";
-                    pathGeom.type = "corridor";
-                    pathGeom.coords = pathCoords;
-                    pathGeom.color = "#8a90a6";
-                    pathGeom.width = 1.0;
-                    geom.push_back(pathGeom);
-                }
-                rec->setGeometry(geom);
-            }
-        }
-
-        std::string lastModeName;
-        double lastFireEventT = -1.0;
-
-        while (!test->IsFinished()) {
-            PilotInput input;
-            std::string modeName;
-
-            if (!scenario.aircraftList().empty()) {
-                for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
-                    auto& ac = scenario.aircraftList()[idx];
-                    PilotInput acInput;
-                    std::string acModeName;
-
-                    if (idx == 0 && test->inputOverride(acInput, ac->fm.state())) {
-                        acModeName = "Manual";
-                    } else {
-                        acInput = ac->sc.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
-                        if (idx == 0) {
-                            const double bankCmd = test->bankOverride_rad();
-                            if (bankCmd >= 0.0) {
-                                acInput.rstick = limit((bankCmd - ac->fm.state().kin.phi) * 2.0, -1.0, 1.0);
-                            }
-                        }
-                        acModeName = digiModeName(ac->sc.brain().activeMode());
-                    }
-
-                    ac->input = acInput;
-                    ac->activeModeName = acModeName;
-                    ac->fm.update(dt, acInput, 0.0, Vec3{0.0, 0.0, 1.0});
-                }
-
-                auto& primaryAc = scenario.aircraftList()[0];
-                input = primaryAc->input;
-                modeName = primaryAc->activeModeName;
-
-                test->Evaluate(primaryAc->fm.state(), input, dt);
-            } else {
-                if (test->inputOverride(input, fm.state())) {
-                    modeName = "Manual";
-                } else {
-                    input = sc.compute(fm.state(), dt, 0.0, fm.fcs(), fm.state().fcs);
-                    const double bankCmd = test->bankOverride_rad();
-                    if (bankCmd >= 0.0) {
-                        input.rstick = limit((bankCmd - fm.state().kin.phi) * 2.0, -1.0, 1.0);
-                    }
-                    modeName = digiModeName(sc.brain().activeMode());
-                }
-
-                fm.update(dt, input, 0.0, Vec3{0.0, 0.0, 1.0});
-                test->Evaluate(fm.state(), input, dt);
-            }
-
-            if (!scenario.telemetries().empty()) {
-                for (auto& tel : scenario.telemetries()) {
-                    tel->sample();
-                }
-            }
-
-            if (!scenario.conditionals().empty()) {
-                for (auto& cond : scenario.conditionals()) {
-                    cond->Evaluate(dt);
-                }
-            }
-
-            if (!scenario.telemetries().empty()) {
-                if (!printedHeader) {
-                    std::printf("%-10s", "Frame");
-                    for (const auto& tel : scenario.telemetries()) {
-                        std::printf(" %-15s", tel->name().c_str());
-                    }
-                    std::printf("\n");
-                    printedHeader = true;
-                }
-                if (frameCount % 10 == 0) {
-                    std::printf("%-10d", frameCount);
-                    for (const auto& tel : scenario.telemetries()) {
-                        std::printf(" %-15.3f", tel->lastValue());
-                    }
-                    std::printf("\n");
-                }
-            }
-
-            if (rec) {
-                std::vector<ThreatEntity> threats;
-                const auto& brain = !scenario.aircraftList().empty() ? scenario.aircraftList()[0]->sc.brain() : sc.brain();
-                const auto& ds = brain.state();
-
-                if (brain.frameInputs().injectedLead) {
-                    const auto* lead = brain.frameInputs().injectedLead;
-                    threats.push_back({"lead",
-                        lead->x, lead->y, lead->z, lead->speed});
-                }
-
-                if (!scenario.aircraftList().empty()) {
-                    auto& primaryAc = scenario.aircraftList()[0];
-                    rec->record(simT, primaryAc->fm.state(), primaryAc->input, primaryAc->activeModeName, test->name(), threats);
-                } else {
-                    rec->record(simT, fm.state(), input, modeName, test->name(), threats);
-                }
-
-                for (const auto& s : test->traceSamples()) {
-                    rec->addSample(s.key, s.value, s.unit);
-                }
-
-                for (const auto& tel : scenario.telemetries()) {
-                    rec->addSample(tel->name(), tel->lastValue(), "");
-                }
-
-                if (!lastModeName.empty() && modeName != lastModeName) {
-                    rec->addEvent(simT, "mode",
-                        "Mode: " + lastModeName + " -> " + modeName, "info");
-                }
-                lastModeName = modeName;
-            }
-            simT += dt;
-            frameCount++;
-        }
-
-        const double phaseEndT = simT;
-        if (rec) {
-            std::string msg = "Phase [" + std::string(test->name()) + "] Finished: " +
-                              (test->IsPassed() ? "PASSED" : "FAILED (" + test->failureReason() + ")");
-            rec->addEvent(phaseEndT, "phase", msg, test->IsPassed() ? "info" : "fail");
-        }
-
-        test->Finish();
-        std::printf("\n");
-
-        PhaseResult pr;
-        pr.name = test->name();
-        pr.passed = test->IsPassed();
-        pr.criteria = test->criteria();
-        pr.failureReason = test->failureReason();
-        pr.conditions = test->conditions();
-        res.phaseDetails.push_back(pr);
-
-        if (test->IsPassed()) res.passed++;
+    // Start all conditionals
+    for (auto& cond : scenario.conditionals()) {
+        cond->Start();
     }
 
-    if (rec) rec->finish(simT);
+    // Capture waypoints from the primary aircraft (if any) for tracing
+    if (rec && !scenario.aircraftList().empty()) {
+        const auto& brain = scenario.aircraftList()[0]->sc.brain();
+        const auto& wps = brain.waypoints();
+        if (!wps.empty()) {
+            std::vector<TraceGeometry> geom = rec->trace().geometry;
+            std::vector<double> pathCoords;
+            for (size_t i = 0; i < wps.size(); ++i) {
+                TraceGeometry tg;
+                tg.name = "WP" + std::to_string(i + 1);
+                tg.type = "waypoint";
+                tg.coords = {wps[i].x, wps[i].y, wps[i].z};
+                tg.color = "#FFFFFF";
+                geom.push_back(tg);
+
+                pathCoords.push_back(wps[i].x);
+                pathCoords.push_back(wps[i].y);
+                pathCoords.push_back(wps[i].z);
+            }
+            if (pathCoords.size() >= 6) {
+                TraceGeometry pathGeom;
+                pathGeom.name = "Flight Plan";
+                pathGeom.type = "corridor";
+                pathGeom.coords = pathCoords;
+                pathGeom.color = "#8a90a6";
+                pathGeom.width = 1.0;
+                geom.push_back(pathGeom);
+            }
+            rec->setGeometry(geom);
+        }
+    }
+
+    std::string lastModeName;
+
+    // Main flat simulation loop
+    while (true) {
+        // Evaluate stop conditions
+        bool allRequiredPassed = true;
+        bool hasRequired = false;
+        for (const auto& cond : scenario.conditionals()) {
+            if (cond->isRequired()) {
+                hasRequired = true;
+                if (!cond->hasPassed()) {
+                    allRequiredPassed = false;
+                }
+            }
+        }
+
+        bool shouldStop = (simT >= scenario.maxTime()) || (hasRequired && allRequiredPassed);
+        if (shouldStop) break;
+
+        // Step all aircraft
+        for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
+            auto& ac = scenario.aircraftList()[idx];
+            ac->input = ac->sc.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
+            ac->activeModeName = digiModeName(ac->sc.brain().activeMode());
+            ac->fm.update(dt, ac->input, 0.0, Vec3{0.0, 0.0, 1.0});
+        }
+
+        // Update telemetries
+        for (auto& tel : scenario.telemetries()) {
+            tel->sample();
+        }
+
+        // Evaluate conditionals
+        for (auto& cond : scenario.conditionals()) {
+            cond->Evaluate(dt);
+        }
+
+        // Output telemetry to console every 10 frames
+        if (!scenario.telemetries().empty()) {
+            if (!printedHeader) {
+                std::printf("%-10s", "Frame");
+                for (const auto& tel : scenario.telemetries()) {
+                    std::printf(" %-15s", tel->name().c_str());
+                }
+                std::printf("\n");
+                printedHeader = true;
+            }
+            if (frameCount % 10 == 0) {
+                std::printf("%-10d", frameCount);
+                for (const auto& tel : scenario.telemetries()) {
+                    std::printf(" %-15.3f", tel->lastValue());
+                }
+                std::printf("\n");
+            }
+        }
+
+        // Record trace frame if requested
+        if (rec && !scenario.aircraftList().empty()) {
+            auto& primaryAc = scenario.aircraftList()[0];
+            std::vector<ThreatEntity> threats;
+
+            // Map secondary aircraft as wingmen/moving tracks
+            for (size_t idx = 1; idx < scenario.aircraftList().size(); ++idx) {
+                auto& ac = scenario.aircraftList()[idx];
+                ThreatEntity t;
+                t.type = "wingman";
+                t.name = ac->name;
+                t.x = ac->fm.state().kin.x;
+                t.y = ac->fm.state().kin.y;
+                t.z = ac->fm.state().kin.z;
+                t.speed = ac->fm.state().kin.vt;
+                t.psi = ac->fm.state().kin.psi;
+                threats.push_back(t);
+            }
+
+            rec->record(simT, primaryAc->fm.state(), primaryAc->input, primaryAc->activeModeName, scenario.name(), threats);
+
+            // Record registered telemetries as trace samples
+            for (const auto& tel : scenario.telemetries()) {
+                rec->addSample(tel->name(), tel->lastValue(), "");
+            }
+
+            if (!lastModeName.empty() && primaryAc->activeModeName != lastModeName) {
+                rec->addEvent(simT, "mode", "Mode: " + lastModeName + " -> " + primaryAc->activeModeName, "info");
+            }
+            lastModeName = primaryAc->activeModeName;
+        }
+
+        simT += dt;
+        frameCount++;
+    }
+
+    // Stop all conditionals
+    for (auto& cond : scenario.conditionals()) {
+        cond->Stop();
+    }
+
+    // Determine final scenario outcome
+    bool scenarioPassed = true;
+    std::string criteriaText;
+    std::string failureReasonText;
+    std::vector<TestCondition> conds;
+
+    for (const auto& cond : scenario.conditionals()) {
+        if (!criteriaText.empty()) criteriaText += "; ";
+        criteriaText += cond->name() + " (" + cond->criteria() + ")";
+
+        if (cond->isRequired() && !cond->hasPassed()) {
+            scenarioPassed = false;
+            if (!failureReasonText.empty()) failureReasonText += "; ";
+            failureReasonText += cond->failureReason();
+        }
+
+        conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
+    }
+
+    if (rec) {
+        std::string msg = "Scenario [" + scenario.name() + "] Finished: " +
+                          (scenarioPassed ? "PASSED" : "FAILED (" + failureReasonText + ")");
+        rec->addEvent(simT, "phase", msg, scenarioPassed ? "info" : "fail");
+        rec->finish(simT);
+    }
+
+    // Console summary output
+    std::printf("  --- Scenario Finish Summary ---\n");
+    std::printf("  Name: %s\n", scenario.name().c_str());
+    std::printf("  Result: %s\n", scenarioPassed ? "PASSED" : "FAILED");
+    if (!scenarioPassed) {
+        std::printf("  Failure Reason: %s\n", failureReasonText.c_str());
+    }
+
+    PhaseResult pr;
+    pr.name = scenario.name();
+    pr.passed = scenarioPassed;
+    pr.criteria = criteriaText;
+    pr.failureReason = failureReasonText;
+    pr.conditions = conds;
+    res.phaseDetails.push_back(pr);
+
+    if (scenarioPassed) res.passed++;
+
     return res;
 }
 
-// Write the machine-parseable JSON summary report for debugging.
 static void writeSummaryJson(const std::string& filepath,
                              const std::string& aircraft,
                              const std::vector<ScenarioRunResult>& results) {
@@ -388,7 +372,7 @@ static void writeSummaryJson(const std::string& filepath,
             sf << "          \"name\": \"" << pr.name << "\",\n";
             sf << "          \"passed\": " << (pr.passed ? "true" : "false") << ",\n";
             sf << "          \"criteria\": \"" << pr.criteria << "\",\n";
-            // Escape double quotes in failureReason
+
             std::string escapedReason = pr.failureReason;
             size_t pos = 0;
             while ((pos = escapedReason.find('"', pos)) != std::string::npos) {
@@ -398,7 +382,7 @@ static void writeSummaryJson(const std::string& filepath,
             sf << "          \"failure_reason\": \"" << escapedReason << "\",\n";
             sf << "          \"conditions\": [\n";
 
-            for (size_t k = 0; j < sr.phases.size() && k < pr.conditions.size(); ++k) {
+            for (size_t k = 0; k < pr.conditions.size(); ++k) {
                 const auto& cond = pr.conditions[k];
                 sf << "            {\n";
                 sf << "              \"name\": \"" << cond.name << "\",\n";
@@ -452,13 +436,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    AircraftConfig cfg;
-    auto result = json::readFile(opt.aircraftPath, cfg);
-    if (!result.ok) {
-        std::fprintf(stderr, "Failed to load %s\n", opt.aircraftPath.c_str());
-        return 1;
-    }
-
     std::string aircraftName = "aircraft";
     {
         std::error_code ec;
@@ -473,19 +450,6 @@ int main(int argc, char** argv) {
     }
 
     std::vector<Trace> traces;
-    FlightModel fm;
-    const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
-    fm.init(cfg, 10000, initCs * KNOTS_TO_FTPSEC, 0.0, true);
-
-    SteeringController sc;
-    sc.setCornerSpeed(initCs);
-    sc.setMaxGs(cfg.geometry.maxGs);
-    sc.setMaxBank(45.0);
-    sc.setAltitude(10000.0);
-    sc.setHeading(0.0);
-    sc.setMaxGamma(15.0);
-
-    ScenarioContext sctx{cfg};
     std::vector<ScenarioRunResult> results;
     int grandTotalPassed = 0;
     int grandTotalPhases = 0;
@@ -498,7 +462,7 @@ int main(int argc, char** argv) {
         std::printf("%s\n\n", scenario->GetDescription().c_str());
 
         TraceRecorder rec;
-        ScenarioResult r = runScenario(*scenario, fm, sc, sctx, aircraftName, recordTraces ? &rec : nullptr);
+        ScenarioResult r = runScenario(*scenario, opt.aircraftPath, aircraftName, recordTraces ? &rec : nullptr);
 
         std::printf("  Scenario '%s' result: %d/%d\n\n", scenario->name().c_str(), r.passed, r.total);
 
