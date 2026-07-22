@@ -570,6 +570,7 @@ struct DigiRefuelState {
     Phase  phase{Phase::None};
     double contactTimer{0.0};    // seconds in Contact phase (fuel taken)
     double contactDuration{30.0}; // seconds to hold contact before disconnect
+    bool   refuelComplete{false}; // true when disconnect phase finished
 
     // Boom position (computed each frame from tanker position + geometry).
     // The boom is behind and below the tanker. The receiver flies to this
@@ -580,6 +581,7 @@ struct DigiRefuelState {
         phase = Phase::None;
         contactTimer = 0.0;
         contactDuration = 30.0;
+        refuelComplete = false;
         boomX = boomY = boomZ = 0.0;
     }
 };

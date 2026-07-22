@@ -1439,7 +1439,8 @@ void DigiBrain::runRefueling(const AircraftState& as, double dt,
 
             std::printf("DEBUG runRefueling: Disconnect 4\n");
             if (std::abs(-as.kin.z - targetAlt) < 150.0) {
-                // Done! Fall back to waypoint nav
+                // Done! Set refuelComplete flag and fall back to waypoint nav
+                state_.refuel.refuelComplete = true;
                 state_.refuel.phase = DigiRefuelState::Phase::None;
                 curWp_++;
                 runWaypoint(as, dt, fcs, fcsState);
