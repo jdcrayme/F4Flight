@@ -61,6 +61,7 @@ public:
         tanker->fm.init(tanker->fm.config(), tankerAlt, tankerSpd * KNOTS_TO_FTPSEC, 0.0, true);
         tanker->fm.state().kin.x = 20000.0;
         tanker->fm.state().kin.y = 0.0;
+        tanker->fm.trim(); // Trim Tanker to 1-G level steady-state flight!
 
         // Set up waypoints for Tanker (10 NM apart East-West) via FlightPlan
         std::vector<Vec3> tankerWps = {
@@ -88,6 +89,7 @@ public:
         f16->fm.init(f16->fm.config(), 9000.0, 400.0 * KNOTS_TO_FTPSEC, 0.0, true);
         f16->fm.state().kin.x = 0.0;
         f16->fm.state().kin.y = 0.0;
+        f16->fm.trim(); // Trim F-16 to 1-G level steady-state flight!
 
         // 3. Setup declarative telemetries
         auto t_f16_alt = CreateTelemetry("F16_Altitude", [f16]() { return -f16->fm.state().kin.z; });
