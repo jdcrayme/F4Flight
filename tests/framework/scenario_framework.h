@@ -352,6 +352,7 @@ public:
         // Initialize flight model with standard values.
         const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
         ac->fm.init(cfg, 10000.0, initCs * KNOTS_TO_FTPSEC, 0.0, true);
+		ac->fm.trim();
 
         // Pre-initialize brain config to match standard expectations
         digi::DigiConfig config = ac->brain.config();

@@ -117,7 +117,7 @@ public:
         // 4. Setup assertions (conditionals)
         for (int i = 0; i < fp->tasks().size(); i++) {
             const double captureRange = 1;
-			const double targetRange = 500.0; // +/- 20 ft tolerance for altitude hold
+			const double targetRange = 20.0; // +/- 20 ft tolerance for altitude hold
             auto targetAlt = fp->tasks()[i].altFt;
             auto holds_alt = CreateConditional<ConditionalValueRemainsInRange>(
                 t_altitude /*Trace*/,
@@ -126,7 +126,7 @@ public:
                 true /*isRequired=*/,
                 "Leg " + std::to_string(i) + " alt hold" /*Name*/,
                 "Leg " + std::to_string(i) + " altitude holds " + std::to_string((int)targetAlt) + " ft +/- " + std::to_string((int)targetRange) + " ft" /*Description*/);
-            holds_alt->Stop();
+
             auto reaches_alt = CreateConditional<ConditionalValueReachesRange>(
                 t_altitude /*Trace*/,
                 targetAlt /*Target*/,
@@ -138,13 +138,20 @@ public:
 				holds_alt->Start();
 				};
 
+            reaches_alt->Stop();
+            holds_alt->Stop();
+
             if (i < fp->tasks().size()) {
 				int nextWpIdx = i + 1;
-                auto reaches_waypoint = CreateConditional<ConditionalValueReachesRange>(t_currentWaypoint, nextWpIdx, 0.5, /*isRequired=*/true, "Waypoint " + std::to_string(nextWpIdx) + " Reached", "Aircraft reaches Waypoint " + std::to_string(nextWpIdx));
+                auto reaches_waypoint = CreateConditional<ConditionalValueReachesRange>(t_currentWaypoint, i, 0.5, /*isRequired=*/false, "Waypoint " + std::to_string(nextWpIdx) + " Reached", "Aircraft reaches Waypoint " + std::to_string(nextWpIdx));
                 reaches_waypoint->OnPassed = [reaches_alt, holds_alt, reaches_waypoint]() {
+                    reaches_alt->Start();
+                    holds_alt->Start();
+                    };
+                auto reaches_next_waypoint = CreateConditional<ConditionalValueReachesRange>(t_currentWaypoint, nextWpIdx, 0.5, /*isRequired=*/true, "Waypoint " + std::to_string(nextWpIdx) + " Reached", "Aircraft reaches Waypoint " + std::to_string(nextWpIdx));
+                reaches_next_waypoint->OnPassed = [reaches_alt, holds_alt, reaches_waypoint]() {
                     reaches_alt->Stop();
 					holds_alt->Stop();
-                    reaches_waypoint->Stop();
 					};
             }
         }
