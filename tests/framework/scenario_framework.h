@@ -326,6 +326,9 @@ public:
     // StartScenario replaces Init / buildSequence.
     virtual void StartScenario(const std::string& defaultAircraftPath) = 0;
 
+    // Optional per-frame custom scenario update hook.
+    virtual void UpdateScenario(double /*dt*/) {}
+
     virtual std::vector<TraceGeometry> traceGeometry() const { return {}; }
 
     std::shared_ptr<SimulatedAircraft> CreateAircraft(const std::string& name, const std::string& configPath = "") {

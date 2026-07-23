@@ -1,7 +1,10 @@
 // f4flight - scenarios/scenario_digi_baseline.cpp
 //
-// Digi AI Baseline Integration Scenario: Waypoint Navigation and Cruise.
-// Re-written as a clean, flat, declarative conditional-driven scenario.
+// Digi AI Baseline Integration Scenario: Intercept and Orbiting Tanker.
+// Overhauled flat declarative scenario:
+//   - Tanker orbits between 2 waypoints.
+//   - F-16 dynamically intercepts a position 1 NM behind and 1000' below the tanker.
+//   - Once in position, the F-16 sends the Tanker a radio message.
 
 #include "f4flight/flight/f4flight.h"
 #include "scenario_framework.h"
@@ -15,6 +18,10 @@ using namespace f4flight;
 namespace f4flight_test {
 
 class DigiBaselineScenario : public ManeuverScenario {
+protected:
+    double simTime_{0.0};
+    bool sentRadio_{false};
+
 public:
     DigiBaselineScenario() : ManeuverScenario("digi_baseline") {
         // Run for up to 350 seconds
@@ -22,56 +29,136 @@ public:
     }
 
     std::string GetDescription() const override {
-        return "Digi AI Baseline: Cruise, Waypoint Navigation, and Altitude Hold. "
-               "Flies a 4-waypoint square flight plan, captures waypoints, and validates navigation stability.";
+        return "Digi AI Baseline: Tanker orbits between two waypoints, and F-16 "
+               "intercepts a position 1 NM behind and 1000 ft below, sending a radio message.";
     }
 
     std::string GetTestGroup() const override { return "Baseline"; }
     TestTier GetTestTier() const override { return TestTier::LowLevel; }
 
     void StartScenario(const std::string& defaultAircraftPath) override {
-        const double targetAlt = 10000.0;
-        const double targetSpd = 350.0;
+        simTime_ = 0.0;
+        sentRadio_ = false;
 
-        // 1. Spawn our primary simulated aircraft
-        auto ac = CreateAircraft("F16", defaultAircraftPath);
-        if (!ac) return;
+        const double tankerAlt = 10000.0;
+        const double tankerSpd = 300.0; // kts
 
-        // Configure autopilot limits
-        ac->sc.setCornerSpeed(targetSpd);
-        ac->sc.setMaxGs(ac->fm.config().geometry.maxGs);
-        ac->sc.setMaxBank(45.0);
-        ac->sc.setMaxGamma(15.0);
-        ac->sc.setTurnG(2.0);
-        ac->sc.setAltitude(targetAlt);
+        // 1. Spawn Tanker aircraft
+        auto tanker = CreateAircraft("Tanker", defaultAircraftPath);
+        if (!tanker) return;
+        tanker->sc.setCornerSpeed(tankerSpd);
+        tanker->sc.setMaxGs(tanker->fm.config().geometry.maxGs);
+        tanker->sc.setMaxBank(45.0);
+        tanker->sc.setMaxGamma(15.0);
+        tanker->sc.setAltitude(tankerAlt);
 
-        // Define a 10 NM leg square flight path (x = East, y = North)
-        double leg = 60000.0;
-        std::vector<Vec3> wps = {
-            Vec3{leg, 0.0, -targetAlt},
-            Vec3{leg, leg, -targetAlt},
-            Vec3{0.0, leg, -targetAlt},
-            Vec3{0.0, 0.0, -targetAlt}
+        // Position the tanker 20,000 ft East at start
+        tanker->fm.init(tanker->fm.config(), tankerAlt, tankerSpd * KNOTS_TO_FTPSEC, 0.0, true);
+        tanker->fm.state().kin.x = 20000.0;
+        tanker->fm.state().kin.y = 0.0;
+
+        // Set up waypoints for Tanker (10 NM apart East-West)
+        std::vector<Vec3> tankerWps = {
+            Vec3{20000.0, 0.0, -tankerAlt},
+            Vec3{80000.0, 0.0, -tankerAlt}
         };
-        ac->sc.setWaypoints(wps);
-        ac->sc.setCaptureRadius(5000.0);
-        ac->sc.setMode(SteeringController::Mode::Waypoint);
+        tanker->sc.setWaypoints(tankerWps);
+        tanker->sc.setCaptureRadius(5000.0);
+        tanker->sc.setMode(SteeringController::Mode::Waypoint);
 
-        // 2. Setup declarative telemetries
-        auto t_alt = CreateTelemetry("Altitude", [ac]() { return -ac->fm.state().kin.z; });
-        auto t_spd = CreateTelemetry("Speed", [ac]() { return ac->fm.state().vcas; });
-        auto t_wp = CreateTelemetry("CurrentWaypoint", [ac]() { return static_cast<double>(ac->sc.currentWaypoint()); });
-        auto t_nan = CreateTelemetry("StateNaN", [ac]() {
-            const auto& as = ac->fm.state();
+        // 2. Spawn F-16 interceptor
+        auto f16 = CreateAircraft("F16", defaultAircraftPath);
+        if (!f16) return;
+        f16->sc.setCornerSpeed(400.0); // fly faster to intercept!
+        f16->sc.setMaxGs(f16->fm.config().geometry.maxGs);
+        f16->sc.setMaxBank(45.0);
+        f16->sc.setMaxGamma(15.0);
+        f16->sc.setAltitude(9000.0);
+
+        // Position F-16 at origin, heading East (0.0 rad)
+        f16->fm.init(f16->fm.config(), 9000.0, 400.0 * KNOTS_TO_FTPSEC, 0.0, true);
+        f16->fm.state().kin.x = 0.0;
+        f16->fm.state().kin.y = 0.0;
+
+        // 3. Setup declarative telemetries
+        auto t_f16_alt = CreateTelemetry("F16_Altitude", [f16]() { return -f16->fm.state().kin.z; });
+        auto t_f16_spd = CreateTelemetry("F16_Speed", [f16]() { return f16->fm.state().vcas; });
+        auto t_tk_alt = CreateTelemetry("Tanker_Altitude", [tanker]() { return -tanker->fm.state().kin.z; });
+
+        // Track distance between F-16 and the dynamic target intercept point
+        auto t_intercept_dist = CreateTelemetry("InterceptDistance", [this, f16, tanker]() {
+            const auto& tState = tanker->fm.state();
+            double tSigma = tState.kin.sigma;
+            double rx = tState.kin.x - 6076.12 * std::cos(tSigma);
+            double ry = tState.kin.y - 6076.12 * std::sin(tSigma);
+            double rz = tState.kin.z + 1000.0;
+
+            const auto& fState = f16->fm.state();
+            double dx = rx - fState.kin.x;
+            double dy = ry - fState.kin.y;
+            double dz = rz - fState.kin.z;
+            return std::sqrt(dx*dx + dy*dy + dz*dz);
+        });
+
+        auto t_nan = CreateTelemetry("StateNaN", [f16]() {
+            const auto& as = f16->fm.state();
             return (std::isnan(as.kin.vt) || std::isnan(as.kin.z) || std::isnan(as.kin.sigma)) ? 1.0 : 0.0;
         });
-        auto t_captured = CreateTelemetry("AllCaptured", [ac]() { return ac->sc.allWaypointsCaptured() ? 1.0 : 0.0; });
 
-        // 3. Setup declarative assertions (conditionals)
-        CreateConditional<ConditionalValueReachesRange>(t_captured, 1.0, 0.1, /*isRequired=*/true, "Waypoint Capture", "Capture all 4 route waypoints");
+        // 4. Setup declarative assertions (conditionals)
+        CreateConditional<ConditionalValueReachesRange>(t_intercept_dist, 0.0, 500.0, /*isRequired=*/true, "Proximity Intercept", "Intercept position 1NM behind and 1000' below tanker");
         CreateConditional<ConditionalValueRemainsInRange>(t_nan, 0.0, 0.1, /*isRequired=*/true, "Flight Stability", "No NaNs or state divergence occurred during flight");
-        CreateConditional<ConditionalValueRemainsInRange>(t_alt, targetAlt, 500.0, /*isRequired=*/true, "Altitude Hold", "Altitude remains within ±500 ft of target");
-        CreateConditional<ConditionalValueRemainsInRange>(t_spd, targetSpd, 100.0, /*isRequired=*/true, "Speed Hold", "Airspeed remains within ±100 kts of target");
+        CreateConditional<ConditionalValueRemainsInRange>(t_tk_alt, tankerAlt, 500.0, /*isRequired=*/true, "Tanker Altitude Hold", "Tanker altitude remains stable within ±500 ft");
+    }
+
+    void UpdateScenario(double dt) override {
+        simTime_ += dt;
+
+        if (aircraftList_.size() < 2) return;
+        auto tanker = aircraftList_[0];
+        auto f16 = aircraftList_[1];
+
+        // 1. Loop the tanker's flight plan if it captures all waypoints
+        if (tanker->sc.allWaypointsCaptured()) {
+            double tankerAlt = 10000.0;
+            std::vector<Vec3> tankerWps = {
+                Vec3{20000.0, 0.0, -tankerAlt},
+                Vec3{80000.0, 0.0, -tankerAlt}
+            };
+            tanker->sc.setWaypoints(tankerWps);
+        }
+
+        // 2. Compute F-16 dynamic intercept target position: 1 NM (6076.12 ft) behind and 1000 ft below tanker
+        const auto& tState = tanker->fm.state();
+        double tSigma = tState.kin.sigma; // heading
+        double rx = tState.kin.x - 6076.12 * std::cos(tSigma);
+        double ry = tState.kin.y - 6076.12 * std::sin(tSigma);
+        double rz = tState.kin.z + 1000.0; // below means positive Z relative to tanker
+
+        // Update F-16 steering targets to dynamically pursue this intercept point
+        const auto& fState = f16->fm.state();
+        double dx = rx - fState.kin.x;
+        double dy = ry - fState.kin.y;
+        double dz = rz - fState.kin.z;
+        double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+        double desHeading = std::atan2(dy, dx);
+        double desAlt = -rz; // positive up
+
+        f16->sc.setMode(SteeringController::Mode::HeadingAltitude);
+        f16->sc.setHeading(desHeading);
+        f16->sc.setAltitude(desAlt);
+
+        // 3. Once in position (within 1.5 NM proximity to the target spot), send the tanker a radio message
+        if (dist < 9114.0 && !sentRadio_) {
+            digi::makeRadioCall(f16->sc.brain().stateMutable().comm.radioCalls,
+                                digi::RadioCallType::InPosition, // "In position" radio call
+                                simTime_,
+                                1, // F-16 ID
+                                2); // Tanker ID
+            sentRadio_ = true;
+            std::printf("  [RADIO MESSAGE SENT] F-16: 'In Position!'\n");
+        }
     }
 };
 

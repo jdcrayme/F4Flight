@@ -210,6 +210,9 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         bool shouldStop = (simT >= scenario.maxTime()) || (hasRequired && allRequiredPassed);
         if (shouldStop) break;
 
+        // Execute dynamic scenario update logic
+        scenario.UpdateScenario(dt);
+
         // Step all aircraft
         for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
             auto& ac = scenario.aircraftList()[idx];

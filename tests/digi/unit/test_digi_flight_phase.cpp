@@ -54,13 +54,12 @@ TEST(PhaseGainSetTest, CombatHasHigherGammaClampThanApproach) {
         << "Combat should have higher gamma clamp than approach";
 }
 
-TEST(PhaseGainSetTest, FormationHasNoIntegralGain) {
-    // Formation uses pure P (no integral) to prevent windup during
-    // station-keeping — the integral would build up during the lateral
-    // oscillation and make it worse.
+TEST(PhaseGainSetTest, FormationHasIntegralGain) {
+    // Formation uses integral gain (0.004) to eliminate altitude droop during
+    // station-keeping/refueling.
     PhaseGainSet formation = PhaseGainSet::forPhase(FlightPhase::Formation);
-    EXPECT_DOUBLE_EQ(formation.integralGain, 0.0)
-        << "Formation should have zero integral gain (pure P)";
+    EXPECT_DOUBLE_EQ(formation.integralGain, 0.004)
+        << "Formation should have non-zero integral gain to eliminate altitude droop";
 }
 
 TEST(PhaseGainSetTest, ApproachHasNoIntegralGain) {

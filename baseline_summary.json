@@ -13,12 +13,12 @@
         {
           "name": "digi_baseline",
           "passed": true,
-          "criteria": "Waypoint Capture (Capture all 4 route waypoints); Flight Stability (No NaNs or state divergence occurred during flight); Altitude Hold (Altitude remains within ±500 ft of target); Speed Hold (Airspeed remains within ±100 kts of target)",
+          "criteria": "Proximity Intercept (Intercept position 1NM behind and 1000' below tanker); Flight Stability (No NaNs or state divergence occurred during flight); Tanker Altitude Hold (Tanker altitude remains stable within ±500 ft)",
           "failure_reason": "",
           "conditions": [
             {
-              "name": "Waypoint Capture",
-              "description": "Capture all 4 route waypoints: Passed",
+              "name": "Proximity Intercept",
+              "description": "Intercept position 1NM behind and 1000' below tanker: Passed",
               "passed": true
             },
             {
@@ -27,13 +27,8 @@
               "passed": true
             },
             {
-              "name": "Altitude Hold",
-              "description": "Altitude remains within ±500 ft of target: Passed",
-              "passed": true
-            },
-            {
-              "name": "Speed Hold",
-              "description": "Airspeed remains within ±100 kts of target: Passed",
+              "name": "Tanker Altitude Hold",
+              "description": "Tanker altitude remains stable within ±500 ft: Passed",
               "passed": true
             }
           ]
