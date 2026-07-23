@@ -170,7 +170,7 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 TraceGeometry tg;
                 tg.name = "WP" + std::to_string(i + 1);
                 tg.type = "waypoint";
-                tg.coords = {wps[i].x, wps[i].y, wps[i].z};
+                tg.coords = std::vector<double>{wps[i].x, wps[i].y, wps[i].z};
                 tg.color = "#FFFFFF";
                 geom.push_back(tg);
 
@@ -216,9 +216,8 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         // Step all aircraft
         for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
             auto& ac = scenario.aircraftList()[idx];
-            // Compute PilotInput from the aircraft state + controller
             ac->input = ac->brain.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
-            ac->activeModeName = digiModeName(ac->brain.activeMode());
+            ac->activeModeName = f4flight::digi::digiModeName(ac->brain.activeMode());
             ac->fm.update(dt, ac->input, 0.0, Vec3{0.0, 0.0, 1.0});
         }
 
@@ -275,6 +274,16 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             // Record registered telemetries as trace samples
             for (const auto& tel : scenario.telemetries()) {
                 rec->addSample(tel->name(), tel->lastValue(), "");
+            }
+
+            // Record radio calls from all active aircraft
+            for (auto& ac : scenario.aircraftList()) {
+                auto& comm = ac->brain.stateMutable().comm;
+                digi::RadioCall call;
+                while (comm.radioCalls.pop(call)) {
+                    std::string callMsg = ac->name + ": \"" + digi::radioCallText(call.type) + "\"";
+                    rec->addEvent(simT, "comm", callMsg, "info");
+                }
             }
 
             if (!lastModeName.empty() && primaryAc->activeModeName != lastModeName) {
