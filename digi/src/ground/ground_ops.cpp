@@ -13,7 +13,7 @@
 #include "f4flight/digi/wingman/wingman_state.h"  // receiveOrders (Flight* msg dispatch)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
-#include "f4flight/digi/steering.h"  // for headingError
+#include "f4flight/digi/steering_utils.h"  // for headingError
 
 #include <algorithm>
 #include <cmath>

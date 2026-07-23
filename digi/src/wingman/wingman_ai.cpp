@@ -31,7 +31,7 @@
 
 #include "f4flight/digi/wingman/wingman_ai.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
-#include "f4flight/digi/steering.h"  // for headingError
+#include "f4flight/digi/steering_utils.h"  // for headingError
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 #include "f4flight/flight/core/airspeed_conversions.h"  // casFromTasFps

@@ -19,7 +19,7 @@
 #include "f4flight/flight/core/airspeed_conversions.h"  // cas_kts (typed machHoldCas)
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
-#include "f4flight/digi/steering.h"  // for headingError
+#include "f4flight/digi/steering_utils.h"  // for headingError
 
 #include <algorithm>
 #include <cmath>

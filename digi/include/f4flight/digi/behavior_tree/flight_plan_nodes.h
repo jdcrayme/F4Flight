@@ -6,7 +6,6 @@
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/flight/core/airspeed_conversions.h"
 #include "f4flight/flight/core/constants.h"
-#include "f4flight/digi/steering.h"
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>

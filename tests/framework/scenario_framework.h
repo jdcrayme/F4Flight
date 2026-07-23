@@ -7,7 +7,7 @@
 #pragma once
 
 #include "f4flight/flight/f4flight.h"
-#include "f4flight/digi/steering.h"  // SteeringController (AI compat shim)
+#include "f4flight/digi/digi_brain.h"
 #include "trace.h"
 
 #include <cstdio>
@@ -45,7 +45,7 @@ inline const char* testTierName(TestTier t) {
 struct SimulatedAircraft {
     std::string name;
     FlightModel fm;
-    SteeringController sc;
+    digi::DigiBrain brain;
     PilotInput input;
     std::string activeModeName;
 
@@ -351,13 +351,16 @@ public:
         const double initCs = cfg.geometry.cornerVcas_kts > 0 ? cfg.geometry.cornerVcas_kts : 330.0;
         ac->fm.init(cfg, 10000.0, initCs * KNOTS_TO_FTPSEC, 0.0, true);
 
-        // Pre-initialize config to match standard expectations
-        ac->sc.setCornerSpeed(initCs);
-        ac->sc.setMaxGs(cfg.geometry.maxGs);
-        ac->sc.setMaxBank(45.0);
-        ac->sc.setAltitude(10000.0);
-        ac->sc.setHeading(0.0);
-        ac->sc.setMaxGamma(15.0);
+        // Pre-initialize brain config to match standard expectations
+        digi::DigiConfig config = ac->brain.config();
+        config.cornerSpeedKts = initCs;
+        config.maxGs = cfg.geometry.maxGs;
+        config.maxBankDeg = 45.0;
+        config.maxGammaDeg = 15.0;
+        ac->brain.configure(config);
+
+        ac->brain.setAltitude(10000.0);
+        ac->brain.setHeading(0.0);
 
         aircraftList_.push_back(ac);
         return ac;

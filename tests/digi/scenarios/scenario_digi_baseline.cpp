@@ -2,11 +2,12 @@
 //
 // Digi AI Baseline Integration Scenario: Intercept and Orbiting Tanker.
 // Overhauled flat declarative scenario:
-//   - Tanker orbits between 2 waypoints.
+//   - Tanker orbits between 2 waypoints using FlightPlan/Behavior Tree.
 //   - F-16 dynamically intercepts a position 1 NM behind and 1000' below the tanker.
 //   - Once in position, the F-16 sends the Tanker a radio message.
 
 #include "f4flight/flight/f4flight.h"
+#include "f4flight/digi/behavior_tree/flight_plan.h"
 #include "scenario_framework.h"
 
 #include <string>
@@ -46,34 +47,42 @@ public:
         // 1. Spawn Tanker aircraft
         auto tanker = CreateAircraft("Tanker", defaultAircraftPath);
         if (!tanker) return;
-        tanker->sc.setCornerSpeed(tankerSpd);
-        tanker->sc.setMaxGs(tanker->fm.config().geometry.maxGs);
-        tanker->sc.setMaxBank(45.0);
-        tanker->sc.setMaxGamma(15.0);
-        tanker->sc.setAltitude(tankerAlt);
+
+        // Configure brain limits for Tanker
+        digi::DigiConfig tankerConfig = tanker->brain.config();
+        tankerConfig.cornerSpeedKts = tankerSpd;
+        tankerConfig.maxGs = tanker->fm.config().geometry.maxGs;
+        tankerConfig.maxBankDeg = 45.0;
+        tankerConfig.maxGammaDeg = 15.0;
+        tanker->brain.configure(tankerConfig);
+        tanker->brain.setAltitude(tankerAlt);
 
         // Position the tanker 20,000 ft East at start
         tanker->fm.init(tanker->fm.config(), tankerAlt, tankerSpd * KNOTS_TO_FTPSEC, 0.0, true);
         tanker->fm.state().kin.x = 20000.0;
         tanker->fm.state().kin.y = 0.0;
 
-        // Set up waypoints for Tanker (10 NM apart East-West)
+        // Set up waypoints for Tanker (10 NM apart East-West) via FlightPlan
         std::vector<Vec3> tankerWps = {
             Vec3{20000.0, 0.0, -tankerAlt},
             Vec3{80000.0, 0.0, -tankerAlt}
         };
-        tanker->sc.setWaypoints(tankerWps);
-        tanker->sc.setCaptureRadius(5000.0);
-        tanker->sc.setMode(SteeringController::Mode::Waypoint);
+        auto tankerFp = digi::FlightPlan::fromWaypoints(tankerWps, tankerSpd);
+        tanker->brain.setFlightPlan(tankerFp);
+        tanker->brain.setCaptureRadius(5000.0);
 
         // 2. Spawn F-16 interceptor
         auto f16 = CreateAircraft("F16", defaultAircraftPath);
         if (!f16) return;
-        f16->sc.setCornerSpeed(400.0); // fly faster to intercept!
-        f16->sc.setMaxGs(f16->fm.config().geometry.maxGs);
-        f16->sc.setMaxBank(45.0);
-        f16->sc.setMaxGamma(15.0);
-        f16->sc.setAltitude(9000.0);
+
+        // Configure brain limits for F-16
+        digi::DigiConfig f16Config = f16->brain.config();
+        f16Config.cornerSpeedKts = 400.0; // fly faster to intercept!
+        f16Config.maxGs = f16->fm.config().geometry.maxGs;
+        f16Config.maxBankDeg = 45.0;
+        f16Config.maxGammaDeg = 15.0;
+        f16->brain.configure(f16Config);
+        f16->brain.setAltitude(9000.0);
 
         // Position F-16 at origin, heading East (0.0 rad)
         f16->fm.init(f16->fm.config(), 9000.0, 400.0 * KNOTS_TO_FTPSEC, 0.0, true);
@@ -119,13 +128,15 @@ public:
         auto f16 = aircraftList_[1];
 
         // 1. Loop the tanker's flight plan if it captures all waypoints
-        if (tanker->sc.allWaypointsCaptured()) {
+        if (tanker->brain.allWaypointsCaptured()) {
             double tankerAlt = 10000.0;
+            double tankerSpd = 300.0;
             std::vector<Vec3> tankerWps = {
                 Vec3{20000.0, 0.0, -tankerAlt},
                 Vec3{80000.0, 0.0, -tankerAlt}
             };
-            tanker->sc.setWaypoints(tankerWps);
+            auto tankerFp = digi::FlightPlan::fromWaypoints(tankerWps, tankerSpd);
+            tanker->brain.setFlightPlan(tankerFp);
         }
 
         // 2. Compute F-16 dynamic intercept target position: 1 NM (6076.12 ft) behind and 1000 ft below tanker
@@ -145,13 +156,13 @@ public:
         double desHeading = std::atan2(dy, dx);
         double desAlt = -rz; // positive up
 
-        f16->sc.setMode(SteeringController::Mode::HeadingAltitude);
-        f16->sc.setHeading(desHeading);
-        f16->sc.setAltitude(desAlt);
+        // Use direct, clean autopilot/brain parameters (no SteeringController modes needed!)
+        f16->brain.setHeading(desHeading);
+        f16->brain.setAltitude(desAlt);
 
         // 3. Once in position (within 1.5 NM proximity to the target spot), send the tanker a radio message
         if (dist < 9114.0 && !sentRadio_) {
-            digi::makeRadioCall(f16->sc.brain().stateMutable().comm.radioCalls,
+            digi::makeRadioCall(f16->brain.stateMutable().comm.radioCalls,
                                 digi::RadioCallType::InPosition, // "In position" radio call
                                 simTime_,
                                 1, // F-16 ID

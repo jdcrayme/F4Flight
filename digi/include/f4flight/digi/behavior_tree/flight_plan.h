@@ -1,8 +1,11 @@
 #pragma once
 
 #include "f4flight/flight/core/types.h"
+#include "f4flight/digi/digi_entity.h"
+#include "f4flight/digi/comms/message.h"
 #include <deque>
 #include <utility>
+#include <memory>
 
 namespace f4flight {
 namespace digi {
@@ -25,6 +28,11 @@ struct MissionTask {
     double altFt;            // Intended altitude
     EntityId targetId {kInvalidEntityId};       // Ground target or refueling tanker ID
     double durationSec;      // Time-limit (e.g., loiter/CAP time)
+
+    MissionTask() : type(TaskType::Navigate), location{0,0,0}, speedKts(0), altFt(0), targetId(kInvalidEntityId), durationSec(0) {}
+
+    MissionTask(TaskType t, Vec3 loc, double spd, double alt, EntityId tgt = kInvalidEntityId, double dur = 0.0)
+        : type(t), location(loc), speedKts(spd), altFt(alt), targetId(tgt), durationSec(dur) {}
 };
 
 class FlightPlan {

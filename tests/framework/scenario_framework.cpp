@@ -161,7 +161,7 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     // Capture waypoints from the primary aircraft (if any) for tracing
     if (rec && !scenario.aircraftList().empty()) {
-        const auto& brain = scenario.aircraftList()[0]->sc.brain();
+        const auto& brain = scenario.aircraftList()[0]->brain;
         const auto& wps = brain.waypoints();
         if (!wps.empty()) {
             std::vector<TraceGeometry> geom = rec->trace().geometry;
@@ -216,8 +216,9 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
         // Step all aircraft
         for (size_t idx = 0; idx < scenario.aircraftList().size(); ++idx) {
             auto& ac = scenario.aircraftList()[idx];
-            ac->input = ac->sc.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
-            ac->activeModeName = digiModeName(ac->sc.brain().activeMode());
+            // Compute PilotInput from the aircraft state + controller
+            ac->input = ac->brain.compute(ac->fm.state(), dt, 0.0, ac->fm.fcs(), ac->fm.state().fcs);
+            ac->activeModeName = digiModeName(ac->brain.activeMode());
             ac->fm.update(dt, ac->input, 0.0, Vec3{0.0, 0.0, 1.0});
         }
 

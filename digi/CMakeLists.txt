@@ -15,7 +15,6 @@ option(F4FLIGHT_DIGI_BUILD_SHARED "Build f4flight_digi as a shared library" OFF)
 # ---------------------------------------------------------------------------
 set(F4FLIGHT_DIGI_SOURCES
     src/digi_brain.cpp
-    src/steering.cpp
     # maneuvers
     src/maneuvers/maneuver_primitives.cpp
     # ground
@@ -65,7 +64,7 @@ set(F4FLIGHT_DIGI_HEADERS
     include/f4flight/digi/digi_mode.h
     include/f4flight/digi/digi_skill.h
     include/f4flight/digi/digi_entity.h
-    include/f4flight/digi/steering.h
+    include/f4flight/digi/steering_utils.h
     # maneuvers
     include/f4flight/digi/maneuvers/maneuver_primitives.h
     # ground

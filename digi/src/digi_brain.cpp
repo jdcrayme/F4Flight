@@ -18,7 +18,7 @@
 //   - WVREngage:    IMPLEMENTED (roll_and_pull.cpp)
 
 #include "f4flight/digi/digi_brain.h"
-#include "f4flight/digi/steering.h"  // for headingError
+#include "f4flight/digi/steering_utils.h"  // for headingError
 #include "f4flight/digi/behavior_tree/brain_bt_nodes.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/digi/ground/ground_avoid.h"

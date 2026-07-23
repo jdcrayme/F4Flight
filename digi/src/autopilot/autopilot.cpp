@@ -6,7 +6,7 @@
 // under the hood, structured into a clean mode hierarchy.
 
 #include "f4flight/digi/autopilot/autopilot.h"
-#include "f4flight/digi/steering.h"  // headingError
+#include "f4flight/digi/steering_utils.h"  // headingError
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
 #include "f4flight/flight/core/airspeed_conversions.h"

@@ -1,6 +1,9 @@
-// f4flight unit tests - steering (digi AI port)
-// Basic tests for the DigiAI steering functions.
-#include "f4flight/digi/steering.h"
+// f4flight unit tests - steering utilities and maneuver primitives
+// Direct tests of steering_utils and digi brain/maneuver primitives.
+
+#include "f4flight/digi/steering_utils.h"
+#include "f4flight/digi/digi_brain.h"
+#include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/flight/fcs.h"
 #include "f4flight/flight/core/constants.h"
 #include <gtest/gtest.h>
@@ -25,50 +28,50 @@ TEST(SteeringUtilsTest, TurnCompensatedG) {
 }
 
 TEST(DigiAITest, SetPstickGCommand) {
-    DigiState digi;
+    digi::DigiState digi;
     AircraftState state;
     state.kin.costhe = 1.0;  // level
     state.vcas = 350.0;      // normal speed
 
     // Command 1G (level) -> pstick should be ~0
     digi.commands.pStick = 0.0;
-    DigiAI::SetPstick(1.0, 9.0, digi::CommandType::GCommand, digi, state);
+    digi::ManeuverPrimitives::SetPstick(1.0, 9.0, digi::CommandType::GCommand, digi, state);
     // 1G maps to sqrt((1-1)/(9-1)) = 0
     EXPECT_NEAR(digi.commands.pStick, 0.0, 0.01);
 
     // Command 4G -> pstick should be positive
     digi.commands.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
+    digi::ManeuverPrimitives::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     EXPECT_GT(digi.commands.pStick, 0.0);
     EXPECT_LT(digi.commands.pStick, 1.0);
 
     // Command -2G -> pstick should be negative
     digi.commands.pStick = 0.0;
-    DigiAI::SetPstick(-2.0, 9.0, digi::CommandType::GCommand, digi, state);
+    digi::ManeuverPrimitives::SetPstick(-2.0, 9.0, digi::CommandType::GCommand, digi, state);
     EXPECT_LT(digi.commands.pStick, 0.0);
 }
 
 TEST(DigiAITest, SetPstickLowSpeed) {
-    DigiState digi;
+    digi::DigiState digi;
     AircraftState state;
     state.kin.costhe = 1.0;
     state.vcas = 200.0;  // low speed
 
     // At low speed, stick authority is reduced
     digi.commands.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
+    digi::ManeuverPrimitives::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     double lowSpeedPstick = digi.commands.pStick;
 
     state.vcas = 400.0;  // normal speed
     digi.commands.pStick = 0.0;
-    DigiAI::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
+    digi::ManeuverPrimitives::SetPstick(4.0, 9.0, digi::CommandType::GCommand, digi, state);
     double normalPstick = digi.commands.pStick;
 
     EXPECT_LT(lowSpeedPstick, normalPstick);
 }
 
 TEST(DigiAITest, GammaHoldLevel) {
-    DigiState digi;
+    digi::DigiState digi;
     AircraftState state;
     state.kin.gmma = 0.0;      // level flight path
     state.kin.cosphi = 1.0;    // wings level
@@ -77,13 +80,13 @@ TEST(DigiAITest, GammaHoldLevel) {
 
     // Command 0° gamma (level) -> should command ~1G
     digi.commands.pStick = 0.0;
-    DigiAI::GammaHold(0.0, digi, state, 9.0);
+    digi::ManeuverPrimitives::GammaHold(0.0, digi, state, 9.0);
     // pStick should be near 0 (1G = level)
     EXPECT_NEAR(digi.commands.pStick, 0.0, 0.1);
 }
 
 TEST(DigiAITest, GammaHoldClimb) {
-    DigiState digi;
+    digi::DigiState digi;
     AircraftState state;
     state.kin.gmma = 0.0;
     state.kin.cosphi = 1.0;
@@ -92,32 +95,23 @@ TEST(DigiAITest, GammaHoldClimb) {
 
     // Command +5° gamma (climb) -> should command >1G
     digi.commands.pStick = 0.0;
-    DigiAI::GammaHold(5.0, digi, state, 9.0);
+    digi::ManeuverPrimitives::GammaHold(5.0, digi, state, 9.0);
     EXPECT_GT(digi.commands.pStick, 0.0);
 }
 
 // ===========================================================================
-// SteeringController::reset() regression test.
-//
-// The maneuver_test runner has a documented workaround at
-// maneuver_test.cpp:110-118 that explicitly does NOT call reset() between
-// phases because doing so "would wipe the throttle PID's steady-state
-// integral, causing the throttle to drop to ~0 at the start of the next
-// phase -- which in the flightplan scenario leads to a deceleration → stall
-// → NaN cascade within 10 seconds." That bug has no regression test. This
-// test verifies that reset() at least zeroes the stick/pedal/throttle
-// commands cleanly without producing NaN or leaving stale non-zero values.
+// DigiBrain::reset() regression test.
 // ===========================================================================
-TEST(SteeringControllerTest, ResetZeroesStickAndPedal) {
-    SteeringController sc;
-    DigiState& digi = sc.digiState();
+TEST(DigiBrainResetTest, ResetZeroesStickAndPedal) {
+    digi::DigiBrain brain;
+    digi::DigiState& digi = brain.stateMutable();
     digi.commands.pStick = 0.5;
     digi.commands.rStick = -0.3;
     digi.commands.yPedal = 0.2;
     digi.nav.autoThrottle = 0.7;
     digi.nav.gammaHoldIError = 1.5;
 
-    sc.reset();
+    brain.reset();
 
     EXPECT_NEAR(digi.commands.pStick, 0.0, 1e-9);
     EXPECT_NEAR(digi.commands.rStick, 0.0, 1e-9);
@@ -126,25 +120,21 @@ TEST(SteeringControllerTest, ResetZeroesStickAndPedal) {
     EXPECT_NEAR(digi.nav.gammaHoldIError, 0.0, 1e-9);
 }
 
-TEST(SteeringControllerTest, ResetZeroesWaypointIndex) {
-    SteeringController sc;
-    // Advance the waypoint index by setting waypoints + calling compute.
+TEST(DigiBrainResetTest, ResetZeroesWaypointIndex) {
+    digi::DigiBrain brain;
     std::vector<Vec3> wps = {{0.0, 60000.0, -10000.0}};
-    sc.setWaypoints(wps);
-    sc.reset();
-    EXPECT_EQ(sc.currentWaypoint(), 0u);
+    brain.setWaypoints(wps);
+    brain.reset();
+    EXPECT_EQ(brain.currentWaypoint(), 0u);
 }
 
-TEST(SteeringControllerTest, ResetClearsNaNState) {
-    // If the controller's state ever goes NaN (which is what the
-    // maneuver_test workaround is worried about -- reset followed by
-    // re-converging PIDs), reset() should clear it.
-    SteeringController sc;
-    DigiState& digi = sc.digiState();
+TEST(DigiBrainResetTest, ResetClearsNaNState) {
+    digi::DigiBrain brain;
+    digi::DigiState& digi = brain.stateMutable();
     digi.nav.autoThrottle = std::numeric_limits<double>::quiet_NaN();
     digi.nav.gammaHoldIError = std::numeric_limits<double>::quiet_NaN();
 
-    sc.reset();
+    brain.reset();
 
     EXPECT_FALSE(std::isnan(digi.nav.autoThrottle));
     EXPECT_FALSE(std::isnan(digi.nav.gammaHoldIError));

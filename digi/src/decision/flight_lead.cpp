@@ -8,7 +8,7 @@
 
 #include "f4flight/digi/decision/flight_lead.h"
 #include "f4flight/digi/decision/decision_routines.h"  // CommandFlight
-#include "f4flight/digi/steering.h"  // headingError
+#include "f4flight/digi/steering_utils.h"  // headingError
 #include "f4flight/digi/sensors/sensor_fusion.h"
 #include "f4flight/flight/core/constants.h"
 #include "f4flight/flight/core/math.h"
