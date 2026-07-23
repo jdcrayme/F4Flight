@@ -154,41 +154,22 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     int frameCount = 0;
     bool printedHeader = false;
 
-    // Start all conditionals
+    // Start all conditionals with real-time event logging
     for (auto& cond : scenario.conditionals()) {
+        auto cPtr = cond.get();
+        cond->OnPassed = [rec, cPtr, &simT]() {
+            if (rec) {
+                std::string condMsg = "Condition [" + cPtr->name() + "] PASSED: " + cPtr->criteria();
+                rec->addEvent(simT, "condition", condMsg, "info");
+            }
+        };
+        cond->OnFailed = [rec, cPtr, &simT]() {
+            if (rec) {
+                std::string condMsg = "Condition [" + cPtr->name() + "] FAILED: " + cPtr->failureReason();
+                rec->addEvent(simT, "condition", condMsg, "fail");
+            }
+        };
         cond->Start();
-    }
-
-    // Capture waypoints from the primary aircraft (if any) for tracing
-    if (rec && !scenario.aircraftList().empty()) {
-        const auto& brain = scenario.aircraftList()[0]->brain;
-        const auto& wps = brain.waypoints();
-        if (!wps.empty()) {
-            std::vector<TraceGeometry> geom = rec->trace().geometry;
-            std::vector<double> pathCoords;
-            for (size_t i = 0; i < wps.size(); ++i) {
-                TraceGeometry tg;
-                tg.name = "WP" + std::to_string(i + 1);
-                tg.type = "waypoint";
-                tg.coords = {wps[i].x, wps[i].y, wps[i].z};
-                tg.color = "#FFFFFF";
-                geom.push_back(tg);
-
-                pathCoords.push_back(wps[i].x);
-                pathCoords.push_back(wps[i].y);
-                pathCoords.push_back(wps[i].z);
-            }
-            if (pathCoords.size() >= 6) {
-                TraceGeometry pathGeom;
-                pathGeom.name = "Flight Plan";
-                pathGeom.type = "corridor";
-                pathGeom.coords = pathCoords;
-                pathGeom.color = "#8a90a6";
-                pathGeom.width = 1.0;
-                geom.push_back(pathGeom);
-            }
-            rec->setGeometry(geom);
-        }
     }
 
     std::string lastModeName;
@@ -306,14 +287,14 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             scenarioPassed = false;
             if (!failureReasonText.empty()) failureReasonText += "; ";
             failureReasonText += cond->failureReason();
+
+            if (rec && !cond->hasFailed()) {
+                std::string condMsg = "Condition [" + cond->name() + "] TIMEOUT: " + cond->failureReason();
+                rec->addEvent(simT, "condition", condMsg, "fail");
+            }
         }
 
         conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
-
-        if (rec) {
-            std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): " + (cond->hasPassed() ? "PASSED" : "FAILED");
-            rec->addEvent(simT, "condition", condMsg, cond->hasPassed() ? "info" : "warn");
-        }
     }
 
     if (rec) {

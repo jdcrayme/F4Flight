@@ -399,21 +399,6 @@ function initCharts(tr) {
     });
   }
 
-  for (const sk of sampleKeys) {
-    specs.push({
-      type: 'metric',
-      key: 'sample_' + sk,
-      label: sk,
-      color: '#f472b6',
-      unit: sampleUnits[sk] || '',
-      getValue: f => {
-        if (!f.samples) return null;
-        const found = f.samples.find(s => s.key === sk);
-        return found ? found.value : null;
-      }
-    });
-  }
-
   // 3. Create DOM elements and render each chart
   const containerWidth = container.clientWidth || 400;
 
@@ -1867,11 +1852,49 @@ function render3D(tr){
 // ---------------------------------------------------------------------------
 // Detail view assembly
 // ---------------------------------------------------------------------------
+function populateFocusSelect(tr) {
+  const selectEl = document.getElementById('focus-select');
+  if (!selectEl) return;
+  selectEl.innerHTML = '';
+
+  const names = new Set();
+  const primaryName = tr.aircraft || 'Primary';
+  names.add(primaryName);
+
+  if (tr.frames) {
+    for (const f of tr.frames) {
+      if (f.threats) {
+        for (const th of f.threats) {
+          if (th.name) {
+            names.add(th.name);
+          }
+        }
+      }
+    }
+  }
+
+  for (const name of names) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    if (name === state.focusedAircraftName) {
+      opt.selected = true;
+    }
+    selectEl.appendChild(opt);
+  }
+
+  if (!names.has(state.focusedAircraftName)) {
+    state.focusedAircraftName = primaryName;
+    selectEl.value = primaryName;
+  }
+}
+
 function showDetail(i){
   state.traceIdx=i;state.t=0;
   state.zoom=1.0;state.panX=0;state.panY=0;
   threeState.initialized = false;
   const tr=TRACES[i]; if(!tr)return;
+  populateFocusSelect(tr);
   document.getElementById('index-view').classList.add('hidden');
   document.getElementById('detail-view').classList.remove('hidden');
   let titleText = tr.aircraft + ' / ' + tr.scenario;

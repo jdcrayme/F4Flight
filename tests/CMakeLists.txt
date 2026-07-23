@@ -62,9 +62,9 @@ endif()
 gtest_discover_tests(f4flight_digi_tests)
 
 # Scenario tests — drives the full AI + FM via SteeringController::compute().
-# Registers only our single clean baseline scenario.
 set(F4FLIGHT_DIGI_SCENARIO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/digi/scenarios/scenario_digi_baseline.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/digi/scenarios/scenario_digi_flightplan.cpp"
 )
 
 add_executable(f4flight_digi_scenarios ${F4FLIGHT_DIGI_SCENARIO_SOURCES})
@@ -89,4 +89,12 @@ add_test(
     COMMAND f4flight_digi_scenarios "${F16_FIXTURE}" --scenario digi_baseline
 )
 set_tests_properties(digi_f16bk50_digi_baseline PROPERTIES
+    LABELS "LowLevel;fighters;digi")
+
+# Digi AI basic flightplan navigation scenario
+add_test(
+    NAME digi_f16bk50_digi_flightplan
+    COMMAND f4flight_digi_scenarios "${F16_FIXTURE}" --scenario digi_flightplan
+)
+set_tests_properties(digi_f16bk50_digi_flightplan PROPERTIES
     LABELS "LowLevel;fighters;digi")

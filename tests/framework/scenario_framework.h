@@ -190,6 +190,7 @@ public:
         if (!tel_) return;
         double val = tel_->lastValue();
         if (std::abs(val - target_) > range_) {
+            failVal_ = val;
             hasFailed_ = true;
             active_ = false;
             if (OnFailed) OnFailed();
@@ -199,18 +200,19 @@ public:
     void Stop() override {
         if (active_ && !hasFailed_) {
             hasPassed_ = true;
+            if (OnPassed) OnPassed();
         }
         Conditional::Stop();
     }
 
     std::string failureReason() const override {
         if (hasFailed_) {
-            double lastVal = tel_ ? tel_->lastValue() : 0.0;
-            return "Value " + std::to_string(lastVal) + " exceeded limit of " + std::to_string(target_) + " +/- " + std::to_string(range_);
+            return "Value " + std::to_string(failVal_) + " exceeded limit of " + std::to_string(target_) + " +/- " + std::to_string(range_);
         }
         return "";
     }
 private:
+    double failVal_;
     double target_;
     double range_;
 };
