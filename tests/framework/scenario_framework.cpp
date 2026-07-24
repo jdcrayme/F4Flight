@@ -154,8 +154,31 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     int frameCount = 0;
     bool printedHeader = false;
 
+    std::set<Conditional*> loggedConditionals;
+
     // Start all conditionals
     for (auto& cond : scenario.conditionals()) {
+        if (rec) {
+            auto oldPassed = cond->OnPassed;
+            cond->OnPassed = [&simT, rec, cond, oldPassed, &loggedConditionals]() {
+                if (loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
+                    loggedConditionals.insert(cond.get());
+                    std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): PASSED";
+                    rec->addEvent(simT, "condition", condMsg, "info");
+                }
+                if (oldPassed) oldPassed();
+            };
+
+            auto oldFailed = cond->OnFailed;
+            cond->OnFailed = [&simT, rec, cond, oldFailed, &loggedConditionals]() {
+                if (loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
+                    loggedConditionals.insert(cond.get());
+                    std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): FAILED";
+                    rec->addEvent(simT, "condition", condMsg, "warn");
+                }
+                if (oldFailed) oldFailed();
+            };
+        }
         cond->Start();
     }
 
@@ -319,9 +342,10 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
         conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
 
-        if (rec) {
+        if (rec && loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
             std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): " + (cond->hasPassed() ? "PASSED" : "FAILED");
             rec->addEvent(simT, "condition", condMsg, cond->hasPassed() ? "info" : "warn");
+            loggedConditionals.insert(cond.get());
         }
     }
 

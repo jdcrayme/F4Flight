@@ -1646,7 +1646,7 @@ function render3D(tr){
   const cy = targetAc ? targetAc.x : acFrame.x;
   const cz = targetAc ? -targetAc.z : -acFrame.z;
 
-  threeState.aircraft.position.set(cx, cy, cz);
+  threeState.aircraft.position.set(acFrame.y, acFrame.x, -acFrame.z);
 
   const theta = acFrame.theta || 0;
   const phi = acFrame.phi || 0;
