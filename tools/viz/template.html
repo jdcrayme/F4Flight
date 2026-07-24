@@ -692,7 +692,7 @@ function updateConditionalsPanel(tr) {
             passed: match[3].toUpperCase() === 'PASSED',
             t: ev.t
           });
-        } else {
+        } else if (!ev.message.includes('STARTED') && !ev.message.includes('STOPPED')) {
           conditions.push({
             name: ev.category,
             desc: ev.message,

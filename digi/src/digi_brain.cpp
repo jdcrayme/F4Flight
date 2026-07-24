@@ -2373,6 +2373,7 @@ WaypointFollowNode::WaypointFollowNode() : BehaviorNode("WaypointFollow") {
     activeTaskSelectorNode_ = std::make_shared<ActiveTaskSelectorNode>();
     activeTaskSelectorNode_->addTaskNode(TaskType::Navigate, std::make_shared<NavigateTaskNode>());
     activeTaskSelectorNode_->addTaskNode(TaskType::CAP, std::make_shared<LoiterTaskNode>());
+    activeTaskSelectorNode_->addTaskNode(TaskType::Orbit, std::make_shared<OrbitTaskNode>());
 }
 
 void WaypointFollowNode::reset() {

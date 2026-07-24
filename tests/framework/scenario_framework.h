@@ -101,6 +101,7 @@ public:
     }
 
     virtual void Stop() {
+        wantsAutoStart_ = false;
         if (active_) {
             active_ = false;
             if (OnFinished) OnFinished();
@@ -111,6 +112,7 @@ public:
     bool isRequired() const { return isRequired_; }
     bool hasPassed() const { return hasPassed_; }
     bool hasFailed() const { return hasFailed_; }
+    bool wantsAutoStart() const { return wantsAutoStart_; }
     std::shared_ptr<Telemetry> tel() const { return tel_; }
 
     const std::string& name() const { return name_; }
@@ -139,6 +141,7 @@ protected:
     bool active_{false};
     bool hasPassed_{false};
     bool hasFailed_{false};
+    bool wantsAutoStart_{true};
     std::string name_;
     std::string criteria_;
 };

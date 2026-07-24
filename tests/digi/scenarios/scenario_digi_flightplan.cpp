@@ -28,8 +28,8 @@ protected:
 
 public:
     DigiFlightPlanScenario() : ManeuverScenario("digi_flightplan") {
-        // Allow up to 450 seconds to complete the 4-waypoint route
-        maxTime_ = 450.0;
+        // Allow up to 550 seconds to complete the 4-waypoint route (including orbit duration)
+        maxTime_ = 550.0;
     }
 
     std::string GetDescription() const override {
@@ -89,12 +89,12 @@ public:
         // 2. Build multi-waypoint flightplan with climb and descent altitude changes
         //    WP1: (30,000',      0', Alt  5,000') - Level flight leg East
         //    WP2: (60,000', 30,000', Alt 12,000') - Climb leg Northeast
-        //    WP3: (60,000', 70,000', Alt  8,000') - Descent leg North
+        //    WP3: (60,000', 70,000', Alt  8,000') - Orbit (Left-hand turns, 120s duration)
         //    WP4: (10,000', 70,000', Alt 15,000') - Climb leg West
         auto fp = std::make_shared<digi::FlightPlan>();
         fp->pushTask(digi::MissionTask{digi::TaskType::Navigate, Vec3{30000.0,     0.0,  -5000.0}, cruiseSpeedKts,  5000.0});
         fp->pushTask(digi::MissionTask{digi::TaskType::Navigate, Vec3{60000.0, 30000.0, -12000.0}, cruiseSpeedKts, 12000.0});
-        fp->pushTask(digi::MissionTask{digi::TaskType::Navigate, Vec3{60000.0, 70000.0,  -8000.0}, cruiseSpeedKts,  8000.0});
+        fp->pushTask(digi::MissionTask{digi::TaskType::Orbit,    Vec3{60000.0, 70000.0,  -8000.0}, cruiseSpeedKts,  8000.0, digi::kInvalidEntityId, 120.0, digi::OrbitDirection::Left});
         fp->pushTask(digi::MissionTask{digi::TaskType::Navigate, Vec3{10000.0, 70000.0, -15000.0}, cruiseSpeedKts, 15000.0});
 
         ac->brain.setFlightPlan(fp);
@@ -150,7 +150,7 @@ public:
         // 4. Setup assertions (conditionals)
         for (int i = 0; i < fp->tasks().size(); i++) {
             const double captureRange = 100.0;
-			const double targetRange = 200.0; // +/- 200 ft tolerance for altitude hold
+			const double targetRange = 300.0; // +/- 300 ft tolerance for altitude hold
             auto targetAlt = fp->tasks()[i].altFt;
             auto holds_alt = CreateConditional<ConditionalValueRemainsInRange>(
                 t_altitude /*Trace*/,

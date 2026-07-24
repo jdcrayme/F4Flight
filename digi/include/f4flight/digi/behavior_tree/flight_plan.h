@@ -10,6 +10,11 @@
 namespace f4flight {
 namespace digi {
 
+enum class OrbitDirection {
+    Left,
+    Right
+};
+
 enum class TaskType {
     Takeoff,
     Navigate,
@@ -18,7 +23,8 @@ enum class TaskType {
     Strike,      // Air-to-ground delivery
     Refuel,     // Aerial refueling contact
     Landing,
-    RTB
+    RTB,
+    Orbit
 };
 
 struct MissionTask {
@@ -28,11 +34,12 @@ struct MissionTask {
     double altFt;            // Intended altitude
     EntityId targetId {kInvalidEntityId};       // Ground target or refueling tanker ID
     double durationSec;      // Time-limit (e.g., loiter/CAP time)
+    OrbitDirection orbitDir {OrbitDirection::Left};
 
-    MissionTask() : type(TaskType::Navigate), location{0,0,0}, speedKts(0), altFt(0), targetId(kInvalidEntityId), durationSec(0) {}
+    MissionTask() : type(TaskType::Navigate), location{0,0,0}, speedKts(0), altFt(0), targetId(kInvalidEntityId), durationSec(0), orbitDir(OrbitDirection::Left) {}
 
-    MissionTask(TaskType t, Vec3 loc, double spd, double alt, EntityId tgt = kInvalidEntityId, double dur = 0.0)
-        : type(t), location(loc), speedKts(spd), altFt(alt), targetId(tgt), durationSec(dur) {}
+    MissionTask(TaskType t, Vec3 loc, double spd, double alt, EntityId tgt = kInvalidEntityId, double dur = 0.0, OrbitDirection dir = OrbitDirection::Left)
+        : type(t), location(loc), speedKts(spd), altFt(alt), targetId(tgt), durationSec(dur), orbitDir(dir) {}
 };
 
 class FlightPlan {

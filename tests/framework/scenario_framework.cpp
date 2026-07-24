@@ -158,7 +158,21 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
 
     // Start all conditionals
     for (auto& cond : scenario.conditionals()) {
-        if (rec) {
+        if (rec && cond->isRequired()) {
+            auto oldStarted = cond->OnStarted;
+            cond->OnStarted = [&simT, rec, cond, oldStarted]() {
+                std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): STARTED";
+                rec->addEvent(simT, "condition", condMsg, "info");
+                if (oldStarted) oldStarted();
+            };
+
+            auto oldFinished = cond->OnFinished;
+            cond->OnFinished = [&simT, rec, cond, oldFinished]() {
+                std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): STOPPED";
+                rec->addEvent(simT, "condition", condMsg, "info");
+                if (oldFinished) oldFinished();
+            };
+
             auto oldPassed = cond->OnPassed;
             cond->OnPassed = [&simT, rec, cond, oldPassed, &loggedConditionals]() {
                 if (loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
@@ -179,7 +193,9 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
                 if (oldFailed) oldFailed();
             };
         }
-        cond->Start();
+        if (cond->wantsAutoStart()) {
+            cond->Start();
+        }
     }
 
     // Capture waypoints from the primary aircraft (if any) for tracing
@@ -340,9 +356,11 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
             failureReasonText += cond->failureReason();
         }
 
-        conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
+        if (cond->isRequired()) {
+            conds.push_back({cond->name(), cond->criteria() + ": " + (cond->hasPassed() ? "Passed" : "Failed"), cond->hasPassed()});
+        }
 
-        if (rec && loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
+        if (rec && cond->isRequired() && loggedConditionals.find(cond.get()) == loggedConditionals.end()) {
             std::string condMsg = "Condition [" + cond->name() + "] (" + cond->criteria() + "): " + (cond->hasPassed() ? "PASSED" : "FAILED");
             rec->addEvent(simT, "condition", condMsg, cond->hasPassed() ? "info" : "warn");
             loggedConditionals.insert(cond.get());
