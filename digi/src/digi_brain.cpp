@@ -964,8 +964,62 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     const double dy = wp.y - as.kin.y;
     const double dist = std::sqrt(dx * dx + dy * dy);
 
-    if (dist < captureRadius_) {
+    bool hasNext = (curWp_ + 1 < wps_.size());
+    double D = 0.0;
+    if (hasNext) {
+        Vec3 A;
+        if (curWp_ > 0) {
+            A = wps_[curWp_ - 1];
+        } else {
+            if (!startPosInitialized_) {
+                startPos_ = Vec3{as.kin.x, as.kin.y, as.kin.z};
+                startPosInitialized_ = true;
+            }
+            A = startPos_;
+        }
+        const auto& B = wp;
+        const auto& C = wps_[curWp_ + 1];
+
+        const double ABx = B.x - A.x;
+        const double ABy = B.y - A.y;
+        const double AB_len = std::sqrt(ABx * ABx + ABy * ABy);
+
+        const double BCx = C.x - B.x;
+        const double BCy = C.y - B.y;
+        const double BC_len = std::sqrt(BCx * BCx + BCy * BCy);
+
+        if (AB_len > 1e-3 && BC_len > 1e-3) {
+            const double ux = ABx / AB_len;
+            const double uy = ABy / AB_len;
+            const double vx = BCx / BC_len;
+            const double vy = BCy / BC_len;
+
+            double cos_theta = ux * vx + uy * vy;
+            double theta = std::acos(std::max(-1.0, std::min(1.0, cos_theta)));
+            if (theta > 150.0 * DTR) {
+                theta = 150.0 * DTR;
+            }
+
+            const double V = as.kin.vt;
+            constexpr double phi_turn_rad = 35.0 * DTR;
+            double R = (V * V) / (32.177 * std::tan(phi_turn_rad));
+            D = R * std::tan(theta / 2.0);
+
+            const double max_D = 0.5 * std::min(AB_len, BC_len);
+            if (D > max_D) {
+                D = max_D;
+            }
+        }
+    }
+
+    double effectiveCaptureRadius = captureRadius_;
+    if (hasNext && D > 0.0) {
+        effectiveCaptureRadius = std::max(captureRadius_, D);
+    }
+
+    if (dist < effectiveCaptureRadius) {
         ++curWp_;
+        startPosInitialized_ = false;
         if (curWp_ >= wps_.size()) {
             ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
                                                         state_, as, fcs, fcsState, state_.config.maxGs);
@@ -976,7 +1030,39 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
         }
     }
 
-    const double desHeading = std::atan2(dy, dx);
+    Vec3 A;
+    if (curWp_ > 0) {
+        A = wps_[curWp_ - 1];
+        startPosInitialized_ = false;
+    } else {
+        if (!startPosInitialized_) {
+            startPos_ = Vec3{as.kin.x, as.kin.y, as.kin.z};
+            startPosInitialized_ = true;
+        }
+        A = startPos_;
+    }
+
+    const double ABx = wp.x - A.x;
+    const double ABy = wp.y - A.y;
+    const double AB_len = std::sqrt(ABx * ABx + ABy * ABy);
+
+    double desHeading = 0.0;
+    if (AB_len < 1e-3) {
+        desHeading = std::atan2(dy, dx);
+    } else {
+        const double courseHeading = std::atan2(ABy, ABx);
+        const double APx = as.kin.x - A.x;
+        const double APy = as.kin.y - A.y;
+        const double d_xtk = (APx * ABy - APy * ABx) / AB_len;
+
+        constexpr double K_xtk = 0.00025;
+        double correction = K_xtk * d_xtk;
+        if (correction > HALF_PI) correction = HALF_PI;
+        if (correction < -HALF_PI) correction = -HALF_PI;
+
+        desHeading = courseHeading + correction;
+    }
+
     const double desAlt = -wp.z;
     ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
                                                 state_, as, fcs, fcsState, state_.config.maxGs);

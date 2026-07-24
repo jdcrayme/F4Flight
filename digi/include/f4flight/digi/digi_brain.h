@@ -455,6 +455,7 @@ public:
         state_.threat.threatPtr = nullptr;
         state_.threat.threatTimer = 0.0;
         curWp_ = 0;
+        startPosInitialized_ = false;
         curMode_ = DigiMode::Waypoint;
         nextMode_ = DigiMode::NoMode;
         lastMode_ = DigiMode::Waypoint;
@@ -504,6 +505,7 @@ public:
         if (rootNode_) rootNode_->reset();
         wps_.clear();
         curWp_ = 0;
+        startPosInitialized_ = false;
         state_.nav.gammaHoldIError = 0.0;
         state_.nav.autoThrottle = 0.0;
         state_.commands.pStick = 0.0;
@@ -671,6 +673,8 @@ private:
     std::vector<Vec3> wps_;
     std::size_t curWp_{0};
     double captureRadius_{5000.0};  // ft
+    bool startPosInitialized_{false};
+    Vec3 startPos_{0.0, 0.0, 0.0};
 
     Blackboard blackboard_;
     BehaviorNodePtr rootNode_;

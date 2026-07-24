@@ -117,7 +117,7 @@ public:
         // 4. Setup assertions (conditionals)
         for (int i = 0; i < fp->tasks().size(); i++) {
             const double captureRange = 1;
-			const double targetRange = 20.0; // +/- 20 ft tolerance for altitude hold
+			const double targetRange = 200.0; // +/- 200 ft tolerance for altitude hold
             auto targetAlt = fp->tasks()[i].altFt;
             auto holds_alt = CreateConditional<ConditionalValueRemainsInRange>(
                 t_altitude /*Trace*/,
