@@ -89,7 +89,9 @@ protected:
                 }
 
                 const double V = bb.as->kin.vt;
-                constexpr double phi_turn_rad = 35.0 * 0.017453292519943295;
+                double maxRollDeg = (bb.state ? bb.state->config.maxRoll : 35.0);
+                if (maxRollDeg <= 0.1) maxRollDeg = 35.0;
+                const double phi_turn_rad = maxRollDeg * 0.017453292519943295;
                 double R = (V * V) / (32.177 * std::tan(phi_turn_rad));
                 D = R * std::tan(theta / 2.0);
 
@@ -350,7 +352,9 @@ protected:
 
         // Calculate offset based on dynamic turn radius R
         const double V = bb.as->kin.vt;
-        constexpr double phi_turn_rad = 35.0 * 0.017453292519943295;
+        double maxRollDeg = (bb.state ? bb.state->config.maxRoll : 35.0);
+        if (maxRollDeg <= 0.1) maxRollDeg = 35.0;
+        const double phi_turn_rad = maxRollDeg * 0.017453292519943295;
         double R = (V * V) / (32.177 * std::tan(phi_turn_rad));
         if (R < 1000.0) R = 5000.0;
         const double d = 2.0 * R;
@@ -394,7 +398,7 @@ protected:
                 while (diff > M_PI) diff -= 2.0 * M_PI;
                 while (diff < -M_PI) diff += 2.0 * M_PI;
 
-                if (std::fabs(diff) <= 1.5) {
+                if (std::fabs(diff) <= 0.8) {
                     desHeading = outboundCourse;
                 } else {
                     if (task.orbitDir == OrbitDirection::Left) {
@@ -404,7 +408,7 @@ protected:
                     }
                 }
 
-                if (std::fabs(diff) < 0.1) {
+                if (std::fabs(diff) < 0.3) {
                     state_ = OrbitState::OutboundLeg;
                 }
                 break;
@@ -428,7 +432,7 @@ protected:
                 while (diff > M_PI) diff -= 2.0 * M_PI;
                 while (diff < -M_PI) diff += 2.0 * M_PI;
 
-                if (std::fabs(diff) <= 1.5) {
+                if (std::fabs(diff) <= 0.8) {
                     desHeading = inboundCourse;
                 } else {
                     if (task.orbitDir == OrbitDirection::Left) {
@@ -438,7 +442,7 @@ protected:
                     }
                 }
 
-                if (std::fabs(diff) < 0.1) {
+                if (std::fabs(diff) < 0.3) {
                     state_ = OrbitState::InboundLeg;
                 }
                 break;
@@ -498,8 +502,8 @@ private:
         const double vy = as.kin.ydot;
         const double d_xtk_dot = (vx * SEy - vy * SEx) / SE_len;
 
-        constexpr double K_p = 0.00025;
-        constexpr double K_d = 0.00025;
+        constexpr double K_p = 0.0001;
+        constexpr double K_d = 0.00035;
 
         double psiErr = courseHeading - as.kin.sigma;
         while (psiErr > M_PI) psiErr -= 2.0 * M_PI;

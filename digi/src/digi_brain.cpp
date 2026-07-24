@@ -1002,7 +1002,9 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
             }
 
             const double V = as.kin.vt;
-            constexpr double phi_turn_rad = 35.0 * DTR;
+            double maxRollDeg = state_.config.maxRoll;
+            if (maxRollDeg <= 0.1) maxRollDeg = 35.0;
+            const double phi_turn_rad = maxRollDeg * DTR;
             double R = (V * V) / (32.177 * std::tan(phi_turn_rad));
             D = R * std::tan(theta / 2.0);
 

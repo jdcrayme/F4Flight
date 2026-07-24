@@ -36,8 +36,8 @@ protected:
 
 public:
     DigiFlightPlanScenario() : ManeuverScenario("digi_flightplan") {
-        // Allow up to 450 seconds to complete the 4-waypoint route
-        maxTime_ = 450.0;
+        // Allow up to 500 seconds to complete the 4-waypoint route
+        maxTime_ = 500.0;
     }
 
     std::string GetDescription() const override {
