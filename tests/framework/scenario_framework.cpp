@@ -145,7 +145,7 @@ static ScenarioResult runScenario(ManeuverScenario& scenario,
     const double dt = 1.0 / 60.0;
 
     if (rec) {
-        rec->start(aircraftName, scenario.name());
+        rec->start(scenario.aircraftList()[0]->name, scenario.name());
         rec->setTestMetadata(scenario.GetTestGroup(), scenario.GetTestLevel());
         rec->setGeometry(scenario.traceGeometry());
     }
