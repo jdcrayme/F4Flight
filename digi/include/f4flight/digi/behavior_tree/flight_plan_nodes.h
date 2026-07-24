@@ -99,6 +99,10 @@ protected:
         if (dist < effectiveCaptureRadius) {
             bb.flightPlan->advanceTask();
             startPosInitialized_ = false;
+            if (bb.flightPlan->isComplete() && bb.state) {
+                bb.state->nav.holdPsi = bb.as->kin.sigma;
+                bb.state->nav.holdAlt = -bb.as->kin.z;
+            }
         }
 
         return NodeStatus::Success;
@@ -177,6 +181,7 @@ protected:
 
         ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
             *bb.state, *bb.as, *bb.fcs, *bb.fcsState, bb.state->config.maxGs);
+        ManeuverPrimitives::PhugoidDamper(*bb.state, *bb.as);
 
         ManeuverPrimitives::machHoldCas(cas_kts(task.speedKts), true,
             *bb.state, *bb.as, 200.0, 800.0, bb.dt, 700.0);
@@ -217,6 +222,7 @@ protected:
 
         // Steer toward and orbit the loiter location
         ManeuverPrimitives::Loiter(*bb.state, *bb.as, *bb.fcs, *bb.fcsState, bb.state->config.maxGs);
+        ManeuverPrimitives::PhugoidDamper(*bb.state, *bb.as);
         ManeuverPrimitives::machHoldCas(cas_kts(task.speedKts), true,
             *bb.state, *bb.as, 200.0, 800.0, bb.dt, 700.0);
 

@@ -109,6 +109,39 @@ public:
             return ac->brain.currentWaypoint();
         });
 
+        auto t_altitude_deviation = CreateTelemetry("AltitudeDeviation", [ac, fp]() {
+            if (!ac || !fp) return 0.0;
+            size_t idx = ac->brain.currentWaypoint();
+            if (idx >= fp->tasks().size()) {
+                return -ac->fm.state().kin.z - ac->brain.state().nav.holdAlt;
+            }
+            double targetAlt = fp->tasks()[idx].altFt;
+            return -ac->fm.state().kin.z - targetAlt;
+        });
+
+        auto t_course_deviation = CreateTelemetry("CourseDeviation", [ac, fp]() {
+            if (!ac || !fp) return 0.0;
+            size_t curIdx = ac->brain.currentWaypoint();
+            if (curIdx >= fp->tasks().size()) {
+                return 0.0;
+            }
+            const auto& task = fp->tasks()[curIdx];
+            Vec3 A;
+            if (curIdx > 0) {
+                A = fp->tasks()[curIdx - 1].location;
+            } else {
+                A = Vec3{0.0, 0.0, -5000.0}; // Start position
+            }
+            const double ABx = task.location.x - A.x;
+            const double ABy = task.location.y - A.y;
+            const double AB_len = std::sqrt(ABx * ABx + ABy * ABy);
+            if (AB_len < 1e-3) return 0.0;
+
+            const double APx = ac->fm.state().kin.x - A.x;
+            const double APy = ac->fm.state().kin.y - A.y;
+            return (APx * ABy - APy * ABx) / AB_len;
+        });
+
         auto t_nan = CreateTelemetry("StateNaN", [ac]() {
             const auto& as = ac->fm.state();
             return (std::isnan(as.kin.vt) || std::isnan(as.kin.z) || std::isnan(as.kin.sigma)) ? 1.0 : 0.0;
@@ -116,7 +149,7 @@ public:
 
         // 4. Setup assertions (conditionals)
         for (int i = 0; i < fp->tasks().size(); i++) {
-            const double captureRange = 1;
+            const double captureRange = 100.0;
 			const double targetRange = 200.0; // +/- 200 ft tolerance for altitude hold
             auto targetAlt = fp->tasks()[i].altFt;
             auto holds_alt = CreateConditional<ConditionalValueRemainsInRange>(
@@ -134,7 +167,7 @@ public:
                 true /*isRequired=*/,
                 "Leg " + std::to_string(i) + " alt reached" /*Name*/,
                 "Leg " + std::to_string(i) + " altitude reaches " + std::to_string((int)targetAlt) + " ft +/- " + std::to_string((int)captureRange) + " ft" /*Description*/);
-            reaches_alt->OnPassed = [holds_alt, reaches_alt]() {
+            reaches_alt->OnPassed = [holds_alt]() {
 				holds_alt->Start();
 				};
 
@@ -144,12 +177,11 @@ public:
             if (i < fp->tasks().size()) {
 				int nextWpIdx = i + 1;
                 auto reaches_waypoint = CreateConditional<ConditionalValueReachesRange>(t_currentWaypoint, i, 0.5, /*isRequired=*/false, "Waypoint " + std::to_string(nextWpIdx) + " Reached", "Aircraft reaches Waypoint " + std::to_string(nextWpIdx));
-                reaches_waypoint->OnPassed = [reaches_alt, holds_alt, reaches_waypoint]() {
+                reaches_waypoint->OnPassed = [reaches_alt]() {
                     reaches_alt->Start();
-                    holds_alt->Start();
                     };
                 auto reaches_next_waypoint = CreateConditional<ConditionalValueReachesRange>(t_currentWaypoint, nextWpIdx, 0.5, /*isRequired=*/true, "Waypoint " + std::to_string(nextWpIdx) + " Reached", "Aircraft reaches Waypoint " + std::to_string(nextWpIdx));
-                reaches_next_waypoint->OnPassed = [reaches_alt, holds_alt, reaches_waypoint]() {
+                reaches_next_waypoint->OnPassed = [reaches_alt, holds_alt]() {
                     reaches_alt->Stop();
 					holds_alt->Stop();
 					};

@@ -953,6 +953,7 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     if (curWp_ >= wps_.size()) {
         ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
                                                     state_, as, fcs, fcsState, state_.config.maxGs);
+        ManeuverPrimitives::PhugoidDamper(state_, as);
         // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
         ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
                                          state_, as, 200.0, 800.0, dt, 700.0);
@@ -1023,6 +1024,7 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
         if (curWp_ >= wps_.size()) {
             ManeuverPrimitives::HeadingAndAltitudeHold(state_.nav.holdPsi, state_.nav.holdAlt,
                                                         state_, as, fcs, fcsState, state_.config.maxGs);
+            ManeuverPrimitives::PhugoidDamper(state_, as);
             // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
             ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
                                              state_, as, 200.0, 800.0, dt, 700.0);
@@ -1066,6 +1068,7 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
     const double desAlt = -wp.z;
     ManeuverPrimitives::HeadingAndAltitudeHold(desHeading, desAlt,
                                                 state_, as, fcs, fcsState, state_.config.maxGs);
+    ManeuverPrimitives::PhugoidDamper(state_, as);
     // cornerSpeed is CAS-kts. Use the typed machHoldCas API.
     ManeuverPrimitives::machHoldCas(cas_kts(state_.config.cornerSpeed), true,
                                      state_, as, 200.0, 800.0, dt, 700.0);
