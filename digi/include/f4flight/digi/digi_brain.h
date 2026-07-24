@@ -235,6 +235,7 @@ public:
         }
     }
     void setCaptureRadius(double r_ft) { captureRadius_ = r_ft; }
+    double captureRadius() const { return captureRadius_; }
 
     /// Set the held heading (radians). Read by Waypoint mode when no
     /// waypoints remain, and by HeadingAltitude mode.

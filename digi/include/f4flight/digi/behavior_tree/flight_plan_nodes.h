@@ -3,6 +3,7 @@
 #include "f4flight/digi/behavior_tree/node.h"
 #include "f4flight/digi/behavior_tree/blackboard.h"
 #include "f4flight/digi/behavior_tree/flight_plan.h"
+#include "f4flight/digi/digi_brain.h"
 #include "f4flight/digi/maneuvers/maneuver_primitives.h"
 #include "f4flight/flight/core/airspeed_conversions.h"
 #include "f4flight/flight/core/constants.h"
@@ -91,9 +92,9 @@ protected:
             }
         }
 
-        double effectiveCaptureRadius = captureRadius_;
+        double effectiveCaptureRadius = bb.brain ? bb.brain->captureRadius() : captureRadius_;
         if (hasNext && D > 0.0) {
-            effectiveCaptureRadius = std::max(captureRadius_, D);
+            effectiveCaptureRadius = std::max(effectiveCaptureRadius, D);
         }
 
         if (dist < effectiveCaptureRadius) {
@@ -169,8 +170,23 @@ protected:
             const double APy = bb.as->kin.y - A.y;
             const double d_xtk = (APx * ABy - APy * ABx) / AB_len;
 
-            constexpr double K_xtk = 0.00025;
-            double correction = K_xtk * d_xtk;
+            const double vx = bb.as->kin.xdot;
+            const double vy = bb.as->kin.ydot;
+            const double d_xtk_dot = (vx * ABy - vy * ABx) / AB_len;
+
+            constexpr double K_p = 0.00025;
+            constexpr double K_d = 0.00025;
+
+            double psiErr = courseHeading - bb.as->kin.sigma;
+            while (psiErr > M_PI) psiErr -= 2.0 * M_PI;
+            while (psiErr < -M_PI) psiErr += 2.0 * M_PI;
+
+            const double max_blend_err = 45.0 * 0.017453292519943295;
+            double blend = 1.0 - (std::fabs(psiErr) / max_blend_err);
+            if (blend < 0.0) blend = 0.0;
+            if (blend > 1.0) blend = 1.0;
+
+            double correction = blend * (K_p * d_xtk + K_d * d_xtk_dot);
             if (correction > HALF_PI) correction = HALF_PI;
             if (correction < -HALF_PI) correction = -HALF_PI;
 

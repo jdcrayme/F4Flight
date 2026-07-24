@@ -1057,8 +1057,23 @@ void DigiBrain::runWaypoint(const AircraftState& as, double dt,
         const double APy = as.kin.y - A.y;
         const double d_xtk = (APx * ABy - APy * ABx) / AB_len;
 
-        constexpr double K_xtk = 0.00025;
-        double correction = K_xtk * d_xtk;
+        const double vx = as.kin.xdot;
+        const double vy = as.kin.ydot;
+        const double d_xtk_dot = (vx * ABy - vy * ABx) / AB_len;
+
+        constexpr double K_p = 0.00025;
+        constexpr double K_d = 0.00025;
+
+        double psiErr = courseHeading - as.kin.sigma;
+        while (psiErr > M_PI) psiErr -= 2.0 * M_PI;
+        while (psiErr < -M_PI) psiErr += 2.0 * M_PI;
+
+        const double max_blend_err = 45.0 * 0.017453292519943295;
+        double blend = 1.0 - (std::fabs(psiErr) / max_blend_err);
+        if (blend < 0.0) blend = 0.0;
+        if (blend > 1.0) blend = 1.0;
+
+        double correction = blend * (K_p * d_xtk + K_d * d_xtk_dot);
         if (correction > HALF_PI) correction = HALF_PI;
         if (correction < -HALF_PI) correction = -HALF_PI;
 
