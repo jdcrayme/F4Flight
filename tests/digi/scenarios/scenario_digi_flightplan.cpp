@@ -26,10 +26,18 @@ protected:
     bool leg3Captured_{false};
     bool leg4Captured_{false};
 
+    const   std::vector<double> corridorCoords = {
+                0.0,     0.0,  -5000.0,
+            30000.0,     0.0,  -5000.0,
+            60000.0, 10000.0, -12000.0,
+            60000.0, 70000.0,  -8000.0,
+            10000.0, 70000.0, -15000.0
+    };
+
 public:
     DigiFlightPlanScenario() : ManeuverScenario("digi_flightplan") {
-        // Allow up to 550 seconds to complete the 4-waypoint route (including orbit duration)
-        maxTime_ = 550.0;
+        // Allow up to 450 seconds to complete the 4-waypoint route
+        maxTime_ = 450.0;
     }
 
     std::string GetDescription() const override {
@@ -45,19 +53,11 @@ public:
         std::vector<TraceGeometry> geom;
 
         // 1. Waypoints (type = "waypoint", coords = {x, y, z})
-        geom.push_back(TraceGeometry{"WP1 (5k')",  "waypoint", {30000.0,     0.0,  -5000.0}, "#00e5ff", 2.0});
-        geom.push_back(TraceGeometry{"WP2 (12k')", "waypoint", {60000.0, 30000.0, -12000.0}, "#00e5ff", 2.0});
-        geom.push_back(TraceGeometry{"WP3 (8k')",  "waypoint", {60000.0, 70000.0,  -8000.0}, "#00e5ff", 2.0});
-        geom.push_back(TraceGeometry{"WP4 (15k')", "waypoint", {10000.0, 70000.0, -15000.0}, "#00e5ff", 2.0});
+        for (int i = 1; i < corridorCoords.size()/3; i ++)
+            geom.push_back(TraceGeometry{ "WP" + std::to_string(i),  "waypoint", {corridorCoords[i * 3 + 0],corridorCoords[i * 3 + 1],corridorCoords[i * 3 + 2]}, "#00e5ff", 2.0 });
 
         // 2. Flight Plan Corridor (connecting Start -> WP1 -> WP2 -> WP3 -> WP4)
-        std::vector<double> corridorCoords = {
-                0.0,     0.0,  -5000.0,
-            30000.0,     0.0,  -5000.0,
-            60000.0, 30000.0, -12000.0,
-            60000.0, 70000.0,  -8000.0,
-            10000.0, 70000.0, -15000.0
-        };
+
         geom.push_back(TraceGeometry{"FlightPlan Corridor", "corridor", corridorCoords, "#00ffcc", 2.0});
 
         return geom;
